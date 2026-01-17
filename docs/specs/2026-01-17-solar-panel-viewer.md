@@ -311,6 +311,119 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] Safari (latest 2 versions)
 - [ ] Mobile Safari and Chrome on iOS/Android
 
+### Playwright E2E Tests
+
+Automated end-to-end tests using Playwright to verify UI functionality, positioning, and responsive behavior.
+
+**Setup:**
+```bash
+npm install -D @playwright/test
+npx playwright install
+```
+
+**Core Functionality Tests:**
+- [ ] Application loads and displays layout image
+- [ ] All 69 panel overlays render after image loads
+- [ ] Watts/Voltage toggle changes displayed values
+- [ ] Panel values update when WebSocket receives new data
+- [ ] Connection status indicators appear/disappear appropriately
+
+**Panel Positioning Tests:**
+- [ ] Panel overlays are positioned within the image bounds (not outside)
+- [ ] Panel positions maintain relative alignment at different viewport sizes
+- [ ] Specific panels align with expected regions (spot-check A1, E8, I6 positions)
+- [ ] No panel overlays render before image onLoad completes
+
+**Responsive Layout Tests (viewport sizes):**
+- [ ] Mobile (375x812): Layout fits without horizontal scroll, panels readable
+- [ ] Tablet (768x1024): Layout scales correctly, toggle accessible
+- [ ] Desktop (1280x720): Full layout visible, all panels distinguishable
+
+**Zoom Behavior Tests:**
+- [ ] At 50% zoom: Panels remain positioned correctly relative to image
+- [ ] At 100% zoom: Panels align with layout reference points
+- [ ] At 200% zoom: Panels maintain correct positions (may overlap, acceptable)
+
+**Visual Regression Tests:**
+- [ ] Capture baseline screenshots at each breakpoint
+- [ ] Compare subsequent runs against baseline (configurable threshold)
+- [ ] Flag visual changes for manual review
+
+**Accessibility Snapshot Tests:**
+- [ ] All panel overlays have readable text content
+- [ ] Toggle button is keyboard accessible
+- [ ] Focus indicators visible on interactive elements
+
+**Error State Tests:**
+- [ ] Simulate image load failure → error message displays
+- [ ] Click retry button → image reload attempted
+- [ ] Simulate WebSocket disconnect → reconnecting badge appears
+- [ ] Simulate WebSocket reconnect → badge disappears, data resumes
+
+**Example Playwright Test:**
+```typescript
+// tests/e2e/panel-positioning.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Panel Positioning', () => {
+  test('panels render after image loads', async ({ page }) => {
+    await page.goto('/');
+
+    // Wait for image to load
+    await page.waitForSelector('img[alt="Solar panel layout"]');
+    await page.waitForFunction(() => {
+      const img = document.querySelector('img[alt="Solar panel layout"]');
+      return img?.complete && img?.naturalWidth > 0;
+    });
+
+    // Verify panels rendered
+    const panels = await page.locator('[data-testid^="panel-"]').count();
+    expect(panels).toBe(69);
+  });
+
+  test('panels stay within image bounds', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForSelector('[data-testid^="panel-"]');
+
+    const imgBox = await page.locator('img[alt="Solar panel layout"]').boundingBox();
+    const panels = await page.locator('[data-testid^="panel-"]').all();
+
+    for (const panel of panels) {
+      const panelBox = await panel.boundingBox();
+      expect(panelBox.x).toBeGreaterThanOrEqual(imgBox.x);
+      expect(panelBox.y).toBeGreaterThanOrEqual(imgBox.y);
+      expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(imgBox.x + imgBox.width);
+      expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(imgBox.y + imgBox.height);
+    }
+  });
+
+  test.describe('Responsive Layout', () => {
+    const viewports = [
+      { name: 'mobile', width: 375, height: 812 },
+      { name: 'tablet', width: 768, height: 1024 },
+      { name: 'desktop', width: 1280, height: 720 },
+    ];
+
+    for (const vp of viewports) {
+      test(`renders correctly at ${vp.name} (${vp.width}x${vp.height})`, async ({ page }) => {
+        await page.setViewportSize({ width: vp.width, height: vp.height });
+        await page.goto('/');
+        await page.waitForSelector('[data-testid^="panel-"]');
+
+        // No horizontal scroll
+        const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+        expect(scrollWidth).toBeLessThanOrEqual(vp.width);
+
+        // Screenshot for visual regression
+        await expect(page).toHaveScreenshot(`layout-${vp.name}.png`);
+      });
+    }
+  });
+});
+```
+
+**Note:** Add `data-testid="panel-{display_label}"` attribute to PanelOverlay component for test selection.
+
 ## Security Considerations
 
 **Deployment Context:**
