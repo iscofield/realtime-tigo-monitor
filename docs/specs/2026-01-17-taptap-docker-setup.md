@@ -29,6 +29,8 @@ This setup requires:
 
 **FR-1.4:** Each container SHALL run continuously with automatic restart on failure (`restart: unless-stopped`).
 
+**FR-1.5:** Each container SHALL have access to serial devices by adding the `dialout` group (`group_add: - dialout`) to ensure proper device permissions without requiring privileged mode.
+
 ### FR-2: Binary Distribution
 
 **FR-2.1:** The taptap binary SHALL be downloaded from:
@@ -38,10 +40,12 @@ https://github.com/litinoveweedle/taptap/releases/download/v0.2.6/taptap-Linux-m
 
 **FR-2.2:** The binary SHALL be extracted and included in the Docker image at build time.
 
-**FR-2.3:** The taptap-mqtt.py script SHALL be cloned from the repository:
+**FR-2.3:** The taptap-mqtt.py script SHALL be downloaded from a pinned commit for reproducible builds:
 ```
-https://github.com/litinoveweedle/taptap-mqtt
+https://github.com/litinoveweedle/taptap-mqtt/archive/bbac4720d50fc2b73f4d4190a0601f9b49ee2990.tar.gz
 ```
+
+**Note:** The commit SHA `bbac472` (Jan 6, 2026) should be verified against the latest stable release before production deployment. Check for updates at https://github.com/litinoveweedle/taptap-mqtt/releases
 
 ### FR-3: Configuration Management
 
@@ -54,37 +58,71 @@ https://github.com/litinoveweedle/taptap-mqtt
 **FR-3.3:** The configuration file format SHALL follow taptap-mqtt's INI format with these sections:
 
 ```ini
-[MQTT]
-server = <broker_host>
+[mqtt]
+server = 192.168.1.100
 port = 1883
-user = <username>
-password = <password>
+user = mqtt_username
+pass = mqtt_password
 qos = 1
+timeout = 30
 
-[TAPTAP]
-# Module definitions: STRING:NAME:SERIAL
+[taptap]
+log_level = INFO
+binary = /usr/local/bin/taptap
+serial = /dev/ttyUSB0
+# Module definitions: STRING:LABEL:SERIAL
 # Example: A:01:4-C3F23CR
 modules = <module_definitions>
-connection = serial
-serial_port = /dev/ttyUSB0
+topic_prefix = taptap
+topic_name = primary
+timeout = 300
+update = 60
 state_file = /data/taptap.state
 
-[HA]
-discovery = true
-legacy = false
-availability_node = true
-availability_string = true
-availability_stat = true
-statistics = true
+[ha]
+discovery_prefix = homeassistant
+discovery_legacy = false
+birth_topic = homeassistant/status
+availability_nodes = true
+availability_strings = true
+availability_stats = true
+# Recorder settings control Home Assistant long-term statistics
+# See table below for valid values
+nodes_sensors_recorder = energy
+strings_sensors_recorder = energy_daily
+stats_sensors_recorder = energy_daily
 
-[RUNTIME]
-errors = 15
+[runtime]
+max_error = 15
 run_file = /run/taptap/taptap.run
 ```
 
-**FR-3.4:** The `serial_port` setting SHALL be set to `/dev/ttyUSB0` inside the container, with Docker device mapping handling the actual host device.
+**Recorder Values Reference:**
+
+| Value | Description | Use Case |
+|-------|-------------|----------|
+| `energy` | Records cumulative energy values | Long-term energy tracking per panel |
+| `energy_daily` | Records daily energy totals | Daily production summaries |
+| (empty) | Disables statistics recording | Reduce Home Assistant database size |
+
+**Important:** taptap-mqtt.py spawns the taptap binary as a subprocess using the `binary` and `serial` configuration options. The script does NOT read from stdin—it manages the taptap process internally.
+
+**State file behavior:** If the state file does not exist on first startup, taptap-mqtt creates it automatically. If the file is corrupted, taptap-mqtt will log an error and start fresh with an empty state (optimizer discovery will restart). This is acceptable as state is rebuilt over time. *(Behavior inferred from source code patterns; verify during testing phase.)*
+
+**FR-3.4:** The `serial` setting SHALL be set to `/dev/ttyUSB0` inside the container, with Docker device mapping handling the actual host device.
 
 **FR-3.5:** Each configuration SHALL specify a unique `state_file` path for persistent state storage.
+
+**FR-3.6:** Each configuration SHALL specify a unique `topic_name` to differentiate MQTT topics:
+- Primary: `topic_name = primary` → publishes to `taptap/primary/state`
+- Secondary: `topic_name = secondary` → publishes to `taptap/secondary/state`
+
+**Note:** The `topic_prefix` and `topic_name` keys have been verified against taptap-mqtt.py source at commit `bbac472`. Topics are constructed as `{topic_prefix}/{topic_name}/state`.
+
+**FR-3.7:** Configuration files SHALL contain actual credential values (not environment variable references) as taptap-mqtt.py does not support variable substitution. Credentials SHALL be protected by:
+- Setting file permissions to `600` (owner read/write only)
+- Excluding config files from version control via `.gitignore`
+- Providing a `config-template.ini` with placeholder values for documentation
 
 ### FR-4: Module Definitions
 
@@ -93,7 +131,7 @@ run_file = /run/taptap/taptap.run
 STRING:LABEL:SERIAL
 ```
 
-**FR-4.2:** The primary configuration SHALL include all nodes from the primary CCA (41 panels across strings A-E, plus I1-I6).
+**FR-4.2:** The primary configuration SHALL include all nodes from the primary CCA: 41 panels across strings A-E, plus 6 panels in string I (I1-I6), totaling **47 panels**.
 
 **FR-4.3:** The secondary configuration SHALL include all nodes from the secondary CCA (22 panels across strings F-H, plus additional G panels).
 
@@ -109,7 +147,7 @@ STRING:LABEL:SERIAL
 
 **FR-5.3:** Home Assistant auto-discovery SHALL be enabled for both instances.
 
-**FR-5.4:** MQTT credentials SHALL be stored in an environment file (`.env`) to avoid hardcoding in configuration files.
+**FR-5.4:** MQTT credentials SHALL be stored directly in the configuration files (as taptap-mqtt.py does not support environment variable substitution). Configuration files SHALL be protected per FR-3.7.
 
 ### FR-6: Docker Compose Configuration
 
@@ -132,7 +170,25 @@ STRING:LABEL:SERIAL
 
 **FR-7.2:** The run file SHALL be updated periodically by taptap-mqtt to indicate the process is alive.
 
-**FR-7.3:** Docker health checks MAY be configured to verify the run file is being updated.
+**FR-7.3:** Docker health checks SHALL be configured to verify the run file is being updated:
+```yaml
+healthcheck:
+  test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
+  interval: 60s
+  timeout: 10s
+  retries: 3
+  start_period: 120s
+```
+
+### FR-8: Failure Handling
+
+**FR-8.1:** When the serial port disconnects or becomes unavailable, the taptap binary will exit with an error. The taptap-mqtt.py script SHALL detect this (broken pipe / subprocess exit) and terminate with a **non-zero exit code**, allowing Docker's restart policy to restart the container.
+
+**Clarification:** Exit code 0 = clean shutdown (Docker may not restart). Exit code non-zero = failure (Docker will restart with `unless-stopped` policy).
+
+**FR-8.2:** When the MQTT broker becomes unreachable, taptap-mqtt.py SHALL retry connection with exponential backoff as implemented in its internal reconnection logic.
+
+**FR-8.3:** The `restart: unless-stopped` policy SHALL ensure automatic recovery from transient failures. For persistent failures (e.g., hardware disconnection), manual intervention is expected.
 
 ## Non-Functional Requirements
 
@@ -144,7 +200,7 @@ STRING:LABEL:SERIAL
 
 **NFR-4:** Configuration changes SHALL take effect after container restart without rebuilding the image.
 
-**NFR-5:** All sensitive credentials (MQTT password) SHALL be stored in environment variables, not committed to version control.
+**NFR-5:** All sensitive credentials (MQTT password) SHALL be stored in configuration files with restricted permissions (`chmod 600`), not committed to version control.
 
 ## High Level Design
 
@@ -214,10 +270,10 @@ sequenceDiagram
 tigo_docker/
 ├── docker-compose.yml
 ├── Dockerfile
-├── .env                      # MQTT credentials (gitignored)
-├── .env.example              # Template for .env
-├── config-primary.ini        # Primary CCA configuration
-├── config-secondary.ini      # Secondary CCA configuration
+├── .gitignore                # Excludes config-*.ini, data/, run/
+├── config-template.ini       # Template with placeholder values (committed)
+├── config-primary.ini        # Primary CCA configuration (gitignored, chmod 600)
+├── config-secondary.ini      # Secondary CCA configuration (gitignored, chmod 600)
 ├── data/
 │   ├── primary/              # State files for primary
 │   └── secondary/            # State files for secondary
@@ -237,29 +293,42 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tar \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and extract taptap binary
+# Download and extract taptap binary (pinned version)
+# NOTE: This downloads ARM64 binary. Image MUST be built on ARM64 host
+# or using: docker buildx build --platform linux/arm64 .
 ARG TAPTAP_VERSION=v0.2.6
 RUN curl -L "https://github.com/litinoveweedle/taptap/releases/download/${TAPTAP_VERSION}/taptap-Linux-musl-arm64.tar.gz" \
     | tar -xz -C /usr/local/bin/ \
     && chmod +x /usr/local/bin/taptap
 
-# Clone taptap-mqtt and install dependencies
+# Download taptap-mqtt from pinned commit for reproducibility
+ARG TAPTAP_MQTT_COMMIT=bbac4720d50fc2b73f4d4190a0601f9b49ee2990
 WORKDIR /app
-RUN curl -L "https://github.com/litinoveweedle/taptap-mqtt/archive/refs/heads/main.tar.gz" \
+RUN curl -L "https://github.com/litinoveweedle/taptap-mqtt/archive/${TAPTAP_MQTT_COMMIT}.tar.gz" \
     | tar -xz --strip-components=1
 
+# requirements.txt verified to exist at pinned commit bbac472
+# Contains: paho-mqtt==1.6.1, python-dateutil==2.8.1, uptime==3.0.1
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create directories for state and run files
 RUN mkdir -p /data /run/taptap
 
-# Entry point runs taptap piped to taptap-mqtt.py
-ENTRYPOINT ["sh", "-c", "taptap observe --serial /dev/ttyUSB0 --state-file /data/taptap-infra.state | python3 taptap-mqtt.py"]
+# Set unbuffered output for real-time logging
+ENV PYTHONUNBUFFERED=1
+
+# taptap-mqtt.py spawns taptap internally using BINARY config option
+# Config file is mounted at /app/config.ini
+ENTRYPOINT ["python3", "taptap-mqtt.py", "config.ini"]
 ```
+
+**Note on architecture:** The `taptap-mqtt.py` script spawns the `taptap` binary as a subprocess, reading from its stdout internally. The config file specifies `BINARY = /usr/local/bin/taptap` and `SERIAL = /dev/ttyUSB0` to configure this subprocess.
 
 ### Docker Compose Configuration
 
 ```yaml
+# Note: 'version' key is deprecated in Docker Compose v2+ but included for
+# backward compatibility with older Docker Compose versions
 version: '3.8'
 
 services:
@@ -267,32 +336,44 @@ services:
     build: .
     container_name: taptap-primary
     restart: unless-stopped
+    network_mode: host
+    group_add:
+      - dialout
     devices:
       - /dev/ttyACM2:/dev/ttyUSB0
     volumes:
       - ./config-primary.ini:/app/config.ini:ro
       - ./data/primary:/data
       - ./run/primary:/run/taptap
-    environment:
-      - MQTT_SERVER=${MQTT_SERVER}
-      - MQTT_USER=${MQTT_USER}
-      - MQTT_PASSWORD=${MQTT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
 
   taptap-secondary:
     build: .
     container_name: taptap-secondary
     restart: unless-stopped
+    network_mode: host
+    group_add:
+      - dialout
     devices:
       - /dev/ttyACM3:/dev/ttyUSB0
     volumes:
       - ./config-secondary.ini:/app/config.ini:ro
       - ./data/secondary:/data
       - ./run/secondary:/run/taptap
-    environment:
-      - MQTT_SERVER=${MQTT_SERVER}
-      - MQTT_USER=${MQTT_USER}
-      - MQTT_PASSWORD=${MQTT_PASSWORD}
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
 ```
+
+**Note:** `network_mode: host` is used to ensure the MQTT broker (on the local network) is directly reachable. The `group_add: dialout` ensures the container process can access serial devices without requiring `privileged: true`.
 
 ### Configuration File Structure
 
@@ -303,7 +384,7 @@ The module definitions follow the pattern `STRING:LABEL:SERIAL` where:
 
 Example for primary CCA (partial):
 ```ini
-[TAPTAP]
+[taptap]
 modules = A:01:4-C3F23CR
           A:02:4-C3F2ACK
           A:03:4-C3F282R
@@ -314,30 +395,45 @@ modules = A:01:4-C3F23CR
 
 ### Phase 1: Project Setup
 1. Create `tigo_docker/` directory structure
-2. Create `.env.example` template file
-3. Create `.gitignore` to exclude `.env` and data directories
+2. Create `config-template.ini` with placeholder values
+3. Create `.gitignore` to exclude `config-*.ini`, `data/`, and `run/` directories
 
 ### Phase 2: Docker Configuration
-4. Write Dockerfile with taptap binary download
-5. Write docker-compose.yml with both services
-6. Test Docker build on target architecture
+4. Write Dockerfile with taptap binary download and pinned taptap-mqtt commit
+5. Write docker-compose.yml with both services, health checks, and network configuration
+6. Test Docker build on target architecture (ARM64)
 
 ### Phase 3: Configuration Files
-7. Create config-primary.ini with all primary CCA modules
+7. Create config-primary.ini with all primary CCA modules (copy from template, add credentials)
 8. Create config-secondary.ini with all secondary CCA modules
 9. Populate module definitions from imports/primary.json and imports/secondary.json
+10. Set file permissions: `chmod 600 config-*.ini`
 
-### Phase 4: Testing
-10. Build Docker images
-11. Test primary container with `/dev/ttyACM2`
-12. Test secondary container with `/dev/ttyACM3`
-13. Verify MQTT messages appear on broker
-14. Verify Home Assistant auto-discovery
+### Phase 4: Functional Testing
+11. Build Docker images
+12. Test primary container with `/dev/ttyACM2`
+13. Test secondary container with `/dev/ttyACM3`
+14. Verify MQTT messages appear on broker with correct topic paths (`taptap/primary/state`, `taptap/secondary/state`)
+15. Verify Home Assistant auto-discovery creates entities
 
-### Phase 5: Integration
-15. Confirm Solar Panel Viewer can subscribe to both topic paths
-16. Validate panel data mapping between taptap output and viewer
-17. Document any translation adjustments needed
+### Phase 5: Failure Scenario Testing
+16. Test serial port disconnection:
+    - **Safe method:** `sudo chmod 000 /dev/ttyACM2` (simulate permission loss)
+    - **Alternative:** USB unbind (find path first: `ls -la /sys/class/tty/ttyACM2`, then `echo '<device-id>' > /sys/bus/usb/drivers/cdc_acm/unbind`)
+    - **Expected behavior:** Container exits within ~60s, restarts automatically
+    - **Recovery:** `sudo chmod 666 /dev/ttyACM2` or replug USB
+17. Test MQTT broker unavailability: Stop broker for 5+ minutes, then restart broker and verify reconnection occurs (may take 30-60 seconds based on retry backoff)
+18. Test container restart: `docker restart taptap-primary`, verify data flow resumes
+19. Verify both containers don't conflict on MQTT topics (unique topic_name)
+
+### Phase 6: Performance Testing
+20. Monitor memory usage over 24 hours: Verify stays under 256MB (NFR-2)
+21. Verify health check detects stale containers (stop taptap-mqtt, check health status)
+
+### Phase 7: Integration
+22. Confirm Solar Panel Viewer can subscribe to both topic paths
+23. Validate panel data mapping between taptap output and viewer
+24. Document any translation adjustments needed
 
 ## Context / Documentation
 
@@ -358,13 +454,94 @@ modules = A:01:4-C3F23CR
 | Primary | /dev/ttyACM2 | Main array | 47 panels |
 | Secondary | /dev/ttyACM3 | Extension | 22 panels |
 
+### Operations & Troubleshooting
+
+**View container logs:**
+```bash
+docker logs taptap-primary -f        # Follow primary container logs
+docker logs taptap-secondary -f      # Follow secondary container logs
+docker logs taptap-primary --tail 100 # Last 100 lines
+```
+
+**Check container health:**
+```bash
+docker ps                            # Shows health status
+docker inspect taptap-primary --format='{{.State.Health.Status}}'
+```
+
+**Restart containers (preserves state):**
+```bash
+docker restart taptap-primary
+docker compose restart               # Restart all
+```
+
+**Debug configuration issues:**
+```bash
+docker exec -it taptap-primary cat /app/config.ini  # View mounted config
+docker exec -it taptap-primary ls -la /data/        # Check state files
+docker exec -it taptap-primary ls -la /dev/ttyUSB0  # Verify device access
+```
+
+**Force rebuild after Dockerfile changes:**
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
 ---
 
-**Specification Version:** 1.0
+**Specification Version:** 1.3
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.3 (January 2026)
+**Summary:** Final polish - consistency fixes and documentation improvements
+
+**Changes:**
+- Fixed config section header `[TAPTAP]` to lowercase `[taptap]` in Configuration File Structure example
+- Updated `docker-compose` to modern `docker compose` command syntax throughout Operations section
+- Added USB device path discovery instructions for unbind testing method
+- Added recorder values reference table documenting `energy`, `energy_daily`, and empty options
+- Added verification note to state file behavior (verify during testing)
+- Added timing details to MQTT broker unavailability test (5+ min outage, 30-60s reconnect)
+
+### v1.2 (January 2026)
+**Summary:** Polish config format, add operational guidance
+
+**Changes:**
+- Changed config keys to lowercase for consistency with actual taptap-mqtt format
+- Fixed recorder key names: `nodes_sensors_recorder`, `strings_sensors_recorder`, `stats_sensors_recorder`
+- Added comments explaining empty recorder values (statistics disabled)
+- Added ARM64 build requirement comment in Dockerfile
+- Added verification note for requirements.txt existence
+- Tightened health check threshold from 5 minutes to 2 minutes (matches 60s update interval)
+- Added Docker Compose version deprecation note
+- Clarified exit code behavior in FR-8.1 (non-zero for restart)
+- Documented state file behavior (auto-create, corruption recovery)
+- Added verification note for topic_prefix/topic_name keys
+- Added safer serial disconnect testing methods
+- Added Operations & Troubleshooting section with common commands
+
+### v1.1 (January 2026)
+**Summary:** Address review comments - fix architecture, add failure handling
+
+**Changes:**
+- **BREAKING:** Corrected entrypoint - taptap-mqtt.py spawns taptap as subprocess (not piped)
+- Added FR-1.5: Serial device permissions via `group_add: dialout`
+- Added FR-3.6: TOPIC_NAME configuration for unique MQTT topics
+- Added FR-3.7: Credential protection requirements (no env var support)
+- Added FR-8: Failure handling requirements (serial disconnect, MQTT unavailable)
+- Updated FR-5.4: Removed .env file approach (not supported by taptap-mqtt)
+- Updated FR-7.3: Changed health check from MAY to SHALL with example
+- Pinned taptap-mqtt to commit `bbac472` for reproducible builds
+- Added `network_mode: host` and health checks to docker-compose.yml
+- Added PYTHONUNBUFFERED=1 for real-time logging
+- Clarified panel count: 41 + 6 = 47 panels in primary system
+- Expanded testing phases with failure scenarios and performance tests
+
+**Rationale:** Review identified that taptap-mqtt.py manages the taptap subprocess internally, not via stdin pipe. This required architectural corrections to Dockerfile and configuration.
 
 ### v1.0 (January 2026)
 **Summary:** Initial specification
