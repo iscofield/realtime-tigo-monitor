@@ -436,36 +436,41 @@ modules = A:01:4-C3F23CR,A:02:4-C3F2ACK,A:03:4-C3F282R,...
     ```bash
     chmod 755 data/primary data/secondary run/primary run/secondary
     ```
+12. (Optional) Validate INI syntax before starting containers:
+    ```bash
+    python3 -c "import configparser; c = configparser.ConfigParser(); c.read('config-primary.ini'); print('Primary config OK')"
+    python3 -c "import configparser; c = configparser.ConfigParser(); c.read('config-secondary.ini'); print('Secondary config OK')"
+    ```
 
 ### Phase 4: Functional Testing
-12. Build Docker images
-13. Test primary container with `/dev/ttyACM2`
-14. Test secondary container with `/dev/ttyACM3`
-15. Verify MQTT messages appear on broker with correct topic paths (`taptap/primary/state`, `taptap/secondary/state`)
-16. Verify Home Assistant auto-discovery creates entities
+13. Build Docker images
+14. Test primary container with `/dev/ttyACM2`
+15. Test secondary container with `/dev/ttyACM3`
+16. Verify MQTT messages appear on broker with correct topic paths (`taptap/primary/state`, `taptap/secondary/state`)
+17. Verify Home Assistant auto-discovery creates entities
 
 ### Phase 5: Failure Scenario Testing
-17. Test serial port disconnection:
+18. Test serial port disconnection:
     - **Safe method:** `sudo chmod 000 /dev/ttyACM2` (simulate permission loss)
     - **Alternative:** USB unbind (find path first: `ls -la /sys/class/tty/ttyACM2`, then `echo '<device-id>' > /sys/bus/usb/drivers/cdc_acm/unbind`)
     - **Expected behavior:** Container exits within ~60s, restarts automatically
     - **Recovery:** `sudo chmod 666 /dev/ttyACM2` or replug USB
-18. Test MQTT broker unavailability: Stop broker for 5+ minutes, then restart broker and verify reconnection occurs (may take 30-60 seconds based on retry backoff)
-19. Test container restart: `docker restart taptap-primary`, verify data flow resumes
-20. Verify both containers don't conflict on MQTT topics (unique topic_name)
+19. Test MQTT broker unavailability: Stop broker for 5+ minutes, then restart broker and verify reconnection occurs (may take 30-60 seconds based on retry backoff)
+20. Test container restart: `docker restart taptap-primary`, verify data flow resumes
+21. Verify both containers don't conflict on MQTT topics (unique topic_name)
 
 ### Phase 6: Performance Testing
-21. Monitor memory usage over 24 hours: Verify stays under 256MB (NFR-2)
-22. Verify health check detects stale containers (stop taptap-mqtt, check health status)
+22. Monitor memory usage over 24 hours: Verify stays under 256MB (NFR-2)
+23. Verify health check detects stale containers (stop taptap-mqtt, check health status)
 
 ### Phase 7: Integration
-23. Capture and document MQTT message format:
+24. Capture and document MQTT message format:
     - Subscribe to `taptap/+/state` and capture sample messages
     - Document JSON structure (expected fields: per-panel watts, voltage, online status, serial)
     - Verify field names match Solar Panel Viewer WebSocket format
-24. Confirm Solar Panel Viewer can subscribe to both topic paths
-25. Validate panel data mapping between taptap output and viewer
-26. Document any translation adjustments needed
+25. Confirm Solar Panel Viewer can subscribe to both topic paths
+26. Validate panel data mapping between taptap output and viewer
+27. Document any translation adjustments needed
 
 ## Context / Documentation
 
@@ -539,11 +544,19 @@ docker compose up -d
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.6 (January 2026)
+**Summary:** Final review - added optional config validation step
+
+**Changes:**
+- Added optional step 12 in Phase 3 to validate INI syntax before starting containers
+- Renumbered task breakdown steps 13-27 to accommodate new optional step
+- Review confirmed FR-8 failure handling, task numbering, udev docs, and permissions are all complete
 
 ### v1.5 (January 2026)
 **Summary:** Additional failure handling and operational completeness
