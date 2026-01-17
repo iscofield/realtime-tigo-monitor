@@ -1,0 +1,10 @@
+# Configuration files with credentials
+config-primary.ini
+config-secondary.ini
+
+# Test credentials
+.env.test
+
+# State and runtime data
+data/
+run/
