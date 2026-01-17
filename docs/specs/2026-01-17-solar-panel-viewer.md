@@ -325,7 +325,7 @@ npx playwright install
 - [ ] Application loads and displays layout image
 - [ ] All 69 panel overlays render after image loads
 - [ ] Watts/Voltage toggle changes displayed values
-- [ ] Panel values update when WebSocket receives new data
+- [ ] Panel values update when WebSocket receives new data (🔌 requires backend in mock mode)
 - [ ] Connection status indicators appear/disappear appropriately
 
 **Panel Positioning Tests:**
@@ -359,6 +359,15 @@ npx playwright install
 - [ ] Click retry button → image reload attempted
 - [ ] Simulate WebSocket disconnect → reconnecting badge appears
 - [ ] Simulate WebSocket reconnect → badge disappears, data resumes
+
+*Test simulation approaches:*
+```typescript
+// Image load failure - use route interception
+await page.route('**/layout.png', route => route.abort());
+
+// WebSocket disconnect - requires backend mock mode or MSW
+// For integration tests, stop/restart backend mock service
+```
 
 **Example Playwright Test:**
 ```typescript
@@ -414,7 +423,8 @@ test.describe('Panel Positioning', () => {
         const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
         expect(scrollWidth).toBeLessThanOrEqual(vp.width);
 
-        // Screenshot for visual regression
+        // Screenshot for visual regression (baselines stored in tests/*.spec.ts-snapshots/)
+        // Update baselines: npx playwright test --update-snapshots
         await expect(page).toHaveScreenshot(`layout-${vp.name}.png`);
       });
     }
@@ -422,7 +432,9 @@ test.describe('Panel Positioning', () => {
 });
 ```
 
-**Note:** Add `data-testid="panel-{display_label}"` attribute to PanelOverlay component for test selection.
+**Notes:**
+- Tests marked with 🔌 require the backend running in mock data mode (FR-2.3)
+- The `data-testid="panel-{display_label}"` attribute is included in all PanelOverlay code examples above
 
 ## Security Considerations
 
@@ -524,18 +536,21 @@ const PanelOverlay = ({ panel, mode, maxValue }) => {
   // Handle offline panels (FR-2.8)
   if (!panel.online) {
     return (
-      <div style={{
-        position: 'absolute',
-        left: `${panel.position.x_percent}%`,
-        top: `${panel.position.y_percent}%`,
-        transform: 'translate(-50%, -50%)',
-        backgroundColor: '#808080',
-        color: 'white',
-        padding: '2px 4px',
-        borderRadius: '3px',
-        fontSize: 'clamp(8px, 1.5vw, 14px)',
-        textAlign: 'center',
-      }}>
+      <div
+        data-testid={`panel-${panel.display_label}`}
+        style={{
+          position: 'absolute',
+          left: `${panel.position.x_percent}%`,
+          top: `${panel.position.y_percent}%`,
+          transform: 'translate(-50%, -50%)',
+          backgroundColor: '#808080',
+          color: 'white',
+          padding: '2px 4px',
+          borderRadius: '3px',
+          fontSize: 'clamp(8px, 1.5vw, 14px)',
+          textAlign: 'center',
+        }}
+      >
         <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
         <div>OFFLINE</div>
       </div>
@@ -548,18 +563,21 @@ const PanelOverlay = ({ panel, mode, maxValue }) => {
   // Handle no data received yet (FR-4.7)
   if (value === null || value === undefined) {
     return (
-      <div style={{
-        position: 'absolute',
-        left: `${panel.position.x_percent}%`,
-        top: `${panel.position.y_percent}%`,
-        transform: 'translate(-50%, -50%)',
-        backgroundColor: '#808080',
-        color: 'white',
-        padding: '2px 4px',
-        borderRadius: '3px',
-        fontSize: 'clamp(8px, 1.5vw, 14px)',
-        textAlign: 'center',
-      }}>
+      <div
+        data-testid={`panel-${panel.display_label}`}
+        style={{
+          position: 'absolute',
+          left: `${panel.position.x_percent}%`,
+          top: `${panel.position.y_percent}%`,
+          transform: 'translate(-50%, -50%)',
+          backgroundColor: '#808080',
+          color: 'white',
+          padding: '2px 4px',
+          borderRadius: '3px',
+          fontSize: 'clamp(8px, 1.5vw, 14px)',
+          textAlign: 'center',
+        }}
+      >
         <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
         <div>—</div>
       </div>
@@ -574,6 +592,7 @@ const PanelOverlay = ({ panel, mode, maxValue }) => {
 
   return (
     <div
+      data-testid={`panel-${panel.display_label}`}
       style={{
         position: 'absolute',
         left: `${panel.position.x_percent}%`,
