@@ -137,7 +137,7 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - Panel ID on the first line (e.g., "A1", "C9")
 - The numeric value with unit indicator on the second line (e.g., "385W" or "42V")
 
-**FR-4.5:** The frontend SHALL provide a toggle button to switch between "Watts" and "Voltage" display modes.
+**FR-4.5:** The frontend SHALL provide a toggle button to switch between "Watts" and "Voltage" display modes. The default mode SHALL be Watts.
 
 **FR-4.6:** The toggle button SHALL be positioned at the top of the viewport.
 
@@ -399,6 +399,9 @@ test.describe('Panel Positioning', () => {
 
     for (const panel of panels) {
       const panelBox = await panel.boundingBox();
+      if (!panelBox) {
+        throw new Error(`Panel ${await panel.getAttribute('data-testid')} not visible`);
+      }
       // Check panel CENTER is within image bounds
       // (accounting for transform: translate(-50%, -50%) which centers the overlay)
       const panelCenterX = panelBox.x + panelBox.width / 2;
@@ -421,13 +424,13 @@ test.describe('Panel Positioning', () => {
     await expect(panelA1).toContainText('W');
 
     // Click toggle (assumes data-testid="mode-toggle" on toggle button)
-    await page.click('[data-testid="mode-toggle"]');
+    await page.locator('[data-testid="mode-toggle"]').click();
 
     // Verify voltage mode
     await expect(panelA1).toContainText('V');
 
     // Toggle back
-    await page.click('[data-testid="mode-toggle"]');
+    await page.locator('[data-testid="mode-toggle"]').click();
     await expect(panelA1).toContainText('W');
   });
 
@@ -440,8 +443,9 @@ test.describe('Panel Positioning', () => {
 
     for (const vp of viewports) {
       test(`renders correctly at ${vp.name} (${vp.width}x${vp.height})`, async ({ page }) => {
-        await page.goto('/');
+        // Set viewport before navigation to avoid layout shift
         await page.setViewportSize({ width: vp.width, height: vp.height });
+        await page.goto('/');
         // Wait for image load first (matches NFR-5.1)
         await page.waitForFunction(() => {
           const img = document.querySelector('img[alt="Solar panel layout"]');
