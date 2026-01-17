@@ -390,7 +390,7 @@ test.describe('Panel Positioning', () => {
     expect(panels).toBe(69);
   });
 
-  test('panels stay within image bounds', async ({ page }) => {
+  test('panel centers stay within image bounds', async ({ page }) => {
     await page.goto('/');
     await page.waitForSelector('[data-testid^="panel-"]');
 
@@ -399,11 +399,36 @@ test.describe('Panel Positioning', () => {
 
     for (const panel of panels) {
       const panelBox = await panel.boundingBox();
-      expect(panelBox.x).toBeGreaterThanOrEqual(imgBox.x);
-      expect(panelBox.y).toBeGreaterThanOrEqual(imgBox.y);
-      expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(imgBox.x + imgBox.width);
-      expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(imgBox.y + imgBox.height);
+      // Check panel CENTER is within image bounds
+      // (accounting for transform: translate(-50%, -50%) which centers the overlay)
+      const panelCenterX = panelBox.x + panelBox.width / 2;
+      const panelCenterY = panelBox.y + panelBox.height / 2;
+      expect(panelCenterX).toBeGreaterThanOrEqual(imgBox.x);
+      expect(panelCenterY).toBeGreaterThanOrEqual(imgBox.y);
+      expect(panelCenterX).toBeLessThanOrEqual(imgBox.x + imgBox.width);
+      expect(panelCenterY).toBeLessThanOrEqual(imgBox.y + imgBox.height);
     }
+  });
+
+  test('toggle switches between watts and voltage', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForSelector('[data-testid^="panel-"]');
+
+    // Get panel A1 for verification
+    const panelA1 = page.locator('[data-testid="panel-A1"]');
+
+    // Verify initial state (watts mode is default)
+    await expect(panelA1).toContainText('W');
+
+    // Click toggle (assumes data-testid="mode-toggle" on toggle button)
+    await page.click('[data-testid="mode-toggle"]');
+
+    // Verify voltage mode
+    await expect(panelA1).toContainText('V');
+
+    // Toggle back
+    await page.click('[data-testid="mode-toggle"]');
+    await expect(panelA1).toContainText('W');
   });
 
   test.describe('Responsive Layout', () => {
@@ -415,8 +440,13 @@ test.describe('Panel Positioning', () => {
 
     for (const vp of viewports) {
       test(`renders correctly at ${vp.name} (${vp.width}x${vp.height})`, async ({ page }) => {
-        await page.setViewportSize({ width: vp.width, height: vp.height });
         await page.goto('/');
+        await page.setViewportSize({ width: vp.width, height: vp.height });
+        // Wait for image load first (matches NFR-5.1)
+        await page.waitForFunction(() => {
+          const img = document.querySelector('img[alt="Solar panel layout"]');
+          return img?.complete && img?.naturalWidth > 0;
+        });
         await page.waitForSelector('[data-testid^="panel-"]');
 
         // No horizontal scroll
@@ -435,6 +465,7 @@ test.describe('Panel Positioning', () => {
 **Notes:**
 - Tests marked with 🔌 require the backend running in mock data mode (FR-2.3)
 - The `data-testid="panel-{display_label}"` attribute is included in all PanelOverlay code examples above
+- The toggle button requires `data-testid="mode-toggle"` attribute for test selection
 
 ## Security Considerations
 
