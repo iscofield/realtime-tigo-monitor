@@ -152,6 +152,11 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - **Disconnected:** Show "Reconnecting..." badge at top of viewport; retain last known values with stale indicators
 - **Connection error:** Show error message with retry button
 
+**FR-4.9:** The frontend SHALL handle layout image load failures:
+- **On load error:** Display error message "Failed to load layout image" with retry button
+- **On retry:** Attempt to reload the image
+- **No silent failure:** User SHALL always receive feedback if the layout cannot be displayed
+
 ### FR-5: Color Gradient
 
 **Note:** Color calculation SHALL occur in the **frontend only**. The backend sends raw numeric values; the frontend calculates colors based on the current display mode and max values. This allows for future theme customization without backend changes.
@@ -269,6 +274,8 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] Last known values are retained during reconnection
 - [ ] Error message with retry button appears on connection failure
 - [ ] Retry button successfully re-establishes connection
+- [ ] Panel text remains readable at all breakpoints - font scales between 8px minimum and 14px maximum (FR-6.4)
+- [ ] Image load failure displays error message with retry button (FR-4.9)
 
 **Startup Validation Tests:**
 - [ ] Application fails to start with invalid panel_mapping.json (missing required fields)
@@ -285,7 +292,15 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] All 69 panels have position coordinates in panel_mapping.json
 - [ ] All position coordinates are within valid range (0-100)
 - [ ] Panel overlays visually align with layout.png at 100% zoom (manual verification)
-- [ ] No panel overlays overlap each other
+- [ ] Panel labels remain readable and visually distinguishable at 100% zoom (some overlap acceptable at extreme zoom levels)
+
+**Build Tests:**
+- [ ] Frontend production bundle is less than 500KB gzipped (`npm run build` and check dist size) (NFR-3)
+
+**Unit Tests (Implementation Detail):**
+- [ ] `interpolateColor(0)` returns dark green `rgb(0, 100, 0)` / `#006400` (FR-5.4)
+- [ ] `interpolateColor(1)` returns light green `rgb(144, 238, 144)` / `#90EE90` (FR-5.4)
+- [ ] `interpolateColor()` clamps values outside 0-1 range
 
 **Browser Support:**
 - [ ] Chrome (latest 2 versions)
@@ -329,8 +344,7 @@ sequenceDiagram
     TAP->>MQTT: Publish panel state
     BE->>MQTT: Subscribe to state topic
     MQTT-->>BE: Panel data (JSON)
-    BE->>BE: Map SN to display labels
-    BE->>BE: Apply translations
+    BE->>BE: Lookup panel by SN (display_label pre-computed)
     BE->>WS: Broadcast to connected clients
     WS-->>FE: Panel update message
     FE->>FE: Update overlay values
@@ -369,12 +383,12 @@ Tigo CCA → taptap-mqtt → MQTT Broker
               │     Panel Mapping Lookup      │
               │                               │
               │  SN: "4-C3F34CZ"              │
-              │       ↓                       │
-              │  Tigo Label: "G1"             │
-              │       ↓ (translation)         │
-              │  Display Label: "C9"          │
-              │       ↓                       │
-              │  Position: {x: 45%, y: 12%}   │
+              │       ↓ (direct lookup by SN) │
+              │  Panel Record:                │
+              │    display_label: "C9"        │
+              │    (pre-computed, no runtime  │
+              │     translation lookup)       │
+              │    position: {x: 45%, y: 12%} │
               └───────────────────────────────┘
                               │
                               ▼
@@ -474,14 +488,37 @@ The container uses relative positioning to anchor overlays:
 // SolarLayout.jsx
 const SolarLayout = ({ panels, mode }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageError, setImageError] = useState(false);
+  const imgRef = useRef(null);
+
+  // Defensive pattern: handle cached images that load synchronously
+  useEffect(() => {
+    if (imgRef.current?.complete && !imageError) {
+      setImageLoaded(true);
+    }
+  }, [imageError]);
+
+  // Handle image load error (FR-4.9)
+  if (imageError) {
+    return (
+      <div style={{ padding: '20px', textAlign: 'center', color: '#dc3545' }}>
+        <p>Failed to load layout image</p>
+        <button onClick={() => { setImageError(false); setImageLoaded(false); }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
       <img
+        ref={imgRef}
         src="/layout.png"
         alt="Solar panel layout"
         style={{ width: '100%', height: 'auto', display: 'block' }}
         onLoad={() => setImageLoaded(true)}
+        onError={() => setImageError(true)}
       />
       {/* NFR-5.1: Only render overlays after image loads for correct positioning */}
       {imageLoaded && panels.map(panel => (
