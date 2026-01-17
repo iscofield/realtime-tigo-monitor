@@ -196,6 +196,8 @@ healthcheck:
 ls -la /dev/ttyACM2 /dev/ttyACM3
 ```
 
+**FR-8.5:** When MQTT authentication fails (wrong username/password), taptap-mqtt.py behavior depends on paho-mqtt's implementation. The operator SHOULD monitor logs for authentication errors (`CONNACK` with non-zero return code). Authentication failures typically result in repeated connection attempts—if credentials are known to be wrong, stop the container and fix the configuration rather than allowing infinite retries.
+
 ## Non-Functional Requirements
 
 **NFR-1:** Container startup SHALL complete within 30 seconds of `docker-compose up`.
@@ -430,36 +432,40 @@ modules = A:01:4-C3F23CR,A:02:4-C3F2ACK,A:03:4-C3F282R,...
 8. Create config-secondary.ini with all secondary CCA modules
 9. Populate module definitions from imports/primary.json and imports/secondary.json
 10. Set file permissions: `chmod 600 config-*.ini`
+11. Ensure data directories are writable (Docker may create as root):
+    ```bash
+    chmod 755 data/primary data/secondary run/primary run/secondary
+    ```
 
 ### Phase 4: Functional Testing
-11. Build Docker images
-12. Test primary container with `/dev/ttyACM2`
-13. Test secondary container with `/dev/ttyACM3`
-14. Verify MQTT messages appear on broker with correct topic paths (`taptap/primary/state`, `taptap/secondary/state`)
-15. Verify Home Assistant auto-discovery creates entities
+12. Build Docker images
+13. Test primary container with `/dev/ttyACM2`
+14. Test secondary container with `/dev/ttyACM3`
+15. Verify MQTT messages appear on broker with correct topic paths (`taptap/primary/state`, `taptap/secondary/state`)
+16. Verify Home Assistant auto-discovery creates entities
 
 ### Phase 5: Failure Scenario Testing
-16. Test serial port disconnection:
+17. Test serial port disconnection:
     - **Safe method:** `sudo chmod 000 /dev/ttyACM2` (simulate permission loss)
     - **Alternative:** USB unbind (find path first: `ls -la /sys/class/tty/ttyACM2`, then `echo '<device-id>' > /sys/bus/usb/drivers/cdc_acm/unbind`)
     - **Expected behavior:** Container exits within ~60s, restarts automatically
     - **Recovery:** `sudo chmod 666 /dev/ttyACM2` or replug USB
-17. Test MQTT broker unavailability: Stop broker for 5+ minutes, then restart broker and verify reconnection occurs (may take 30-60 seconds based on retry backoff)
-18. Test container restart: `docker restart taptap-primary`, verify data flow resumes
-19. Verify both containers don't conflict on MQTT topics (unique topic_name)
+18. Test MQTT broker unavailability: Stop broker for 5+ minutes, then restart broker and verify reconnection occurs (may take 30-60 seconds based on retry backoff)
+19. Test container restart: `docker restart taptap-primary`, verify data flow resumes
+20. Verify both containers don't conflict on MQTT topics (unique topic_name)
 
 ### Phase 6: Performance Testing
-20. Monitor memory usage over 24 hours: Verify stays under 256MB (NFR-2)
-21. Verify health check detects stale containers (stop taptap-mqtt, check health status)
+21. Monitor memory usage over 24 hours: Verify stays under 256MB (NFR-2)
+22. Verify health check detects stale containers (stop taptap-mqtt, check health status)
 
 ### Phase 7: Integration
-22. Capture and document MQTT message format:
+23. Capture and document MQTT message format:
     - Subscribe to `taptap/+/state` and capture sample messages
     - Document JSON structure (expected fields: per-panel watts, voltage, online status, serial)
     - Verify field names match Solar Panel Viewer WebSocket format
-23. Confirm Solar Panel Viewer can subscribe to both topic paths
-24. Validate panel data mapping between taptap output and viewer
-25. Document any translation adjustments needed
+24. Confirm Solar Panel Viewer can subscribe to both topic paths
+25. Validate panel data mapping between taptap output and viewer
+26. Document any translation adjustments needed
 
 ## Context / Documentation
 
@@ -487,6 +493,12 @@ modules = A:01:4-C3F23CR,A:02:4-C3F2ACK,A:03:4-C3F282R,...
 # Find serial numbers: udevadm info -a -n /dev/ttyACM2 | grep serial
 SUBSYSTEM=="tty", ATTRS{serial}=="<PRIMARY_CCA_SERIAL>", SYMLINK+="tigo-primary"
 SUBSYSTEM=="tty", ATTRS{serial}=="<SECONDARY_CCA_SERIAL>", SYMLINK+="tigo-secondary"
+```
+
+After creating or modifying the rules file, reload udev:
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
 Then update docker-compose.yml to use `/dev/tigo-primary` and `/dev/tigo-secondary` instead of `/dev/ttyACM2` and `/dev/ttyACM3`.
@@ -527,11 +539,20 @@ docker compose up -d
 
 ---
 
-**Specification Version:** 1.4
+**Specification Version:** 1.5
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.5 (January 2026)
+**Summary:** Additional failure handling and operational completeness
+
+**Changes:**
+- Added FR-8.5: MQTT authentication failure behavior and monitoring guidance
+- Added udev reload commands (`udevadm control --reload-rules && udevadm trigger`)
+- Added directory permission step (step 11) to ensure data/run directories are writable
+- Renumbered task breakdown steps 12-26 to accommodate new step
 
 ### v1.4 (January 2026)
 **Summary:** Production hardening - resource limits, logging, device stability
