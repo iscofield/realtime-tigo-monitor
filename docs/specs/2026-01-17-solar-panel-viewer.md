@@ -46,6 +46,8 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 
 **FR-1.3:** The system SHALL apply translations from the `translations` object to convert Tigo-reported labels to display labels. Translations SHALL be applied exactly once; the result of a translation is NOT checked against the translation table again (no chaining).
 
+**Clarification:** The `display_label` in each panel record is pre-computed (translations already applied when building the JSON). The `translations` object is included for documentation and validation purposes. At runtime, the backend looks up panels by `sn` (serial number) and uses the `display_label` directly—no runtime translation lookup occurs.
+
 **FR-1.4:** The system SHALL support 69 panels across 9 strings (A-I) distributed between primary and secondary systems.
 
 **FR-1.5:** At startup, the system SHALL validate `panel_mapping.json`:
@@ -245,7 +247,7 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] WebSocket serves multiple concurrent clients (verify 5 connections)
 - [ ] WebSocket heartbeat keeps connections alive (FR-3.4)
 - [ ] Failed WebSocket connections are cleaned up properly
-- [ ] 500ms batching delivers updates within specified window (FR-3.2)
+- [ ] Multiple rapid MQTT updates result in a single batched WebSocket broadcast (FR-3.2)
 
 **Data Flow Tests:**
 - [ ] Panel data appears in UI within 5 seconds of MQTT publish
@@ -261,6 +263,7 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] Panel overlays align correctly at 50%, 100%, and 200% zoom
 - [ ] Responsive layout works at 375px, 768px, and 1024px widths
 - [ ] Panel ID labels display above values
+- [ ] Panel overlays only render after layout image onLoad event fires (NFR-5.1)
 - [ ] "Connecting..." overlay displays before WebSocket connects
 - [ ] "Reconnecting..." badge appears when WebSocket disconnects
 - [ ] Last known values are retained during reconnection
@@ -273,9 +276,10 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] Application fails to start with out-of-range position coordinates (< 0 or > 100)
 
 **Edge Case Tests:**
-- [ ] Values exceeding max (>420W, >50V) display with clamped color
+- [ ] Values exceeding max (>420W, >50V) display with clamped color AND show actual numeric reading
 - [ ] Negative or null values handled gracefully
 - [ ] Malformed MQTT messages don't crash the backend
+- [ ] Translation chaining does NOT occur (G2→G1 stays G1, not G2→G1→C9)
 
 **Calibration Tests:**
 - [ ] All 69 panels have position coordinates in panel_mapping.json
@@ -469,14 +473,18 @@ The container uses relative positioning to anchor overlays:
 ```jsx
 // SolarLayout.jsx
 const SolarLayout = ({ panels, mode }) => {
+  const [imageLoaded, setImageLoaded] = useState(false);
+
   return (
     <div style={{ position: 'relative', width: '100%' }}>
       <img
         src="/layout.png"
         alt="Solar panel layout"
         style={{ width: '100%', height: 'auto', display: 'block' }}
+        onLoad={() => setImageLoaded(true)}
       />
-      {panels.map(panel => (
+      {/* NFR-5.1: Only render overlays after image loads for correct positioning */}
+      {imageLoaded && panels.map(panel => (
         <PanelOverlay
           key={panel.display_label}
           panel={panel}
