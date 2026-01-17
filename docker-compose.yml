@@ -6,15 +6,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
-    environment:
-      - MQTT_BROKER_HOST=${MQTT_BROKER_HOST:-mosquitto}
-      - MQTT_BROKER_PORT=${MQTT_BROKER_PORT:-1883}
-      - MQTT_TOPIC_PREFIX=${MQTT_TOPIC_PREFIX:-taptap}
-      - MQTT_USERNAME=${MQTT_USERNAME:-}
-      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - USE_MOCK_DATA=${USE_MOCK_DATA:-true}
+      - "8080:8000"
+    env_file:
+      - ./backend/.env
     volumes:
       - ./config/panel_mapping.json:/app/config/panel_mapping.json:ro
       - ./assets/layout.png:/app/static/layout.png:ro
@@ -27,9 +21,9 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:8000/ws/panels}
+        - VITE_WS_URL=ws://localhost:8080/ws/panels
     ports:
-      - "80:80"
+      - "5174:80"
     depends_on:
       - backend
     networks:

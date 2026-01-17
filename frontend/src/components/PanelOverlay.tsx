@@ -71,6 +71,11 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
   const percentage = calculatePercentage(value, maxValue);
   const backgroundColor = interpolateColor(percentage);
 
+  // Format value: watts as integer, voltage with 1 decimal
+  const formattedValue = mode === 'watts'
+    ? Math.round(value)
+    : value.toFixed(1);
+
   // Apply stale styling (FR-4.7: 50% opacity + ⏱ indicator)
   const staleOpacity = panel.stale ? 0.5 : 1;
 
@@ -85,7 +90,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
       }}
     >
       <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
-      <div>{value}</div>
+      <div>{formattedValue}</div>
     </div>
   );
 }
