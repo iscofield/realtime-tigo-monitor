@@ -23,3 +23,5 @@ dist/
 
 # GIMP source files (keep PNG, exclude source)
 *.xcf
+.playwright-mcp/
+docs/specs/prompt.md
