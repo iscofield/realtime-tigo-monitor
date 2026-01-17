@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Staleness Configuration
     staleness_threshold_seconds: int = 120  # FR-2.6: 2 minutes
 
+    # TapTap State File Paths (for bootstrapping status check)
+    # These should be mounted from the taptap container data directories
+    taptap_primary_state_file: str | None = None
+    taptap_secondary_state_file: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
