@@ -277,7 +277,7 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] Retry button successfully re-establishes connection
 - [ ] Panel text remains readable at all breakpoints - font scales between 8px minimum and 14px maximum (FR-6.4)
 - [ ] Image load failure displays error message with retry button (FR-4.9)
-- [ ] Retry button triggers new image load attempt (FR-4.9)
+- [ ] Retry button triggers new image load attempt (FR-4.9) - verify via React key change or network request monitoring
 
 **Startup Validation Tests:**
 - [ ] Application fails to start with invalid panel_mapping.json (missing required fields)
@@ -497,11 +497,12 @@ const SolarLayout = ({ panels, mode }) => {
 
   // Defensive pattern: handle cached images that load synchronously
   // Check naturalWidth to detect broken cached images
-  useEffect(() => {
+  // useLayoutEffect ensures check runs after DOM update (including retry remount)
+  useLayoutEffect(() => {
     if (imgRef.current?.complete && imgRef.current?.naturalWidth > 0) {
       setImageLoaded(true);
     }
-  }, []); // Run once on mount
+  }, [retryCount]); // Re-run after retry to catch synchronously cached images
 
   // Handle image load error (FR-4.9)
   if (imageError) {
@@ -532,7 +533,7 @@ const SolarLayout = ({ panels, mode }) => {
         onError={() => setImageError(true)}
       />
       {/* NFR-5.1: Only render overlays after image loads for correct positioning */}
-      {imageLoaded && panels.map(panel => (
+      {imageLoaded && panels?.map(panel => (
         <PanelOverlay
           key={panel.display_label}
           panel={panel}
