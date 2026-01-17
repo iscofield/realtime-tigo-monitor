@@ -14,7 +14,7 @@ services:
     env_file:
       - .env
     devices:
-      - /dev/ttyACM2:/dev/ttyUSB0
+      - /dev/ttyACM2
     volumes:
       - ./config-primary.ini:/app/config-template.ini:ro
       - ./data/primary:/data
@@ -42,7 +42,7 @@ services:
     env_file:
       - .env
     devices:
-      - /dev/ttyACM3:/dev/ttyUSB0
+      - /dev/ttyACM3
     volumes:
       - ./config-secondary.ini:/app/config-template.ini:ro
       - ./data/secondary:/data
