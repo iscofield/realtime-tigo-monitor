@@ -190,11 +190,17 @@ healthcheck:
 
 **FR-8.3:** The `restart: unless-stopped` policy SHALL ensure automatic recovery from transient failures. For persistent failures (e.g., hardware disconnection), manual intervention is expected.
 
+**FR-8.4:** If the serial device does not exist at container start (e.g., CCA unplugged), Docker SHALL fail to start the container with a device mapping error. The operator SHOULD verify device presence before running `docker compose up`:
+```bash
+# Verify devices exist before starting
+ls -la /dev/ttyACM2 /dev/ttyACM3
+```
+
 ## Non-Functional Requirements
 
 **NFR-1:** Container startup SHALL complete within 30 seconds of `docker-compose up`.
 
-**NFR-2:** Memory usage per container SHALL not exceed 256MB under normal operation.
+**NFR-2:** Memory usage per container SHALL not exceed 256MB under normal operation. This is enforced via `mem_limit: 256m` in docker-compose.yml.
 
 **NFR-3:** The setup SHALL support ARM64 architecture (for Raspberry Pi or similar SBC deployment).
 
@@ -337,6 +343,7 @@ services:
     container_name: taptap-primary
     restart: unless-stopped
     network_mode: host
+    mem_limit: 256m
     group_add:
       - dialout
     devices:
@@ -345,6 +352,11 @@ services:
       - ./config-primary.ini:/app/config.ini:ro
       - ./data/primary:/data
       - ./run/primary:/run/taptap
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
       interval: 60s
@@ -357,6 +369,7 @@ services:
     container_name: taptap-secondary
     restart: unless-stopped
     network_mode: host
+    mem_limit: 256m
     group_add:
       - dialout
     devices:
@@ -365,6 +378,11 @@ services:
       - ./config-secondary.ini:/app/config.ini:ro
       - ./data/secondary:/data
       - ./run/secondary:/run/taptap
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
       interval: 60s
@@ -385,16 +403,20 @@ The module definitions follow the pattern `STRING:LABEL:SERIAL` where:
 Example for primary CCA (partial):
 ```ini
 [taptap]
-modules = A:01:4-C3F23CR
-          A:02:4-C3F2ACK
-          A:03:4-C3F282R
-          ...
+# Modules are comma-separated (verified against taptap-mqtt.py source)
+# Format: STRING:LABEL:SERIAL,STRING:LABEL:SERIAL,...
+modules = A:01:4-C3F23CR,A:02:4-C3F2ACK,A:03:4-C3F282R,...
 ```
+
+**Note:** The `modules` value is parsed using `split(",")` in taptap-mqtt.py. Multi-line continuation with indentation is NOT supported—all modules must be on a single comma-separated line.
 
 ## Task Breakdown
 
 ### Phase 1: Project Setup
-1. Create `tigo_docker/` directory structure
+1. Create `tigo_docker/` directory structure:
+   ```bash
+   mkdir -p tigo_docker/{data/{primary,secondary},run/{primary,secondary}}
+   ```
 2. Create `config-template.ini` with placeholder values
 3. Create `.gitignore` to exclude `config-*.ini`, `data/`, and `run/` directories
 
@@ -431,9 +453,13 @@ modules = A:01:4-C3F23CR
 21. Verify health check detects stale containers (stop taptap-mqtt, check health status)
 
 ### Phase 7: Integration
-22. Confirm Solar Panel Viewer can subscribe to both topic paths
-23. Validate panel data mapping between taptap output and viewer
-24. Document any translation adjustments needed
+22. Capture and document MQTT message format:
+    - Subscribe to `taptap/+/state` and capture sample messages
+    - Document JSON structure (expected fields: per-panel watts, voltage, online status, serial)
+    - Verify field names match Solar Panel Viewer WebSocket format
+23. Confirm Solar Panel Viewer can subscribe to both topic paths
+24. Validate panel data mapping between taptap output and viewer
+25. Document any translation adjustments needed
 
 ## Context / Documentation
 
@@ -453,6 +479,17 @@ modules = A:01:4-C3F23CR
 |--------|-------------|----------|-------------|
 | Primary | /dev/ttyACM2 | Main array | 47 panels |
 | Secondary | /dev/ttyACM3 | Extension | 22 panels |
+
+**Stable Device Naming (Recommended):** USB serial devices can swap names after reboot. For production reliability, create udev rules to assign stable symlinks:
+
+```bash
+# /etc/udev/rules.d/99-tigo-cca.rules
+# Find serial numbers: udevadm info -a -n /dev/ttyACM2 | grep serial
+SUBSYSTEM=="tty", ATTRS{serial}=="<PRIMARY_CCA_SERIAL>", SYMLINK+="tigo-primary"
+SUBSYSTEM=="tty", ATTRS{serial}=="<SECONDARY_CCA_SERIAL>", SYMLINK+="tigo-secondary"
+```
+
+Then update docker-compose.yml to use `/dev/tigo-primary` and `/dev/tigo-secondary` instead of `/dev/ttyACM2` and `/dev/ttyACM3`.
 
 ### Operations & Troubleshooting
 
@@ -490,11 +527,24 @@ docker compose up -d
 
 ---
 
-**Specification Version:** 1.3
+**Specification Version:** 1.4
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.4 (January 2026)
+**Summary:** Production hardening - resource limits, logging, device stability
+
+**Changes:**
+- **BREAKING:** Fixed modules syntax - must be comma-separated on single line (verified against taptap-mqtt.py source using `split(",")`)
+- Added FR-8.4: Serial device unavailability at startup behavior and verification command
+- Added `mem_limit: 256m` to docker-compose.yml to enforce NFR-2
+- Added log rotation configuration (`max-size: 10m`, `max-file: 3`) to prevent disk exhaustion
+- Added explicit directory creation command in Phase 1 task breakdown
+- Added MQTT message format verification step in Phase 7 (capture and document JSON structure)
+- Added udev rules documentation for stable device naming (production reliability)
+- Updated task numbering in Phase 7 (now 22-25)
 
 ### v1.3 (January 2026)
 **Summary:** Final polish - consistency fixes and documentation improvements
