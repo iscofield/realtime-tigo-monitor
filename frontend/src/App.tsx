@@ -4,6 +4,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { SolarLayout } from './components/SolarLayout';
 import { ModeToggle } from './components/ModeToggle';
 import { ConnectionStatusDisplay } from './components/ConnectionStatus';
+import { SystemWarningBanner } from './components/SystemWarningBanner';
 import type { DisplayMode } from './components/PanelOverlay';
 
 const appStyle: CSSProperties = {
@@ -34,6 +35,9 @@ function App() {
 
   return (
     <div style={appStyle}>
+      {/* System warning banner for state file issues */}
+      <SystemWarningBanner />
+
       {/* FR-4.6: Toggle button at top of viewport */}
       <header style={headerStyle}>
         <ModeToggle mode={mode} setMode={setMode} />

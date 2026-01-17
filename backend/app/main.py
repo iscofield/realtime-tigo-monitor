@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -127,10 +129,105 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+def check_state_file(path: str | None) -> dict:
+    """Check status of a taptap state file."""
+    if not path:
+        return {"configured": False, "exists": False, "valid": False, "nodes": 0}
+
+    if not os.path.exists(path):
+        return {"configured": True, "exists": False, "valid": False, "nodes": 0}
+
+    try:
+        with open(path, "r") as f:
+            content = f.read().strip()
+            if not content:
+                return {"configured": True, "exists": True, "valid": False, "nodes": 0}
+
+            data = json.loads(content)
+
+            # Check for required fields in PersistentState format
+            has_tables = "gateway_node_tables" in data
+            has_identities = "gateway_identities" in data
+
+            # Count total nodes across all gateways
+            node_count = 0
+            if has_tables:
+                for gateway_nodes in data["gateway_node_tables"].values():
+                    node_count += len(gateway_nodes)
+
+            # Check if gateway_identities is empty (common issue)
+            identities_empty = (
+                not has_identities
+                or not data.get("gateway_identities")
+                or len(data["gateway_identities"]) == 0
+            )
+
+            valid = has_tables and has_identities and not identities_empty and node_count > 0
+
+            return {
+                "configured": True,
+                "exists": True,
+                "valid": valid,
+                "nodes": node_count,
+                "identities_empty": identities_empty,
+            }
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"Error reading state file {path}: {e}")
+        return {"configured": True, "exists": True, "valid": False, "nodes": 0, "error": str(e)}
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "mock_mode": settings.use_mock_data}
+
+
+@app.get("/api/system-status")
+async def system_status():
+    """Get system status including state file health."""
+    primary_status = check_state_file(settings.taptap_primary_state_file)
+    secondary_status = check_state_file(settings.taptap_secondary_state_file)
+
+    # Determine if there are any warnings
+    warnings = []
+
+    if settings.taptap_primary_state_file:
+        if not primary_status["exists"]:
+            warnings.append({
+                "level": "error",
+                "message": "Primary CCA state file missing - panel data may be scrambled",
+                "detail": "Run capture-infrastructure.sh to bootstrap the state file",
+            })
+        elif not primary_status["valid"]:
+            warnings.append({
+                "level": "warning",
+                "message": "Primary CCA state file is invalid or empty",
+                "detail": "State file exists but may be corrupted or incomplete",
+            })
+
+    if settings.taptap_secondary_state_file:
+        if not secondary_status["exists"]:
+            warnings.append({
+                "level": "error",
+                "message": "Secondary CCA state file missing - panel data may be scrambled",
+                "detail": "Run capture-infrastructure.sh to bootstrap the state file",
+            })
+        elif not secondary_status["valid"]:
+            warnings.append({
+                "level": "warning",
+                "message": "Secondary CCA state file is invalid or empty",
+                "detail": "State file exists but may be corrupted or incomplete",
+            })
+
+    return {
+        "mock_mode": settings.use_mock_data,
+        "state_files": {
+            "primary": primary_status,
+            "secondary": secondary_status,
+        },
+        "warnings": warnings,
+        "has_warnings": len(warnings) > 0,
+    }
 
 
 @app.post("/api/reload")
