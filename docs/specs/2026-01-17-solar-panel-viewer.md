@@ -395,6 +395,9 @@ test.describe('Panel Positioning', () => {
     await page.locator('[data-testid^="panel-"]').first().waitFor();
 
     const imgBox = await page.locator('img[alt="Solar panel layout"]').boundingBox();
+    if (!imgBox) {
+      throw new Error('Layout image not visible - cannot verify panel bounds');
+    }
     const panels = await page.locator('[data-testid^="panel-"]').all();
 
     for (const panel of panels) {
@@ -452,7 +455,7 @@ test.describe('Panel Positioning', () => {
           const img = document.querySelector('img[alt="Solar panel layout"]');
           return img?.complete && img?.naturalWidth > 0;
         });
-        await page.waitForSelector('[data-testid^="panel-"]');
+        await page.locator('[data-testid^="panel-"]').first().waitFor();
 
         // No horizontal scroll
         const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
@@ -460,6 +463,10 @@ test.describe('Panel Positioning', () => {
 
         // Screenshot for visual regression (baselines stored in tests/*.spec.ts-snapshots/)
         // Update baselines: npx playwright test --update-snapshots
+        // CI considerations:
+        // - Store baselines in version control (tests/*.spec.ts-snapshots/)
+        // - CI should fail if snapshots don't match (don't auto-update in CI)
+        // - Use --update-snapshots locally when intentional UI changes occur
         await expect(page).toHaveScreenshot(`layout-${vp.name}.png`);
       });
     }
@@ -651,6 +658,25 @@ const PanelOverlay = ({ panel, mode, maxValue }) => {
     </div>
   );
 };
+```
+
+The toggle button switches between display modes:
+
+```jsx
+// ModeToggle.jsx
+const ModeToggle = ({ mode, setMode }) => (
+  <button
+    data-testid="mode-toggle"
+    onClick={() => setMode(m => m === 'watts' ? 'voltage' : 'watts')}
+    style={{
+      padding: '8px 16px',
+      fontSize: '14px',
+      cursor: 'pointer',
+    }}
+  >
+    {mode === 'watts' ? 'Show Voltage' : 'Show Watts'}
+  </button>
+);
 ```
 
 The container uses relative positioning to anchor overlays:
