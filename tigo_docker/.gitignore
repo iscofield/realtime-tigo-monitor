@@ -1,8 +1,5 @@
-# Configuration files with credentials
-config-primary.ini
-config-secondary.ini
-
-# Test credentials
+# Environment file with credentials (use .env.example as template)
+.env
 .env.test
 
 # State and runtime data

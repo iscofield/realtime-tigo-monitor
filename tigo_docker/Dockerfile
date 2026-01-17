@@ -27,9 +27,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create directories for state and run files
 RUN mkdir -p /data /run/taptap
 
+# Copy entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Set unbuffered output for real-time logging
 ENV PYTHONUNBUFFERED=1
 
-# taptap-mqtt.py spawns taptap internally using BINARY config option
-# Config file is mounted at /app/config.ini
-ENTRYPOINT ["python3", "taptap-mqtt.py", "config.ini"]
+# Entrypoint generates config.ini from template + env vars, then runs taptap-mqtt
+ENTRYPOINT ["/app/entrypoint.sh"]

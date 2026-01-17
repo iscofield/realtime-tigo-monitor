@@ -11,10 +11,12 @@ services:
     mem_limit: 256m
     group_add:
       - dialout
+    env_file:
+      - .env
     devices:
       - /dev/ttyACM2:/dev/ttyUSB0
     volumes:
-      - ./config-primary.ini:/app/config.ini:ro
+      - ./config-primary.ini:/app/config-template.ini:ro
       - ./data/primary:/data
       - ./run/primary:/run/taptap
     logging:
@@ -37,10 +39,12 @@ services:
     mem_limit: 256m
     group_add:
       - dialout
+    env_file:
+      - .env
     devices:
       - /dev/ttyACM3:/dev/ttyUSB0
     volumes:
-      - ./config-secondary.ini:/app/config.ini:ro
+      - ./config-secondary.ini:/app/config-template.ini:ro
       - ./data/secondary:/data
       - ./run/secondary:/run/taptap
     logging:
