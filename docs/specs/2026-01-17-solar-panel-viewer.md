@@ -371,15 +371,15 @@ await page.route('**/layout.png', route => route.abort());
 
 **Example Playwright Test:**
 ```typescript
-// tests/e2e/panel-positioning.spec.ts
+// tests/e2e/solar-viewer.spec.ts
 import { test, expect } from '@playwright/test';
 
 test.describe('Panel Positioning', () => {
   test('panels render after image loads', async ({ page }) => {
     await page.goto('/');
 
-    // Wait for image to load
-    await page.waitForSelector('img[alt="Solar panel layout"]');
+    // Wait for image to load (using locator API for consistency)
+    await page.locator('img[alt="Solar panel layout"]').waitFor();
     await page.waitForFunction(() => {
       const img = document.querySelector('img[alt="Solar panel layout"]');
       return img?.complete && img?.naturalWidth > 0;
@@ -392,7 +392,7 @@ test.describe('Panel Positioning', () => {
 
   test('panel centers stay within image bounds', async ({ page }) => {
     await page.goto('/');
-    await page.waitForSelector('[data-testid^="panel-"]');
+    await page.locator('[data-testid^="panel-"]').first().waitFor();
 
     const imgBox = await page.locator('img[alt="Solar panel layout"]').boundingBox();
     const panels = await page.locator('[data-testid^="panel-"]').all();
@@ -413,14 +413,15 @@ test.describe('Panel Positioning', () => {
     }
   });
 
+  // Requires backend mock mode (FR-2.3) - panels need data to display W/V
   test('toggle switches between watts and voltage', async ({ page }) => {
     await page.goto('/');
-    await page.waitForSelector('[data-testid^="panel-"]');
+    await page.locator('[data-testid^="panel-"]').first().waitFor();
 
     // Get panel A1 for verification
     const panelA1 = page.locator('[data-testid="panel-A1"]');
 
-    // Verify initial state (watts mode is default)
+    // Verify initial state (watts mode is default per FR-4.5)
     await expect(panelA1).toContainText('W');
 
     // Click toggle (assumes data-testid="mode-toggle" on toggle button)
