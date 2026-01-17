@@ -152,9 +152,10 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - **Disconnected:** Show "Reconnecting..." badge at top of viewport; retain last known values with stale indicators
 - **Connection error:** Show error message with retry button
 
-**FR-4.9:** The frontend SHALL handle layout image load failures:
+**FR-4.9:** The frontend SHALL handle layout image loading states:
+- **While loading:** Display blank area (acceptable for typical network speeds; optional: show "Loading..." placeholder)
 - **On load error:** Display error message "Failed to load layout image" with retry button
-- **On retry:** Attempt to reload the image
+- **On retry:** Force new image request (via key remount or cache-busting) to reload the image
 - **No silent failure:** User SHALL always receive feedback if the layout cannot be displayed
 
 ### FR-5: Color Gradient
@@ -276,6 +277,7 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 - [ ] Retry button successfully re-establishes connection
 - [ ] Panel text remains readable at all breakpoints - font scales between 8px minimum and 14px maximum (FR-6.4)
 - [ ] Image load failure displays error message with retry button (FR-4.9)
+- [ ] Retry button triggers new image load attempt (FR-4.9)
 
 **Startup Validation Tests:**
 - [ ] Application fails to start with invalid panel_mapping.json (missing required fields)
@@ -300,7 +302,8 @@ The existing Tigo Energy monitoring system provides data through CCAs (Cloud Con
 **Unit Tests (Implementation Detail):**
 - [ ] `interpolateColor(0)` returns dark green `rgb(0, 100, 0)` / `#006400` (FR-5.4)
 - [ ] `interpolateColor(1)` returns light green `rgb(144, 238, 144)` / `#90EE90` (FR-5.4)
-- [ ] `interpolateColor()` clamps values outside 0-1 range
+- [ ] `interpolateColor(-0.5)` returns dark green (same as 0)
+- [ ] `interpolateColor(1.5)` returns light green (same as 1)
 
 **Browser Support:**
 - [ ] Chrome (latest 2 versions)
@@ -489,21 +492,27 @@ The container uses relative positioning to anchor overlays:
 const SolarLayout = ({ panels, mode }) => {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
   const imgRef = useRef(null);
 
   // Defensive pattern: handle cached images that load synchronously
+  // Check naturalWidth to detect broken cached images
   useEffect(() => {
-    if (imgRef.current?.complete && !imageError) {
+    if (imgRef.current?.complete && imgRef.current?.naturalWidth > 0) {
       setImageLoaded(true);
     }
-  }, [imageError]);
+  }, []); // Run once on mount
 
   // Handle image load error (FR-4.9)
   if (imageError) {
     return (
       <div style={{ padding: '20px', textAlign: 'center', color: '#dc3545' }}>
         <p>Failed to load layout image</p>
-        <button onClick={() => { setImageError(false); setImageLoaded(false); }}>
+        <button onClick={() => {
+          setImageError(false);
+          setImageLoaded(false);
+          setRetryCount(c => c + 1); // Force remount to reload image
+        }}>
           Retry
         </button>
       </div>
@@ -512,7 +521,9 @@ const SolarLayout = ({ panels, mode }) => {
 
   return (
     <div style={{ position: 'relative', width: '100%' }}>
+      {/* Key forces remount on retry, triggering new image request */}
       <img
+        key={retryCount}
         ref={imgRef}
         src="/layout.png"
         alt="Solar panel layout"
