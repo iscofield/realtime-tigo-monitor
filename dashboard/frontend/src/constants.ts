@@ -1,0 +1,27 @@
+// Layout image dimensions (from assets/layout.png)
+export const LAYOUT_WIDTH = 1526;
+export const LAYOUT_HEIGHT = 2131;
+
+// Zoom configuration
+export const MIN_ZOOM = 0.25;  // 25%
+export const MAX_ZOOM = 2.0;   // 200%
+export const ZOOM_STEP = 0.25; // 25 percentage points
+
+// UI measurements (measured from current implementation)
+export const HEADER_HEIGHT = 50;           // Sticky header with ModeToggle
+export const TAB_HEIGHT_DESKTOP = 48;      // Desktop tab navigation
+export const TAB_HEIGHT_MOBILE = 56;       // Mobile bottom tab bar
+export const VIEWPORT_PADDING = 16;        // Padding on all sides
+export const SCROLLBAR_WIDTH = 17;         // Standard scrollbar width (Windows/Linux)
+// Note: macOS uses overlay scrollbars (0px width) by default. This constant
+// may over-compensate on Mac, resulting in slightly conservative fit zoom.
+
+// Mobile breakpoint (matches useMediaQuery)
+export const MOBILE_BREAKPOINT = 767;
+
+// Wheel zoom input handling
+export const WHEEL_DELTA_PER_STEP = 100;  // Pixels of scroll delta per zoom step
+export const WHEEL_DEBOUNCE_MS = 50;       // Debounce interval for wheel events
+
+// Pinch gesture handling
+export const PINCH_THRESHOLD_PX = 10;  // Min distance change before treating as pinch vs pan
