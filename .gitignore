@@ -2,6 +2,13 @@
 .DS_Store
 ._*
 
+# SMB/NAS temp files
+.smbdelete*
+.smb*
+
+# Claude Code
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]
