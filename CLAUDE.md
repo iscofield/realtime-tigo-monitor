@@ -12,7 +12,7 @@ This repository contains two independent services that work together:
 
 ### 1. Tigo MQTT Service (taptap-mqtt)
 
-**Location:** `tigo_docker/`
+**Location:** `tigo-mqtt/`
 
 **Purpose:** Reads raw data from Tigo CCA (Cloud Connect Advanced) devices via serial connection and publishes panel metrics to MQTT.
 
@@ -24,11 +24,11 @@ This repository contains two independent services that work together:
 
 **Runtime:** Always on Raspberry Pi (<PI_HOST>) - requires physical serial connections to CCA devices
 
-**Docker Compose:** `tigo_docker/docker-compose.yml`
+**Docker Compose:** `tigo-mqtt/docker-compose.yml`
 
 ### 2. Dashboard Service (frontend + backend)
 
-**Location:** `frontend/` and `backend/`
+**Location:** `dashboard/`
 
 **Purpose:** Web-based visualization dashboard showing real-time solar panel status overlaid on a layout image.
 
@@ -40,7 +40,7 @@ This repository contains two independent services that work together:
 - Development/Testing: Local machine via Docker
 - Production: Server via Docker
 
-**Docker Compose:** `docker-compose.yml` (project root)
+**Docker Compose:** `dashboard/docker-compose.yml`
 
 ## Architecture Diagram
 
@@ -89,7 +89,7 @@ This repository contains two independent services that work together:
 
 **Important:**
 - The Tigo MQTT service ALWAYS runs on the Raspberry Pi, even during testing. It requires physical serial connections to the Tigo CCA devices.
-- For Dashboard testing, use `docker compose` locally. Do NOT run `npm run dev` or similar outside of Docker.
+- For Dashboard testing, use `docker compose` locally from the `dashboard/` directory. Do NOT run `npm run dev` or similar outside of Docker.
 - Production deployment runs the Dashboard on a separate server via Docker.
 
 ## Technology Stack
@@ -103,25 +103,29 @@ This repository contains two independent services that work together:
 
 ```
 solar_tigo_viewer/
-├── backend/              # Dashboard backend (FastAPI)
-│   ├── app/              # Application code
-│   └── Dockerfile
-├── frontend/             # Dashboard frontend (React)
-│   ├── src/
-│   └── Dockerfile
-├── tigo_docker/          # Tigo MQTT service (runs on Pi)
+├── dashboard/                # Dashboard service
+│   ├── backend/              # FastAPI backend
+│   │   ├── app/              # Application code
+│   │   └── Dockerfile
+│   ├── frontend/             # React frontend
+│   │   ├── src/
+│   │   └── Dockerfile
+│   ├── docker-compose.yml    # Dashboard orchestration
+│   └── docker-compose.test.yml
+├── tigo-mqtt/                # Tigo MQTT service (runs on Pi)
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   ├── config-primary.ini
-│   └── config-secondary.ini
-├── config/               # Shared configuration
+│   ├── config-secondary.ini
+│   ├── data/                 # State files (primary/secondary)
+│   └── temp-id-monitor/      # Temp ID monitoring service
+├── config/                   # Shared configuration
 │   └── panel_mapping.json
-├── assets/               # Static assets
+├── assets/                   # Static assets
 │   └── layout.png
-├── docs/                 # Documentation
-│   ├── specs/            # Feature specifications
-│   └── taptap-docker-testing.md
-└── docker-compose.yml    # Dashboard service compose
+└── docs/                     # Documentation
+    ├── specs/                # Feature specifications
+    └── guides/               # Setup and testing guides
 ```
 
 ## Testing
@@ -132,6 +136,7 @@ solar_tigo_viewer/
 
 ```bash
 # Build and run the dashboard locally via Docker
+cd dashboard
 docker compose up --build
 
 # Access at http://localhost:5174
@@ -139,6 +144,8 @@ docker compose up --build
 
 #### Running Unit Tests (via Docker)
 ```bash
+cd dashboard
+
 # Frontend unit tests - run inside the frontend container
 docker compose exec frontend npm run test
 
@@ -157,7 +164,7 @@ The Playwright MCP provides browser automation tools:
 - etc.
 
 To run e2e tests:
-1. Start the Docker services: `docker compose up --build -d`
+1. Start the Docker services: `cd dashboard && docker compose up --build -d`
 2. Use the Playwright MCP tools to interact with http://localhost:5174
 
 ### Troubleshooting Playwright MCP
@@ -224,7 +231,7 @@ echo "Playwright MCP reset complete - retry your commands"
 ```
 
 ### Tigo MQTT Service Testing
-See `docs/taptap-docker-testing.md` for detailed instructions on testing the taptap-mqtt containers on the Raspberry Pi.
+See `docs/guides/taptap-docker-testing.md` for detailed instructions on testing the taptap-mqtt containers on the Raspberry Pi.
 
 ## Notes
 
