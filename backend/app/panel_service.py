@@ -44,6 +44,7 @@ class PanelService:
             self.panel_state[panel.display_label] = PanelData(
                 display_label=panel.display_label,
                 string=panel.string,
+                sn=panel.sn,
                 watts=old.watts if old else None,
                 voltage=old.voltage if old else None,
                 online=old.online if old else True,

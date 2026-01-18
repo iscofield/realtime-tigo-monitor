@@ -34,6 +34,7 @@ class PanelMapping(BaseModel):
 class PanelData(BaseModel):
     display_label: str
     string: str
+    sn: str  # Serial number for display
     watts: Optional[float] = None
     voltage: Optional[float] = None
     online: bool = True

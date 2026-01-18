@@ -2,7 +2,7 @@ import type { CSSProperties } from 'react';
 import type { PanelData } from '../hooks/useWebSocket';
 import { interpolateColor, calculatePercentage, MAX_WATTS, MAX_VOLTAGE } from '../utils/colors';
 
-export type DisplayMode = 'watts' | 'voltage';
+export type DisplayMode = 'watts' | 'voltage' | 'sn';
 
 interface PanelOverlayProps {
   panel: PanelData;
@@ -38,7 +38,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
     top: `${panel.position.y_percent}%`,
   };
 
-  // Handle offline panels (FR-2.8)
+  // Handle offline panels (FR-2.8) - show red X icon instead of text
   if (!panel.online) {
     return (
       <div
@@ -46,7 +46,27 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
         style={{ ...offlineStyle, ...positionStyle }}
       >
         <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
-        <div>OFFLINE</div>
+        <div style={{ color: '#ff4444', fontSize: '1.2em', fontWeight: 'bold' }}>✕</div>
+      </div>
+    );
+  }
+
+  // Handle SN mode - display last 4 characters of serial number
+  if (mode === 'sn') {
+    const snLast4 = panel.sn ? panel.sn.slice(-4) : '----';
+    const staleOpacity = panel.stale ? 0.5 : 1;
+    return (
+      <div
+        data-testid={`panel-${panel.display_label}`}
+        style={{
+          ...baseStyle,
+          ...positionStyle,
+          backgroundColor: '#4a90d9',
+          opacity: staleOpacity,
+        }}
+      >
+        <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
+        <div>{snLast4}</div>
       </div>
     );
   }
