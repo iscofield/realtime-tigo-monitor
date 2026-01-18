@@ -1,0 +1,85 @@
+# Note: 'version' key is deprecated in Docker Compose v2+ but included for
+# backward compatibility with older Docker Compose versions
+version: '3.8'
+
+services:
+  taptap-primary:
+    build: .
+    container_name: taptap-primary
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 256m
+    group_add:
+      - dialout
+    env_file:
+      - .env
+    devices:
+      - /dev/ttyACM2
+    volumes:
+      - ./config-primary.ini:/app/config-template.ini:ro
+      - ./data/primary:/data
+      - ./run/primary:/run/taptap
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  taptap-secondary:
+    build: .
+    container_name: taptap-secondary
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 256m
+    group_add:
+      - dialout
+    env_file:
+      - .env
+    devices:
+      - /dev/ttyACM3
+    volumes:
+      - ./config-secondary.ini:/app/config-template.ini:ro
+      - ./data/secondary:/data
+      - ./run/secondary:/run/taptap
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test -f /run/taptap/taptap.run && find /run/taptap/taptap.run -mmin -2 | grep -q ."]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+  temp-id-monitor:
+    build: ./temp-id-monitor
+    container_name: temp-id-monitor
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      # Container names to monitor
+      - PRIMARY_CONTAINER=taptap-primary
+      - SECONDARY_CONTAINER=taptap-secondary
+      # For single-inverter setup, set ENABLE_SECONDARY=false instead of SECONDARY_CONTAINER
+      # - ENABLE_SECONDARY=false
+    volumes:
+      # Docker socket required for log monitoring
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - taptap-primary
+      - taptap-secondary
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

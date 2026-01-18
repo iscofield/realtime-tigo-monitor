@@ -1,0 +1,31 @@
+services:
+  backend-test:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    volumes:
+      - ../config/panel_mapping.json:/app/config/panel_mapping.json:ro
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8000"
+    environment:
+      - USE_MOCK_DATA=true
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ../config/panel_mapping.json:/app/config/panel_mapping.json:ro
+      - ../assets/layout.png:/app/static/layout.png:ro
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_WS_URL=ws://localhost:8080/ws/panels
+    ports:
+      - "5174:80"
+    depends_on:
+      - backend
