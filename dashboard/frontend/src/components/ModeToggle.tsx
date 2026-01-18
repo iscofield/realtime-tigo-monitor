@@ -39,7 +39,7 @@ const inactiveStyle: CSSProperties = {
 const modes: { value: DisplayMode; label: string }[] = [
   { value: 'watts', label: 'Watts' },
   { value: 'voltage', label: 'Voltage' },
-  { value: 'sn', label: 'SN' },
+  { value: 'sn', label: 'SN (last 4)' },
 ];
 
 export function ModeToggle({ mode, setMode }: ModeToggleProps) {
