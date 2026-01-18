@@ -2,6 +2,17 @@
 
 This guide documents how to deploy, test, and iterate on the taptap-mqtt Docker containers on the Raspberry Pi.
 
+## Important: Deployment Architecture
+
+The taptap-mqtt containers (tigo_docker) **always run on the Raspberry Pi**, even during testing. This is because they require physical serial connections to the Tigo CCA devices.
+
+For frontend/backend testing:
+- Use `docker compose up --build` from the project root to run locally via Docker
+- Do NOT run `npm run dev` or similar commands outside of Docker
+- Production deployment runs on a separate server via Docker
+
+See the main `CLAUDE.md` for the full architecture overview.
+
 ## Environment
 
 | Component | Value |

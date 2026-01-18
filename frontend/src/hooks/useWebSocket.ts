@@ -8,6 +8,7 @@ export interface Position {
 export interface PanelData {
   display_label: string;
   string: string;
+  sn: string;
   watts: number | null;
   voltage: number | null;
   online: boolean;
