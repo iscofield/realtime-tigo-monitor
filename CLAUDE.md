@@ -134,6 +134,25 @@ solar_tigo_viewer/
 
 **IMPORTANT:** All frontend/backend testing is done via Docker. Do NOT run `npm` commands directly on the host machine.
 
+**CRITICAL:** After making ANY changes to frontend or backend code, you MUST rebuild and redeploy the Docker containers before testing or considering the task complete:
+
+```bash
+cd dashboard
+docker compose up --build -d
+```
+
+This applies to:
+- Any TypeScript/React changes in `dashboard/frontend/src/`
+- Any Python changes in `dashboard/backend/app/`
+- CSS or asset changes
+- Configuration changes
+
+**Standard workflow after code changes:**
+1. Make code changes
+2. Rebuild containers: `cd dashboard && docker compose up --build -d`
+3. Test via Playwright MCP or browser
+4. Commit and push
+
 ```bash
 # Build and run the dashboard locally via Docker
 cd dashboard
