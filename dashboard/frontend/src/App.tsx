@@ -2,6 +2,7 @@ import { useState, useLayoutEffect, useCallback, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useMediaQuery } from './hooks/useMediaQuery';
+import { getInitialStateFromUrl, useUrlParamsSync } from './hooks/useUrlParams';
 import { SolarLayout } from './components/SolarLayout';
 import { ModeToggle } from './components/ModeToggle';
 import { ConnectionStatusDisplay } from './components/ConnectionStatus';
@@ -16,6 +17,9 @@ import {
   TAB_HEIGHT_MOBILE, VIEWPORT_PADDING, SCROLLBAR_WIDTH, MIN_ZOOM,
   MAX_ZOOM, ZOOM_STEP, MOBILE_BREAKPOINT
 } from './constants';
+
+// Get initial state from URL parameters (or defaults)
+const initialState = getInitialStateFromUrl();
 
 const appStyle: CSSProperties = {
   minHeight: '100vh',
@@ -47,12 +51,15 @@ const layoutContainerStyle: CSSProperties = {
 };
 
 function App() {
-  // FR-4.5: Default mode is Watts
-  const [mode, setMode] = useState<DisplayMode>('watts');
-  // FR-1.5: Default tab is Layout
-  const [activeTab, setActiveTab] = useState<TabType>('layout');
+  // FR-4.5: Default mode is Watts (or from URL params)
+  const [mode, setMode] = useState<DisplayMode>(initialState.mode);
+  // FR-1.5: Default tab is Layout (or from URL params)
+  const [activeTab, setActiveTab] = useState<TabType>(initialState.view);
   const { panels, status, error, retry } = useWebSocket();
   const isMobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+
+  // Sync view and mode state with URL parameters
+  useUrlParamsSync(activeTab, mode);
 
   // Zoom state
   const [zoom, setZoom] = useState<number>(1); // 1 = 100%
