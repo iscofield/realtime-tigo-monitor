@@ -1,0 +1,8 @@
+/* scroll-container touch-action styles */
+.scroll-container {
+  touch-action: pan-x pan-y;
+  /* pan-x pan-y enables: one-finger scroll (pan), two-finger pan
+     Disables: browser pinch-zoom, double-tap zoom
+     Our custom pinch handler (usePinchZoom) takes over pinch gestures.
+     Safari requires this on the scroll container itself, not a parent. */
+}
