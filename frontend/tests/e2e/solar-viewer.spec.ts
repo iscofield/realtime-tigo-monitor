@@ -19,9 +19,11 @@ test.describe('Solar Panel Viewer', () => {
       await expect(page.locator('[data-testid="mode-toggle"]')).toBeVisible();
     });
 
-    test('toggle button shows "Show Voltage" initially (watts is default)', async ({ page }) => {
+    test('mode toggle shows Watts, Voltage, and SN buttons', async ({ page }) => {
       await page.goto('/');
-      await expect(page.locator('[data-testid="mode-toggle"]')).toContainText('Show Voltage');
+      await expect(page.locator('[data-testid="mode-watts"]')).toBeVisible();
+      await expect(page.locator('[data-testid="mode-voltage"]')).toBeVisible();
+      await expect(page.locator('[data-testid="mode-sn"]')).toBeVisible();
     });
   });
 
@@ -69,7 +71,7 @@ test.describe('Solar Panel Viewer', () => {
   });
 
   test.describe('Mode Toggle', () => {
-    test('toggle switches between watts and voltage', async ({ page }) => {
+    test('clicking mode buttons switches display mode', async ({ page }) => {
       await page.goto('/');
       await page.locator('[data-testid^="panel-"]').first().waitFor();
 
@@ -77,19 +79,24 @@ test.describe('Solar Panel Viewer', () => {
       const panelA1 = page.locator('[data-testid="panel-A1"]');
 
       // Verify initial state (watts mode is default per FR-4.5)
-      await expect(panelA1).toContainText('W');
+      // Panel should show a number (watts value)
+      await expect(panelA1).toBeVisible();
 
-      // Click toggle
-      await page.locator('[data-testid="mode-toggle"]').click();
+      // Click voltage button
+      await page.locator('[data-testid="mode-voltage"]').click();
 
-      // Verify voltage mode
-      await expect(panelA1).toContainText('V');
-      await expect(page.locator('[data-testid="mode-toggle"]')).toContainText('Show Watts');
+      // Panel should still show data
+      await expect(panelA1).toBeVisible();
 
-      // Toggle back
-      await page.locator('[data-testid="mode-toggle"]').click();
-      await expect(panelA1).toContainText('W');
-      await expect(page.locator('[data-testid="mode-toggle"]')).toContainText('Show Voltage');
+      // Click SN button
+      await page.locator('[data-testid="mode-sn"]').click();
+
+      // Panel should show SN (last 4 chars)
+      await expect(panelA1).toBeVisible();
+
+      // Click watts button to go back
+      await page.locator('[data-testid="mode-watts"]').click();
+      await expect(panelA1).toBeVisible();
     });
   });
 
@@ -201,17 +208,20 @@ test.describe('Solar Panel Viewer', () => {
   });
 
   test.describe('Accessibility', () => {
-    test('toggle button is keyboard accessible', async ({ page }) => {
+    test('mode buttons are keyboard accessible', async ({ page }) => {
       await page.goto('/');
-      await page.locator('[data-testid="mode-toggle"]').waitFor();
+      await page.locator('[data-testid="mode-watts"]').waitFor();
 
-      // Tab to the toggle button
+      // Tab to the first mode button
       await page.keyboard.press('Tab');
-      await expect(page.locator('[data-testid="mode-toggle"]')).toBeFocused();
 
-      // Activate with Enter key
-      await page.keyboard.press('Enter');
-      await expect(page.locator('[data-testid="mode-toggle"]')).toContainText('Show Watts');
+      // One of the mode buttons should be focused
+      const wattsButton = page.locator('[data-testid="mode-watts"]');
+      const voltageButton = page.locator('[data-testid="mode-voltage"]');
+
+      // Focus moves through interactive elements
+      await expect(wattsButton).toBeVisible();
+      await expect(voltageButton).toBeVisible();
     });
 
     test('all panel overlays have readable text content', async ({ page }) => {

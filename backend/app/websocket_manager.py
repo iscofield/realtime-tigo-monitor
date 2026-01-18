@@ -38,7 +38,11 @@ class ConnectionManager:
             logger.info(f"WebSocket client disconnected: {client_info}")
 
     async def broadcast(self, panels: list[PanelData]) -> None:
-        """Broadcast panel data to all connected clients (FR-3.4)."""
+        """Broadcast panel data to all connected clients (FR-3.4).
+
+        Uses by_alias=True for backward compatibility during migration (FR-M.5).
+        This outputs 'voltage' instead of 'voltage_in'.
+        """
         if not self.active_connections:
             return
 
@@ -46,7 +50,7 @@ class ConnectionManager:
             timestamp=datetime.now(timezone.utc).isoformat(),
             panels=panels,
         )
-        message_dict = message.model_dump()
+        message_dict = message.model_dump(by_alias=True)
 
         # Collect failed connections to avoid modifying list while iterating
         failed_connections: list[WebSocket] = []

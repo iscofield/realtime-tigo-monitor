@@ -127,11 +127,100 @@ solar_tigo_viewer/
 ## Testing
 
 ### Dashboard Service Testing
+
+**IMPORTANT:** All frontend/backend testing is done via Docker. Do NOT run `npm` commands directly on the host machine.
+
 ```bash
-# Run locally via Docker (preferred)
+# Build and run the dashboard locally via Docker
 docker compose up --build
 
 # Access at http://localhost:5174
+```
+
+#### Running Unit Tests (via Docker)
+```bash
+# Frontend unit tests - run inside the frontend container
+docker compose exec frontend npm run test
+
+# Backend unit tests
+docker compose exec backend pytest
+```
+
+#### Running E2E Tests
+**IMPORTANT:** Use the Playwright MCP server for e2e testing. NEVER install Playwright locally or in Docker.
+
+The Playwright MCP provides browser automation tools:
+- `mcp__playwright__browser_navigate` - Navigate to URLs
+- `mcp__playwright__browser_snapshot` - Capture accessibility snapshots
+- `mcp__playwright__browser_click` - Click elements
+- `mcp__playwright__browser_type` - Type text
+- etc.
+
+To run e2e tests:
+1. Start the Docker services: `docker compose up --build -d`
+2. Use the Playwright MCP tools to interact with http://localhost:5174
+
+### Troubleshooting Playwright MCP
+
+#### "Browser is already in use" Error
+
+This error occurs when Playwright MCP's internal state gets stuck, often after a browser crash, improper close, or interrupted session. Symptoms include:
+- Error: `Browser is already in use for /Users/.../ms-playwright/mcp-chrome-*`
+- New blank Chrome tabs keep opening
+- Browser commands fail or hang
+
+**Solution: Clear the MCP Chrome cache**
+
+```bash
+# Clear the MCP browser cache directory
+rm -rf ~/Library/Caches/ms-playwright/mcp-chrome-*
+
+# Then retry your Playwright commands
+```
+
+**Alternative solutions (if cache clear doesn't work):**
+
+```bash
+# 1. Kill any orphaned MCP Chrome processes
+pkill -f "mcp-chrome"
+
+# 2. Check for and remove lock files
+find ~/Library/Caches/ms-playwright -name "*lock*" -delete
+
+# 3. Full cache reset (last resort)
+rm -rf ~/Library/Caches/ms-playwright/
+# Note: This will require Playwright to re-download browser binaries
+```
+
+**Prevention tips:**
+- Always use `browser_close` when done with Playwright testing
+- If a session is interrupted, clear the cache before starting a new one
+- Don't run multiple Playwright MCP sessions simultaneously
+
+#### Browser Commands Hang or Timeout
+
+If browser commands hang without the "already in use" error:
+
+```bash
+# Check for running Chrome processes
+ps aux | grep -i chrome | grep mcp
+
+# Kill any stuck processes
+pkill -9 -f "mcp-chrome"
+
+# Clear cache and retry
+rm -rf ~/Library/Caches/ms-playwright/mcp-chrome-*
+```
+
+#### Quick Recovery Workflow
+
+When Playwright MCP stops working, run this sequence:
+
+```bash
+# Full reset sequence
+pkill -f "mcp-chrome" 2>/dev/null || true
+rm -rf ~/Library/Caches/ms-playwright/mcp-chrome-*
+echo "Playwright MCP reset complete - retry your commands"
 ```
 
 ### Tigo MQTT Service Testing
