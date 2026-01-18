@@ -296,6 +296,10 @@ git push
 - After completing and testing a feature, proactively offer to commit and push
 - Example: "The collapsible table feature is complete and tested. Would you like me to commit and push these changes?"
 
+## Restricted Files
+
+- **`docs/TODOs.md`** - Do NOT modify this file. Only the user should edit it. You may commit it when the user has made changes, but never add, remove, or change its contents.
+
 ## Notes
 
 - Reference `assets/layout.png` for the visual design of the solar array grid
