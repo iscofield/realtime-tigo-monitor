@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import List
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,22 +32,50 @@ mqtt_client: MQTTClient | None = None
 
 
 async def handle_mqtt_message(data: dict) -> None:
-    """Handle incoming MQTT message and update panel state."""
+    """Handle incoming MQTT message and update panel state (FR-7.3)."""
     node_serial = data.get("node_serial")
     if not node_serial:
         return
 
     online = data.get("state_online", "online") == "online"
 
+    # Pass all available fields from MQTT to panel service
     panel_service.update_panel(
         sn=node_serial,
         watts=data.get("power"),
-        voltage=data.get("voltage_in"),
+        voltage_in=data.get("voltage_in"),
+        voltage_out=data.get("voltage_out"),
+        current_in=data.get("current_in"),
+        current_out=data.get("current_out"),
+        temperature=data.get("temperature"),
+        duty_cycle=data.get("duty_cycle"),
+        rssi=data.get("rssi"),
+        energy=data.get("energy"),
         online=online,
         timestamp=data.get("timestamp"),
+        node_id=data.get("node_id"),
+        actual_system=data.get("source_system"),
     )
 
     # Queue update for WebSocket broadcast
+    panels = panel_service.get_all_panels()
+    await ws_manager.queue_update(panels)
+
+
+async def handle_temp_nodes(system: str, node_ids: List[int]) -> None:
+    """Handle temp_nodes MQTT message and update panel is_temporary flags (FR-5.4)."""
+    panel_service.update_temp_nodes(system, node_ids)
+
+    # Queue update for WebSocket broadcast to reflect is_temporary changes
+    panels = panel_service.get_all_panels()
+    await ws_manager.queue_update(panels)
+
+
+async def handle_node_mappings(system: str, mappings: dict) -> None:
+    """Handle node_mappings MQTT message and update panel node_id values."""
+    panel_service.update_node_mappings(system, mappings)
+
+    # Queue update for WebSocket broadcast to reflect node_id changes
     panels = panel_service.get_all_panels()
     await ws_manager.queue_update(panels)
 
@@ -90,8 +119,12 @@ async def lifespan(app: FastAPI):
         # Start periodic refresh for hot-reload during calibration
         mock_refresh_task = asyncio.create_task(mock_refresh_loop())
     else:
-        # Start MQTT client
-        mqtt_client = MQTTClient(on_message=handle_mqtt_message)
+        # Start MQTT client with state, temp_nodes, and node_mappings handlers
+        mqtt_client = MQTTClient(
+            on_message=handle_mqtt_message,
+            on_temp_nodes=handle_temp_nodes,
+            on_node_mappings=handle_node_mappings,
+        )
         await mqtt_client.start()
         logger.info("MQTT client started")
 
@@ -243,9 +276,13 @@ async def reload_config():
 
 @app.get("/api/panels")
 async def get_panels():
-    """Get current state of all panels (REST fallback)."""
+    """Get current state of all panels (REST fallback).
+
+    Uses by_alias=True for backward compatibility during migration (FR-M.5).
+    This outputs 'voltage' instead of 'voltage_in'.
+    """
     panels = panel_service.get_all_panels()
-    return {"panels": [p.model_dump() for p in panels]}
+    return {"panels": [p.model_dump(by_alias=True) for p in panels]}
 
 
 @app.websocket("/ws/panels")

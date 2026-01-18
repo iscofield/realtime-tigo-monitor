@@ -58,3 +58,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 120s
+
+  temp-id-monitor:
+    build: ./temp-id-monitor
+    container_name: temp-id-monitor
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      # Container names to monitor
+      - PRIMARY_CONTAINER=taptap-primary
+      - SECONDARY_CONTAINER=taptap-secondary
+      # For single-inverter setup, set ENABLE_SECONDARY=false instead of SECONDARY_CONTAINER
+      # - ENABLE_SECONDARY=false
+    volumes:
+      # Docker socket required for log monitoring
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - taptap-primary
+      - taptap-secondary
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

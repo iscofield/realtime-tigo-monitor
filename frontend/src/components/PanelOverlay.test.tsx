@@ -6,6 +6,7 @@ import type { PanelData } from '../hooks/useWebSocket';
 const createMockPanel = (overrides: Partial<PanelData> = {}): PanelData => ({
   display_label: 'A1',
   string: 'A',
+  system: 'primary',
   sn: 'C3F23CR',
   watts: 100,
   voltage: 45,

@@ -38,8 +38,23 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
     top: `${panel.position.y_percent}%`,
   };
 
-  // Handle offline panels (FR-2.8) - show red X icon instead of text
-  if (!panel.online) {
+  // Handle offline panels (FR-2.8)
+  // online defaults to true if not provided
+  if (panel.online === false) {
+    // In SN mode, show serial number even when offline (SN is static config data)
+    if (mode === 'sn') {
+      const snLast4 = panel.sn ? panel.sn.slice(-4) : '----';
+      return (
+        <div
+          data-testid={`panel-${panel.display_label}`}
+          style={{ ...offlineStyle, ...positionStyle }}
+        >
+          <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
+          <div>{snLast4}</div>
+        </div>
+      );
+    }
+    // For other modes, show red X icon
     return (
       <div
         data-testid={`panel-${panel.display_label}`}
@@ -54,7 +69,8 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
   // Handle SN mode - display last 4 characters of serial number
   if (mode === 'sn') {
     const snLast4 = panel.sn ? panel.sn.slice(-4) : '----';
-    const staleOpacity = panel.stale ? 0.5 : 1;
+    // stale defaults to false if not provided
+    const staleOpacity = panel.stale === true ? 0.5 : 1;
     return (
       <div
         data-testid={`panel-${panel.display_label}`}
@@ -72,7 +88,9 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
   }
 
   // Get value based on display mode (FR-3.3)
-  const value = mode === 'watts' ? panel.watts : panel.voltage;
+  // FR-M.2: Accept both voltage and voltage_in for transition period
+  const voltage = panel.voltage_in ?? panel.voltage;
+  const value = mode === 'watts' ? panel.watts : voltage;
   const maxValue = mode === 'watts' ? MAX_WATTS : MAX_VOLTAGE;
 
   // Handle no data received yet (FR-4.7)
@@ -97,7 +115,8 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
     : value.toFixed(1);
 
   // Apply stale styling (FR-4.7: 50% opacity + ⏱ indicator)
-  const staleOpacity = panel.stale ? 0.5 : 1;
+  // stale defaults to false if not provided
+  const staleOpacity = panel.stale === true ? 0.5 : 1;
 
   return (
     <div

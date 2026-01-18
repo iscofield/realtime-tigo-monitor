@@ -7,13 +7,27 @@ export interface Position {
 
 export interface PanelData {
   display_label: string;
+  tigo_label?: string;
   string: string;
+  system: string;
   sn: string;
-  watts: number | null;
-  voltage: number | null;
-  online: boolean;
-  stale: boolean;
+  node_id?: string;
+  watts?: number | null;
+  voltage_in?: number | null;
+  voltage_out?: number | null;
+  current_in?: number | null;
+  current_out?: number | null;
+  temperature?: number | null;
+  duty_cycle?: number | null;
+  rssi?: number | null;
+  energy?: number | null;
+  online?: boolean;
+  stale?: boolean;
+  is_temporary?: boolean;
+  actual_system?: string;  // Which CCA actually sent data for this panel
   position: Position;
+  // Backward compatibility: accept voltage as alias for voltage_in
+  voltage?: number | null;
 }
 
 export interface WebSocketMessage {

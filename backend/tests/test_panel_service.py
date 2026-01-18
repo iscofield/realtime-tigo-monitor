@@ -62,14 +62,14 @@ class TestPanelService:
         result = service.update_panel(
             sn="4-C3F23CR",
             watts=385.0,
-            voltage=42.5,
+            voltage_in=42.5,
             online=True
         )
         assert result is True
 
         panel_data = service.panel_state["A1"]
         assert panel_data.watts == 385.0
-        assert panel_data.voltage == 42.5
+        assert panel_data.voltage_in == 42.5
 
     def test_update_unknown_panel(self, valid_panel_mapping):
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -80,12 +80,12 @@ class TestPanelService:
         service.load_config()
 
         # First call logs the warning
-        result1 = service.update_panel(sn="unknown-sn", watts=100.0, voltage=45.0)
+        result1 = service.update_panel(sn="unknown-sn", watts=100.0, voltage_in=45.0)
         assert result1 is False
         assert "unknown-sn" in service.unknown_serials_logged
 
         # Second call should not log again (already logged)
-        result2 = service.update_panel(sn="unknown-sn", watts=100.0, voltage=45.0)
+        result2 = service.update_panel(sn="unknown-sn", watts=100.0, voltage_in=45.0)
         assert result2 is False
 
     def test_staleness_detection(self, valid_panel_mapping):
@@ -97,7 +97,7 @@ class TestPanelService:
         service.load_config()
 
         # Update panel
-        service.update_panel(sn="4-C3F23CR", watts=385.0, voltage=42.5)
+        service.update_panel(sn="4-C3F23CR", watts=385.0, voltage_in=42.5)
 
         # Simulate time passing beyond staleness threshold
         service.last_update["A1"] = datetime.now(timezone.utc) - timedelta(seconds=150)
@@ -129,4 +129,4 @@ class TestPanelService:
         settings = get_settings()
         for panel in service.get_all_panels():
             assert panel.watts == settings.mock_watts
-            assert panel.voltage == settings.mock_voltage
+            assert panel.voltage_in == settings.mock_voltage
