@@ -233,6 +233,50 @@ echo "Playwright MCP reset complete - retry your commands"
 ### Tigo MQTT Service Testing
 See `docs/guides/taptap-docker-testing.md` for detailed instructions on testing the taptap-mqtt containers on the Raspberry Pi.
 
+## Git Workflow
+
+### Committing Changes
+
+**IMPORTANT:** Be proactive about committing and pushing changes to reduce the risk of losing work.
+
+**When to commit:**
+- After completing a feature or bug fix that has been tested and verified
+- After making significant progress on a larger feature (create incremental commits)
+- Before ending a session, if there are uncommitted changes
+
+**How to handle commits with concurrent sessions:**
+
+Since multiple Claude sessions may be working on this repository simultaneously:
+
+1. **Before committing, check what files YOU modified in this session** - only stage and commit those specific files
+2. **Use `git status` to review changes** - be aware that some changes may be from other sessions
+3. **Stage files explicitly** - use `git add <specific-files>` rather than `git add .` or `git add -A`
+4. **If unsure about a file's origin**, ask the user before including it in the commit
+
+**Commit workflow:**
+```bash
+# 1. Check status to see all changes
+git status
+
+# 2. Stage ONLY the files you modified in this session
+git add path/to/file1 path/to/file2
+
+# 3. Commit with a descriptive message
+git commit -m "feat: description of what was implemented"
+
+# 4. Push to remote
+git push
+```
+
+**When to ask for confirmation:**
+- If the feature seems incomplete or may need more user input
+- If you're unsure whether the user wants to commit at this point
+- If there are uncommitted changes from what appear to be other sessions
+
+**Proactive behavior:**
+- After completing and testing a feature, proactively offer to commit and push
+- Example: "The collapsible table feature is complete and tested. Would you like me to commit and push these changes?"
+
 ## Notes
 
 - Reference `assets/layout.png` for the visual design of the solar array grid

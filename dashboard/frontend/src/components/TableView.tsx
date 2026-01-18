@@ -250,6 +250,21 @@ export function TableView({ panels }: TableViewProps) {
     return DEFAULT_COLUMNS;
   });
 
+  const [collapsedStrings, setCollapsedStrings] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('collapsedStrings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return new Set(parsed);
+        }
+      }
+    } catch {
+      // Invalid localStorage data
+    }
+    return new Set();
+  });
+
   // Persist to localStorage
   useEffect(() => {
     try {
@@ -266,6 +281,14 @@ export function TableView({ panels }: TableViewProps) {
       // Ignore storage errors
     }
   }, [visibleColumns]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('collapsedStrings', JSON.stringify([...collapsedStrings]));
+    } catch {
+      // Ignore storage errors
+    }
+  }, [collapsedStrings]);
 
   // Group panels by string's expected inverter (not panel's configured system)
   const grouped = useMemo(() => {
@@ -312,6 +335,32 @@ export function TableView({ panels }: TableViewProps) {
     });
   };
 
+  // Toggle string collapse
+  const toggleStringCollapse = (stringId: string) => {
+    setCollapsedStrings(prev => {
+      const next = new Set(prev);
+      if (next.has(stringId)) {
+        next.delete(stringId);
+      } else {
+        next.add(stringId);
+      }
+      return next;
+    });
+  };
+
+  // Get all string IDs
+  const allStringIds = useMemo(() => {
+    const ids: string[] = [];
+    Object.values(grouped).forEach(systemStrings => {
+      Object.keys(systemStrings).forEach(stringId => ids.push(stringId));
+    });
+    return ids;
+  }, [grouped]);
+
+  // Collapse/expand all
+  const collapseAll = () => setCollapsedStrings(new Set(allStringIds));
+  const expandAll = () => setCollapsedStrings(new Set());
+
   // Get visible column definitions
   const visibleColumnDefs = COLUMN_DEFINITIONS.filter(col => visibleColumns.has(col.key));
 
@@ -355,6 +404,34 @@ export function TableView({ panels }: TableViewProps) {
             </button>
           ))}
         </div>
+
+        {/* Collapse/Expand all buttons */}
+        <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+          <button
+            style={{
+              ...columnToggleButtonStyle,
+              backgroundColor: '#444',
+              color: '#fff',
+              whiteSpace: 'nowrap',
+            }}
+            onClick={expandAll}
+            title="Expand all strings"
+          >
+            Expand All
+          </button>
+          <button
+            style={{
+              ...columnToggleButtonStyle,
+              backgroundColor: '#444',
+              color: '#fff',
+              whiteSpace: 'nowrap',
+            }}
+            onClick={collapseAll}
+            title="Collapse all strings"
+          >
+            Collapse All
+          </button>
+        </div>
       </div>
 
       {/* System sections */}
@@ -378,6 +455,8 @@ export function TableView({ panels }: TableViewProps) {
                     panels={stringPanels}
                     analysis={analysis}
                     visibleColumns={visibleColumnDefs}
+                    collapsed={collapsedStrings.has(stringId)}
+                    onToggleCollapse={() => toggleStringCollapse(stringId)}
                   />
                 );
               })}
@@ -393,9 +472,11 @@ interface StringSectionProps {
   panels: PanelData[];
   analysis: StringAnalysis;
   visibleColumns: ColumnDef[];
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }
 
-function StringSection({ stringId, panels, analysis, visibleColumns }: StringSectionProps) {
+function StringSection({ stringId, panels, analysis, visibleColumns, collapsed, onToggleCollapse }: StringSectionProps) {
   // Calculate string summary
   const summary = useMemo(() => {
     const onlinePanels = panels.filter(p => p.online !== false);
@@ -413,110 +494,149 @@ function StringSection({ stringId, panels, analysis, visibleColumns }: StringSec
     };
   }, [panels]);
 
+  const collapsedHeaderStyle: CSSProperties = {
+    ...stringHeaderStyle,
+    cursor: 'pointer',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    userSelect: 'none',
+  };
+
+  const summaryStatsStyle: CSSProperties = {
+    display: 'flex',
+    gap: '16px',
+    fontSize: '13px',
+    fontWeight: 'normal',
+    color: '#aaa',
+  };
+
+  const chevronStyle: CSSProperties = {
+    transition: 'transform 0.2s ease',
+    transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+    marginRight: '8px',
+  };
+
   return (
     <div style={analysis.hasMismatch ? stringSectionMismatchStyle : stringSectionStyle}>
-      <div style={stringHeaderStyle}>String {stringId}</div>
-
-      {/* Warning banner */}
-      {analysis.warningMessage && (
-        <div style={warningBannerStyle}>
-          {analysis.warningMessage}
+      <div style={collapsedHeaderStyle} onClick={onToggleCollapse}>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <span style={chevronStyle}>&#9660;</span>
+          <span>String {stringId}</span>
         </div>
-      )}
-
-      {analysis.insufficientData && (
-        <div style={{ ...warningBannerStyle, backgroundColor: '#333', color: '#888' }}>
-          Insufficient data for mismatch detection
+        <div style={summaryStatsStyle}>
+          <span>{Math.round(summary.power)}W</span>
+          <span>{summary.voltage.toFixed(1)}V</span>
+          <span>{(summary.current ?? 0).toFixed(2)}A</span>
+          <span>({summary.onlineCount} panels)</span>
         </div>
-      )}
-
-      {/* Table */}
-      <div style={tableWrapperStyle}>
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              {visibleColumns.map((col, idx) => (
-                <th key={col.key} style={idx === 0 ? thStickyStyle : thStyle}>
-                  {col.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {/* Summary row */}
-            <tr style={summaryRowStyle}>
-              {visibleColumns.map((col, idx) => (
-                <td key={col.key} style={idx === 0 ? { ...tdStickyStyle, ...summaryRowStyle } : tdStyle}>
-                  {col.key === 'display_label' && `Summary (${summary.onlineCount}/${summary.totalCount})`}
-                  {col.key === 'voltage_in' && `${summary.voltage.toFixed(1)}V`}
-                  {col.key === 'current_in' && (summary.current != null ? `${summary.current.toFixed(2)}A` : '—')}
-                  {col.key === 'watts' && `${Math.round(summary.power)}W`}
-                </td>
-              ))}
-            </tr>
-
-            {/* Panel rows */}
-            {panels.map(panel => {
-              const mismatchResult = analysis.panels.find(p => p.panelId === panel.display_label);
-              const isMismatched = mismatchResult?.isMismatched ?? false;
-              const isTemporary = panel.is_temporary === true;
-
-              // Check if panel is connected to wrong CCA
-              const expectedSystem = STRING_TO_INVERTER[panel.string];
-              const isWrongCca = panel.actual_system && expectedSystem && panel.actual_system !== expectedSystem;
-
-              let rowStyle: CSSProperties = {};
-              if (isMismatched) {
-                rowStyle = mismatchRowStyle;
-              } else if (isWrongCca) {
-                rowStyle = wrongCcaRowStyle;
-              } else if (isTemporary) {
-                rowStyle = temporaryRowStyle;
-              }
-
-              return (
-                <tr key={panel.display_label} style={rowStyle} data-testid={`panel-row-${panel.display_label}`}>
-                  {visibleColumns.map((col, idx) => {
-                    let value: unknown = (panel as unknown as Record<string, unknown>)[col.key];
-
-                    // Handle voltage_in fallback to voltage
-                    if (col.key === 'voltage_in' && value == null) {
-                      value = panel.voltage;
-                    }
-
-                    let displayValue: string | React.ReactNode;
-                    if (col.key === 'is_temporary') {
-                      displayValue = isTemporary ? (
-                        <span
-                          role="img"
-                          aria-label="Temporarily enumerated - panel ID may be incorrect"
-                          style={tempIndicatorStyle}
-                          title="Panel is temporarily enumerated. ID may change when state file is updated."
-                        >
-                          ⚠
-                        </span>
-                      ) : '';
-                    } else if (col.format) {
-                      displayValue = col.format(value);
-                    } else {
-                      displayValue = value != null ? String(value) : '—';
-                    }
-
-                    return (
-                      <td
-                        key={col.key}
-                        style={idx === 0 ? { ...tdStickyStyle, ...rowStyle } : tdStyle}
-                      >
-                        {displayValue}
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
       </div>
+
+      {/* Content hidden when collapsed */}
+      {!collapsed && (
+        <>
+          {/* Warning banner */}
+          {analysis.warningMessage && (
+            <div style={warningBannerStyle}>
+              {analysis.warningMessage}
+            </div>
+          )}
+
+          {analysis.insufficientData && (
+            <div style={{ ...warningBannerStyle, backgroundColor: '#333', color: '#888' }}>
+              Insufficient data for mismatch detection
+            </div>
+          )}
+
+          {/* Table */}
+          <div style={tableWrapperStyle}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  {visibleColumns.map((col, idx) => (
+                    <th key={col.key} style={idx === 0 ? thStickyStyle : thStyle}>
+                      {col.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Summary row */}
+                <tr style={summaryRowStyle}>
+                  {visibleColumns.map((col, idx) => (
+                    <td key={col.key} style={idx === 0 ? { ...tdStickyStyle, ...summaryRowStyle } : tdStyle}>
+                      {col.key === 'display_label' && `Summary (${summary.onlineCount}/${summary.totalCount})`}
+                      {col.key === 'voltage_in' && `${summary.voltage.toFixed(1)}V`}
+                      {col.key === 'current_in' && (summary.current != null ? `${summary.current.toFixed(2)}A` : '—')}
+                      {col.key === 'watts' && `${Math.round(summary.power)}W`}
+                    </td>
+                  ))}
+                </tr>
+
+                {/* Panel rows */}
+                {panels.map(panel => {
+                  const mismatchResult = analysis.panels.find(p => p.panelId === panel.display_label);
+                  const isMismatched = mismatchResult?.isMismatched ?? false;
+                  const isTemporary = panel.is_temporary === true;
+
+                  // Check if panel is connected to wrong CCA
+                  const expectedSystem = STRING_TO_INVERTER[panel.string];
+                  const isWrongCca = panel.actual_system && expectedSystem && panel.actual_system !== expectedSystem;
+
+                  let rowStyle: CSSProperties = {};
+                  if (isMismatched) {
+                    rowStyle = mismatchRowStyle;
+                  } else if (isWrongCca) {
+                    rowStyle = wrongCcaRowStyle;
+                  } else if (isTemporary) {
+                    rowStyle = temporaryRowStyle;
+                  }
+
+                  return (
+                    <tr key={panel.display_label} style={rowStyle} data-testid={`panel-row-${panel.display_label}`}>
+                      {visibleColumns.map((col, idx) => {
+                        let value: unknown = (panel as unknown as Record<string, unknown>)[col.key];
+
+                        // Handle voltage_in fallback to voltage
+                        if (col.key === 'voltage_in' && value == null) {
+                          value = panel.voltage;
+                        }
+
+                        let displayValue: string | React.ReactNode;
+                        if (col.key === 'is_temporary') {
+                          displayValue = isTemporary ? (
+                            <span
+                              role="img"
+                              aria-label="Temporarily enumerated - panel ID may be incorrect"
+                              style={tempIndicatorStyle}
+                              title="Panel is temporarily enumerated. ID may change when state file is updated."
+                            >
+                              ⚠
+                            </span>
+                          ) : '';
+                        } else if (col.format) {
+                          displayValue = col.format(value);
+                        } else {
+                          displayValue = value != null ? String(value) : '—';
+                        }
+
+                        return (
+                          <td
+                            key={col.key}
+                            style={idx === 0 ? { ...tdStickyStyle, ...rowStyle } : tdStyle}
+                          >
+                            {displayValue}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 }
