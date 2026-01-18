@@ -11,7 +11,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8080:8000"
+      - "3050:8000"
     environment:
       - USE_MOCK_DATA=true
       - LOG_LEVEL=DEBUG
@@ -24,7 +24,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_WS_URL=ws://localhost:8080/ws/panels
+        - VITE_WS_URL=ws://localhost:3050/ws/panels
     ports:
       - "5174:80"
     depends_on:

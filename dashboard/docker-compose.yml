@@ -4,7 +4,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8080:8000"
+      - "3050:8000"
     env_file:
       - ./backend/.env
     environment:
@@ -26,8 +26,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_WS_URL=ws://localhost:8080/ws/panels
-        - VITE_API_BASE=http://localhost:8080
+        - VITE_WS_URL=ws://localhost:3050/ws/panels
+        - VITE_API_BASE=http://localhost:3050
     ports:
       - "5174:80"
     depends_on:
