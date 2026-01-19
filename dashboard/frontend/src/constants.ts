@@ -7,6 +7,10 @@ export const MIN_ZOOM = 0.25;  // 25%
 export const MAX_ZOOM = 2.0;   // 200%
 export const ZOOM_STEP = 0.25; // 25 percentage points
 
+// Content padding for pan clearance around UI overlays
+// At 0.25x zoom: 37.5px visual padding, at 2x zoom: 300px
+export const CONTENT_PADDING = 150;
+
 // UI measurements (measured from current implementation)
 export const HEADER_HEIGHT = 50;           // Sticky header with ModeToggle
 export const TAB_HEIGHT_DESKTOP = 48;      // Desktop tab navigation

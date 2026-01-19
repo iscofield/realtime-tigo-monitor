@@ -1,14 +1,25 @@
-import type { CSSProperties } from 'react';
+import type { CSSProperties, RefObject, MutableRefObject } from 'react';
+import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
+import {
+  LAYOUT_WIDTH,
+  CONTENT_PADDING,
+  ZOOM_STEP,
+  MIN_ZOOM,
+  MAX_ZOOM,
+} from '../constants';
 import './ZoomControls.css';
 
+const ANIMATION_MS = 200;
+
 interface ZoomControlsProps {
-  zoom: number;
-  fitZoom: number;
-  minZoom: number;  // 0.25
-  maxZoom: number;  // 2
-  step: number;     // 0.25
-  isMobile: boolean;  // For responsive positioning
-  onZoomChange: (zoom: number, isManualZoom?: boolean) => void;
+  transformRef: RefObject<ReactZoomPanPinchRef | null>;
+  currentZoom: number;
+  fitViewportZoom: number;
+  fitWidthZoom: number;
+  isProgrammaticZoomRef: MutableRefObject<boolean>;
+  onFitAction: () => void;
+  onManualZoom: () => void;
+  isMobile: boolean;
 }
 
 const getButtonStyle = (disabled: boolean): CSSProperties => ({
@@ -35,9 +46,74 @@ const containerStyle: CSSProperties = {
   borderRadius: '8px',
 };
 
-export function ZoomControls({ zoom, fitZoom, minZoom, maxZoom, step, isMobile, onZoomChange }: ZoomControlsProps) {
-  const canZoomIn = zoom < maxZoom;
-  const canZoomOut = zoom > minZoom;
+export function ZoomControls({
+  transformRef,
+  currentZoom,
+  fitViewportZoom,
+  fitWidthZoom,
+  isProgrammaticZoomRef,
+  onFitAction,
+  onManualZoom,
+  isMobile,
+}: ZoomControlsProps) {
+  const canZoomIn = currentZoom < MAX_ZOOM;
+  const canZoomOut = currentZoom > MIN_ZOOM;
+
+  const handleZoomIn = () => {
+    if (!transformRef.current) {
+      console.warn('ZoomControls: transformRef not ready');
+      return;
+    }
+    onManualZoom();
+    transformRef.current.zoomIn(ZOOM_STEP, ANIMATION_MS);
+  };
+
+  const handleZoomOut = () => {
+    if (!transformRef.current) {
+      console.warn('ZoomControls: transformRef not ready');
+      return;
+    }
+    onManualZoom();
+    transformRef.current.zoomOut(ZOOM_STEP, ANIMATION_MS);
+  };
+
+  const handleFitViewport = () => {
+    if (!transformRef.current) {
+      console.warn('ZoomControls: transformRef not ready');
+      return;
+    }
+    // Set guard BEFORE calling library method, reset immediately after
+    // Library callbacks fire synchronously, so guard only needs to be set during the call
+    isProgrammaticZoomRef.current = true;
+    onFitAction(); // Clears hasManuallyZoomed
+    transformRef.current.centerView(fitViewportZoom, ANIMATION_MS);
+    isProgrammaticZoomRef.current = false;
+  };
+
+  const handleFitWidth = () => {
+    if (!transformRef.current) {
+      console.warn('ZoomControls: transformRef not ready');
+      return;
+    }
+
+    // Calculate centered X position for fit-to-width
+    const wrapperBounds =
+      transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
+    if (!wrapperBounds) {
+      console.warn('ZoomControls: wrapperComponent not found');
+      return;
+    }
+
+    const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * fitWidthZoom;
+    const centerX = (wrapperBounds.width - contentWidth) / 2;
+
+    // Set guard, call method, reset immediately (callbacks are synchronous)
+    isProgrammaticZoomRef.current = true;
+    onFitAction(); // Clears hasManuallyZoomed (fit-to-width should also re-fit on resize)
+    // Y=0 to start at top, allowing downward pan
+    transformRef.current.setTransform(centerX, 0, fitWidthZoom, ANIMATION_MS);
+    isProgrammaticZoomRef.current = false;
+  };
 
   return (
     <div
@@ -46,7 +122,7 @@ export function ZoomControls({ zoom, fitZoom, minZoom, maxZoom, step, isMobile, 
       data-testid="zoom-controls"
     >
       <button
-        onClick={() => onZoomChange(Math.min(maxZoom, zoom + step))}
+        onClick={handleZoomIn}
         disabled={!canZoomIn}
         aria-label="Zoom in"
         className="zoom-button"
@@ -60,11 +136,11 @@ export function ZoomControls({ zoom, fitZoom, minZoom, maxZoom, step, isMobile, 
         data-testid="zoom-level"
         style={{ color: 'white', fontSize: '14px', padding: '4px 0' }}
       >
-        {Math.round(zoom * 100)}%
+        {Math.round(currentZoom * 100)}%
       </span>
       <button
-        onClick={() => onZoomChange(fitZoom)}
-        aria-label="Fit to screen"
+        onClick={handleFitViewport}
+        aria-label="Fit to viewport"
         className="zoom-button"
         style={getButtonStyle(false)}
         data-testid="zoom-fit"
@@ -72,7 +148,16 @@ export function ZoomControls({ zoom, fitZoom, minZoom, maxZoom, step, isMobile, 
         ⊡
       </button>
       <button
-        onClick={() => onZoomChange(Math.max(minZoom, zoom - step))}
+        onClick={handleFitWidth}
+        aria-label="Fit to width"
+        className="zoom-button"
+        style={getButtonStyle(false)}
+        data-testid="zoom-fit-width"
+      >
+        ↔
+      </button>
+      <button
+        onClick={handleZoomOut}
         disabled={!canZoomOut}
         aria-label="Zoom out"
         className="zoom-button"
