@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     ws_batch_interval_ms: int = 500  # FR-3.2: Batch updates for 500ms
 
     # Staleness Configuration
-    staleness_threshold_seconds: int = 120  # FR-2.6: 2 minutes
+    staleness_threshold_seconds: int = 300  # 5 minutes to match Tigo reporting interval
 
     # TapTap State File Paths (for bootstrapping status check)
     # These should be mounted from the taptap container data directories
