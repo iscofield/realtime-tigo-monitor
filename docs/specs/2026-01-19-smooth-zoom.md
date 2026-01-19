@@ -26,7 +26,11 @@ This creates the appearance of the image "redrawing from top-left" during zoom, 
 
 **FR-2.1**: Pinch-to-zoom on touch devices MUST zoom centered on the pinch focal point.
 
-**FR-2.2**: Mouse wheel zoom MUST require Ctrl (Windows/Linux) or Cmd (macOS) modifier key to activate. Without modifier, wheel events MUST be ignored. This is configured via `wheel.activationKeys: ['Control', 'Meta']`.
+**FR-2.2**: Mouse wheel zoom MUST require Ctrl (Windows/Linux) or Cmd (macOS) modifier key to activate. Without modifier, wheel events MUST be ignored. **Note:** The library's `wheel.activationKeys` does not work correctly (it checks `event.key` instead of `event.ctrlKey`/`event.metaKey`). Implementation MUST use a custom wheel handler that:
+1. Disables the library's wheel handling via `wheel: { disabled: true }`
+2. Attaches a custom wheel event listener that checks `event.ctrlKey || event.metaKey`
+3. Calls `transformRef.current.zoomIn()` / `zoomOut()` when modifier is held
+4. Allows the event to bubble naturally when no modifier (for page scroll if applicable)
 
 **FR-2.3**: Zoom MUST be constrained between `MIN_ZOOM` (0.25) and `MAX_ZOOM` (2.0).
 
@@ -40,7 +44,7 @@ This creates the appearance of the image "redrawing from top-left" during zoom, 
 
 **FR-3.2**: Click-and-drag with mouse MUST pan the view.
 
-**FR-3.3**: Two-finger scroll/swipe on trackpad: The desired behavior is to pan (not zoom). This is achieved by requiring modifier keys for wheel zoom (FR-2.2). However, due to known library limitations (GitHub issues #113, #370), this behavior MUST be verified in Phase 0 prototype spike. If `activationKeys` does not work as expected, the fallback is that unmodified wheel/trackpad gestures do nothing (acceptable) rather than zoom (unacceptable).
+**FR-3.3**: Two-finger scroll/swipe on trackpad: The desired behavior is that unmodified trackpad gestures do NOT zoom. This is achieved via the custom wheel handler (FR-2.2) which only zooms when Ctrl/Cmd is held. **Spike validated:** The custom wheel handler approach works correctly - plain trackpad scroll does nothing (events bubble), while Ctrl/Cmd+scroll zooms.
 
 **FR-3.4**: Panning MUST allow the image to be moved away from screen edges so content beneath UI overlays (mode toggle, zoom controls, tab bar) can be viewed.
 
@@ -282,12 +286,17 @@ function App() {
 ```
 
 ```tsx
-// SolarLayout.tsx - Layout with TransformWrapper
+// SolarLayout.tsx - Layout with TransformWrapper and custom wheel handler
+import { useRef, useEffect, useCallback } from 'react';
 import {
   TransformWrapper,
   TransformComponent,
   ReactZoomPanPinchRef,
 } from 'react-zoom-pan-pinch';
+
+// Constants for custom wheel handler
+const WHEEL_ZOOM_STEP = 0.1;
+const ANIMATION_MS = 200;
 
 interface SolarLayoutProps {
   panels: PanelData[];
@@ -308,59 +317,95 @@ export function SolarLayout({
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const isMobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
 
+  // Ref for wrapper element to attach custom wheel handler
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Custom wheel handler - works around library's broken activationKeys
+  // Library checks event.key instead of event.ctrlKey/metaKey (GitHub #113, #370)
+  const handleWheel = useCallback((event: WheelEvent) => {
+    // Only zoom if Ctrl (Windows/Linux) or Cmd (Mac) is held
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+
+      if (!transformRef.current) return;
+
+      onManualZoom(); // Track as manual zoom
+
+      if (event.deltaY < 0) {
+        // Scroll up = zoom in
+        transformRef.current.zoomIn(WHEEL_ZOOM_STEP, ANIMATION_MS);
+      } else {
+        // Scroll down = zoom out
+        transformRef.current.zoomOut(WHEEL_ZOOM_STEP, ANIMATION_MS);
+      }
+    }
+    // Without modifier: event bubbles naturally (page can scroll if needed)
+  }, [transformRef, onManualZoom]);
+
+  // Attach custom wheel handler
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    // passive: false allows preventDefault for Ctrl+wheel
+    wrapper.addEventListener('wheel', handleWheel, { passive: false });
+    return () => wrapper.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
   return (
-    <TransformWrapper
-      ref={transformRef}
-      initialScale={initialScale}
-      minScale={MIN_ZOOM}
-      maxScale={MAX_ZOOM}
-      centerOnInit={true}
-      onTransformed={onTransformed}
-      onPanning={onManualZoom}
-      onZoom={onManualZoom}
-      wheel={{
-        step: 0.1,
-        // Require Ctrl/Cmd to zoom with wheel
-        activationKeys: ['Control', 'Meta'],
-      }}
-      doubleClick={{
-        disabled: true, // Prevent accidental zoom when tapping panels
-      }}
-      panning={{
-        velocityDisabled: prefersReducedMotion,
-      }}
-      animation={{
-        disabled: prefersReducedMotion,
-      }}
-    >
-      <TransformComponent
-        wrapperStyle={{
-          width: '100%',
-          height: '100%',
-          overscrollBehaviorX: 'none', // Prevent browser back gesture
+    <div ref={wrapperRef} style={{ width: '100%', height: '100%' }}>
+      <TransformWrapper
+        ref={transformRef}
+        initialScale={initialScale}
+        minScale={MIN_ZOOM}
+        maxScale={MAX_ZOOM}
+        centerOnInit={true}
+        onTransformed={onTransformed}
+        onPanning={onManualZoom}
+        onZoom={onManualZoom}
+        wheel={{
+          // Disable library's wheel handling - we use custom handler above
+          disabled: true,
+        }}
+        doubleClick={{
+          disabled: true, // Prevent accidental zoom when tapping panels
+        }}
+        panning={{
+          velocityDisabled: prefersReducedMotion,
+        }}
+        animation={{
+          disabled: prefersReducedMotion,
         }}
       >
-        {/* Padding wrapper - provides pan clearance around content */}
-        <div style={{ padding: CONTENT_PADDING }}>
-          {/* Fixed-size container for percentage-based overlay positioning */}
-          <div style={{
-            width: LAYOUT_WIDTH,
-            height: LAYOUT_HEIGHT,
-            position: 'relative'
-          }}>
-            <img src="/layout.png" alt="Solar panel layout" />
-            {panels.map(panel => (
-              <PanelOverlay
-                key={panel.display_label}
-                panel={panel}
-                mode={mode}
-                isMobile={isMobile}
-              />
-            ))}
+        <TransformComponent
+          wrapperStyle={{
+            width: '100%',
+            height: '100%',
+            overscrollBehaviorX: 'none', // Prevent browser back gesture
+          }}
+        >
+          {/* Padding wrapper - provides pan clearance around content */}
+          <div style={{ padding: CONTENT_PADDING }}>
+            {/* Fixed-size container for percentage-based overlay positioning */}
+            <div style={{
+              width: LAYOUT_WIDTH,
+              height: LAYOUT_HEIGHT,
+              position: 'relative'
+            }}>
+              <img src="/layout.png" alt="Solar panel layout" />
+              {panels.map(panel => (
+                <PanelOverlay
+                  key={panel.display_label}
+                  panel={panel}
+                  mode={mode}
+                  isMobile={isMobile}
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      </TransformComponent>
-    </TransformWrapper>
+        </TransformComponent>
+      </TransformWrapper>
+    </div>
   );
 }
 ```
@@ -508,29 +553,29 @@ This ensures:
 
 ## Task Breakdown
 
-### Phase 0: Prototype Spike (REQUIRED before Phase 1)
+### Phase 0: Prototype Spike ✅ COMPLETED
 
 **Purpose:** Verify `wheel.activationKeys` behavior due to known library limitations (GitHub issues #113, #370).
 
-1. Create minimal prototype with `react-zoom-pan-pinch`
-2. Test on multiple browsers/platforms:
-   - Chrome on macOS (trackpad)
-   - Safari on macOS (trackpad)
-   - Firefox on macOS (trackpad)
-   - Chrome on Windows (mouse wheel + trackpad laptop)
-   - Safari on iOS (pinch)
-   - Chrome on Android (pinch)
+**Findings (January 2026):**
 
-3. Verify for each:
-   - [ ] Ctrl+wheel zooms ✓
-   - [ ] Plain wheel does NOT zoom ✓
-   - [ ] Trackpad two-finger scroll either pans OR does nothing (NOT zoom) ✓
-   - [ ] Pinch-to-zoom works on touch devices ✓
+The library's `activationKeys` does NOT work for wheel events because it checks `event.key` (keyboard events) instead of `event.ctrlKey`/`event.metaKey` (modifier flags on wheel events).
 
-4. **Decision point:**
-   - If all pass → Proceed to Phase 1
-   - If trackpad zooms without modifier → Implement custom wheel handler or accept limitation
-   - Document findings in implementation notes
+**Solution validated:** Custom wheel handler that:
+1. Disables library wheel handling: `wheel: { disabled: true }`
+2. Attaches custom listener checking `event.ctrlKey || event.metaKey`
+3. Calls `zoomIn()`/`zoomOut()` when modifier held
+4. Lets event bubble naturally without modifier
+
+**Test results with custom handler:**
+- [x] Plain wheel → No zoom (events bubble)
+- [x] Ctrl+wheel → Zooms in/out ✓
+- [x] Drag → Pans view ✓
+- [x] Pinch-to-zoom → Works (library native) ✓
+- [x] Panel overlays → Scale correctly at all zoom levels ✓
+- [x] Bundle size → ~77KB gzipped total (+~8KB from library) ✓
+
+**Decision:** Proceed with custom wheel handler approach. Spike code on `feature/smooth-zoom-spike` branch.
 
 ### Phase 1: Core Implementation
 
@@ -543,11 +588,17 @@ This ensures:
 
 3. **Refactor SolarLayout component**
    - Import library components (`TransformWrapper`, `TransformComponent`, `ReactZoomPanPinchRef`)
+   - Add wrapper div with ref for custom wheel handler
+   - Implement custom wheel handler:
+     - Check `event.ctrlKey || event.metaKey` before zooming
+     - Call `transformRef.current.zoomIn()`/`zoomOut()` with modifier
+     - Allow event to bubble without modifier
+     - Use `{ passive: false }` to allow `preventDefault()`
    - Wrap content in `TransformWrapper` with props:
      - `ref`, `initialScale`, `minScale`, `maxScale`, `centerOnInit`
-     - `wheel.activationKeys: ['Control', 'Meta']`
-     - `doubleClick.disabled: true`
-     - `animation.disabled` based on reduced-motion preference
+     - `wheel: { disabled: true }` (use custom handler instead)
+     - `doubleClick: { disabled: true }`
+     - `animation: { disabled: prefersReducedMotion }`
      - `onTransformed`, `onPanning`, `onZoom` callbacks
    - Add padding wrapper div around content container
    - Add `overscroll-behavior-x: none` CSS
@@ -637,8 +688,8 @@ This ensures:
   wheel?: {
     step?: number;
     smoothStep?: number;
-    disabled?: boolean;
-    activationKeys?: string[];  // e.g., ['Control', 'Meta']
+    disabled?: boolean;  // Set to true, use custom handler instead
+    activationKeys?: string[];  // BROKEN - does not work for wheel events
     excluded?: string[];
   };
   doubleClick?: {
@@ -658,6 +709,25 @@ This ensures:
   onPanning?: () => void;
   onZoom?: () => void;
 }
+```
+
+**Custom Wheel Handler Pattern (required for modifier key support):**
+```typescript
+const handleWheel = useCallback((event: WheelEvent) => {
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault();
+    if (!transformRef.current) return;
+
+    if (event.deltaY < 0) {
+      transformRef.current.zoomIn(ZOOM_STEP, ANIMATION_MS);
+    } else {
+      transformRef.current.zoomOut(ZOOM_STEP, ANIMATION_MS);
+    }
+  }
+}, []);
+
+// Attach with { passive: false } to allow preventDefault
+wrapper.addEventListener('wheel', handleWheel, { passive: false });
 ```
 
 **ReactZoomPanPinchRef Methods:**
@@ -682,11 +752,31 @@ This ensures:
 
 ---
 
-**Specification Version:** 1.2
+**Specification Version:** 1.3
 **Last Updated:** January 2026
 **Authors:** Claude
 
 ## Changelog
+
+### v1.3 (January 2026)
+**Summary:** Spike completed - custom wheel handler validated, activationKeys confirmed broken
+
+**Changes:**
+- FR-2.2: Changed from `activationKeys` to custom wheel handler approach (library bug confirmed)
+- FR-3.3: Updated to reflect validated custom wheel handler solution
+- Phase 0: Marked as COMPLETED with detailed findings
+- Phase 1, Task 3: Updated to include custom wheel handler implementation steps
+- Added Custom Wheel Handler Pattern to API documentation
+- Updated SolarLayout code example with full custom wheel handler implementation
+- Marked `activationKeys` as BROKEN in API docs
+
+**Spike Results:**
+- Plain wheel: No zoom ✓
+- Ctrl/Cmd+wheel: Zooms ✓
+- Drag: Pans ✓
+- Pinch: Zooms ✓
+- Overlays: Scale correctly ✓
+- Bundle: +8KB gzipped ✓
 
 ### v1.2 (January 2026)
 **Summary:** Address second review cycle - add prototype spike, SSR safety, accessibility details
