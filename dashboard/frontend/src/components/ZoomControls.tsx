@@ -2,6 +2,7 @@ import type { CSSProperties, RefObject, MutableRefObject } from 'react';
 import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import {
   LAYOUT_WIDTH,
+  LAYOUT_HEIGHT,
   CONTENT_PADDING,
   ZOOM_STEP,
   MIN_ZOOM,
@@ -82,11 +83,30 @@ export function ZoomControls({
       console.warn('ZoomControls: transformRef not ready');
       return;
     }
+
+    // Calculate centered position explicitly instead of using centerView
+    // centerView has issues when wrapper height isn't properly established
+    const wrapperBounds =
+      transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
+    if (!wrapperBounds) {
+      console.warn('ZoomControls: wrapperComponent not found');
+      return;
+    }
+
+    // Calculate content dimensions at target scale
+    const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * fitViewportZoom;
+    const contentHeight = (LAYOUT_HEIGHT + CONTENT_PADDING * 2) * fitViewportZoom;
+
+    // Calculate centered X and Y positions
+    const centerX = (wrapperBounds.width - contentWidth) / 2;
+    // Use Math.max(0, ...) to ensure content never goes above viewport
+    const centerY = Math.max(0, (wrapperBounds.height - contentHeight) / 2);
+
     // Set guard BEFORE calling library method, reset immediately after
     // Library callbacks fire synchronously, so guard only needs to be set during the call
     isProgrammaticZoomRef.current = true;
     onFitAction(); // Clears hasManuallyZoomed
-    transformRef.current.centerView(fitViewportZoom, ANIMATION_MS);
+    transformRef.current.setTransform(centerX, centerY, fitViewportZoom, ANIMATION_MS);
     isProgrammaticZoomRef.current = false;
   };
 
