@@ -164,6 +164,17 @@ export function SolarLayout({
     }
   }, [retryCount]);
 
+  // Fix for tab switching: centerOnInit doesn't always work reliably when remounting
+  // Manually center the view after a short delay to ensure the container has proper dimensions
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (transformRef.current) {
+        transformRef.current.centerView(initialScale, 0);
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [transformRef, initialScale]);
+
   // Handle image load error
   if (imageError) {
     return (
