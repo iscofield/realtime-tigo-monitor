@@ -104,7 +104,7 @@ class PanelService:
         current_out: Optional[float] = None,
         temperature: Optional[float] = None,
         duty_cycle: Optional[float] = None,
-        rssi: Optional[int] = None,
+        rssi: Optional[float] = None,
         energy: Optional[float] = None,
         online: bool = True,
         timestamp: Optional[str] = None,
