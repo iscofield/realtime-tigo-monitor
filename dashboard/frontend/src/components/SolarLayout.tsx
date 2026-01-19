@@ -6,7 +6,7 @@ import type { DisplayMode } from './PanelOverlay';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useWheelZoom } from '../hooks/useWheelZoom';
 import { usePinchZoom } from '../hooks/usePinchZoom';
-import { LAYOUT_WIDTH, LAYOUT_HEIGHT } from '../constants';
+import { LAYOUT_WIDTH, LAYOUT_HEIGHT, MOBILE_BREAKPOINT } from '../constants';
 import './SolarLayout.css';
 
 interface SolarLayoutProps {
@@ -46,6 +46,9 @@ export function SolarLayout({ panels, mode, zoom, scrollRef, onZoomChange }: Sol
 
   // Check for reduced motion preference
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
+
+  // Check for mobile viewport
+  const isMobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
 
   // NFR-5.1: Defensive pattern for cached images that load synchronously
   // Check naturalWidth to detect broken cached images
@@ -128,6 +131,7 @@ export function SolarLayout({ panels, mode, zoom, scrollRef, onZoomChange }: Sol
               key={panel.display_label}
               panel={panel}
               mode={mode}
+              isMobile={isMobile}
             />
           ))}
         </div>

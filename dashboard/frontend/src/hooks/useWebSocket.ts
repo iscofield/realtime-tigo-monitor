@@ -45,7 +45,18 @@ interface UseWebSocketResult {
   retry: () => void;
 }
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/panels';
+function getWebSocketUrl(): string {
+  // If explicitly set via environment variable, use that
+  if (import.meta.env.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+
+  // Derive from current page location (works with any reverse proxy)
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws/panels`;
+}
+
+const WS_URL = getWebSocketUrl();
 const RECONNECT_DELAY = 3000;
 
 export function useWebSocket(): UseWebSocketResult {
