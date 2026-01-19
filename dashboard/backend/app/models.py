@@ -52,12 +52,13 @@ class PanelData(BaseModel):
     current_out: Optional[float] = None
     temperature: Optional[float] = None
     duty_cycle: Optional[float] = None
-    rssi: Optional[int] = None
+    rssi: Optional[float] = None
     energy: Optional[float] = None
     online: bool = True
     stale: bool = False
     is_temporary: bool = False
     actual_system: Optional[str] = None  # Which CCA actually sent data for this panel
+    last_update: Optional[datetime] = None  # When panel data was last received
     position: Position
 
 
@@ -80,7 +81,7 @@ class MQTTNodeData(BaseModel):
     power: Optional[float] = None
     temperature: Optional[float] = None
     duty_cycle: Optional[float] = None
-    rssi: Optional[int] = None
+    rssi: Optional[float] = None
     energy: Optional[float] = None
     node_serial: str
     node_id: Optional[str] = None

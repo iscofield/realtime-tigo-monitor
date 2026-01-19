@@ -50,7 +50,7 @@ class ConnectionManager:
             timestamp=datetime.now(timezone.utc).isoformat(),
             panels=panels,
         )
-        message_dict = message.model_dump(by_alias=True)
+        message_dict = message.model_dump(mode='json', by_alias=True)
 
         # Collect failed connections to avoid modifying list while iterating
         failed_connections: list[WebSocket] = []

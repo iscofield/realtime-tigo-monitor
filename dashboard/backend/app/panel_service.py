@@ -65,6 +65,7 @@ class PanelService:
                 online=old.online if old else True,
                 stale=old.stale if old else False,
                 is_temporary=old.is_temporary if old else False,
+                last_update=old.last_update if old else None,
                 position=panel.position,
             )
 
@@ -161,6 +162,7 @@ class PanelService:
             stale=False,
             is_temporary=is_temporary,
             actual_system=actual_system,
+            last_update=self.last_update.get(display_label),
             position=panel_config.position,
         )
         return True
