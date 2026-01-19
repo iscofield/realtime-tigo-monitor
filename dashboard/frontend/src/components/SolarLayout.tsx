@@ -1,24 +1,36 @@
 import { useState, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, RefObject } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import type { PanelData } from '../hooks/useWebSocket';
 import { PanelOverlay } from './PanelOverlay';
 import type { DisplayMode } from './PanelOverlay';
 import { useMediaQuery } from '../hooks/useMediaQuery';
-import { LAYOUT_WIDTH, LAYOUT_HEIGHT, MOBILE_BREAKPOINT, MIN_ZOOM, MAX_ZOOM } from '../constants';
+import {
+  LAYOUT_WIDTH,
+  LAYOUT_HEIGHT,
+  MOBILE_BREAKPOINT,
+  MIN_ZOOM,
+  MAX_ZOOM,
+  CONTENT_PADDING,
+  WHEEL_DEBOUNCE_MS,
+} from '../constants';
 import './SolarLayout.css';
 
-// Spike: Content padding for UI overlay clearance
-const CONTENT_PADDING = 150;
-
-// Zoom step for wheel events (matches library default)
+// Wheel uses smaller step than button zoom (ZOOM_STEP=0.25) for smoother feel
 const WHEEL_ZOOM_STEP = 0.1;
 const ANIMATION_MS = 200;
 
 interface SolarLayoutProps {
   panels: PanelData[];
   mode: DisplayMode;
+  transformRef: RefObject<ReactZoomPanPinchRef | null>;
+  initialScale: number;
+  onTransformed: (
+    ref: ReactZoomPanPinchRef,
+    state: { scale: number; positionX: number; positionY: number }
+  ) => void;
+  onManualZoom: () => void;
 }
 
 const errorContainerStyle: CSSProperties = {
@@ -38,29 +50,18 @@ const retryButtonStyle: CSSProperties = {
   borderRadius: '4px',
 };
 
-// Spike: Debug overlay to show current zoom level
-const debugOverlayStyle: CSSProperties = {
-  position: 'fixed',
-  top: '60px',
-  right: '10px',
-  backgroundColor: 'rgba(0,0,0,0.8)',
-  color: '#00ff00',
-  padding: '10px',
-  borderRadius: '4px',
-  fontFamily: 'monospace',
-  fontSize: '12px',
-  zIndex: 9999,
-  whiteSpace: 'pre',
-};
-
-export function SolarLayout({ panels, mode }: SolarLayoutProps) {
+export function SolarLayout({
+  panels,
+  mode,
+  transformRef,
+  initialScale,
+  onTransformed,
+  onManualZoom,
+}: SolarLayoutProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
-  const [currentZoom, setCurrentZoom] = useState(1);
-  const [lastEvent, setLastEvent] = useState('none');
   const imgRef = useRef<HTMLImageElement>(null);
-  const transformRef = useRef<ReactZoomPanPinchRef>(null);
 
   // Check for reduced motion preference
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
@@ -71,39 +72,53 @@ export function SolarLayout({ panels, mode }: SolarLayoutProps) {
   // Ref for the wrapper element to attach wheel listener
   const wrapperRef = useRef<HTMLDivElement>(null);
 
+  // Debounce ref to prevent animation overlap on rapid scroll (GitHub #408)
+  const lastZoomTime = useRef(0);
+
   // Custom wheel handler - checks for Ctrl/Cmd modifier before zooming
   // This works around the library's broken activationKeys (GitHub #113, #370)
-  const handleWheel = useCallback((event: WheelEvent) => {
-    // Only zoom if Ctrl (Windows/Linux) or Cmd (Mac) is held
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
+  const handleWheel = useCallback(
+    (event: WheelEvent) => {
+      // Only zoom if Ctrl (Windows/Linux) or Cmd (Mac) is held
+      if (event.ctrlKey || event.metaKey) {
+        event.preventDefault();
 
-      if (!transformRef.current) return;
+        if (!transformRef.current) return;
 
-      // Determine zoom direction based on wheel delta
-      if (event.deltaY < 0) {
-        // Scroll up = zoom in
-        transformRef.current.zoomIn(WHEEL_ZOOM_STEP, ANIMATION_MS);
-        setLastEvent('wheel-zoom-in');
-      } else {
-        // Scroll down = zoom out
-        transformRef.current.zoomOut(WHEEL_ZOOM_STEP, ANIMATION_MS);
-        setLastEvent('wheel-zoom-out');
+        // Ignore horizontal-only scroll (deltaY === 0)
+        if (event.deltaY === 0) return;
+
+        // Debounce: Prevent animation overlap on rapid scroll
+        const now = Date.now();
+        if (now - lastZoomTime.current < WHEEL_DEBOUNCE_MS) return;
+        lastZoomTime.current = now;
+
+        onManualZoom(); // Track as manual zoom
+
+        // Determine zoom direction based on wheel delta
+        if (event.deltaY < 0) {
+          // Scroll up = zoom in (centered on viewport, not cursor)
+          transformRef.current.zoomIn(WHEEL_ZOOM_STEP, ANIMATION_MS);
+        } else {
+          // Scroll down = zoom out (centered on viewport, not cursor)
+          transformRef.current.zoomOut(WHEEL_ZOOM_STEP, ANIMATION_MS);
+        }
       }
-    }
-    // Without modifier: let event bubble naturally (browser handles scroll/pan)
-  }, []);
+      // Without modifier: let event bubble naturally (browser handles scroll/pan)
+    },
+    [transformRef, onManualZoom]
+  );
 
-  // Attach custom wheel handler
+  // Attach custom wheel handler with passive: false to allow preventDefault
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
 
-    // Use passive: false to allow preventDefault for Ctrl+wheel
-    wrapper.addEventListener('wheel', handleWheel, { passive: false });
+    const options: AddEventListenerOptions = { passive: false };
+    wrapper.addEventListener('wheel', handleWheel, options);
 
     return () => {
-      wrapper.removeEventListener('wheel', handleWheel);
+      wrapper.removeEventListener('wheel', handleWheel, options);
     };
   }, [handleWheel]);
 
@@ -124,7 +139,7 @@ export function SolarLayout({ panels, mode }: SolarLayoutProps) {
           onClick={() => {
             setImageError(false);
             setImageLoaded(false);
-            setRetryCount(c => c + 1);
+            setRetryCount((c) => c + 1);
           }}
           data-testid="image-retry-button"
         >
@@ -141,13 +156,13 @@ export function SolarLayout({ panels, mode }: SolarLayoutProps) {
     height: 'auto',
   };
 
-  // Padding container - provides clearance around content
+  // Padding container - provides clearance around content for panning
   const paddingContainerStyle: CSSProperties = {
     padding: `${CONTENT_PADDING}px`,
     display: 'inline-block',
   };
 
-  // Content wrapper - fixed size matching layout
+  // Content wrapper - fixed size matching layout for percentage-based overlay positioning
   const contentWrapperStyle: CSSProperties = {
     width: `${LAYOUT_WIDTH}px`,
     height: `${LAYOUT_HEIGHT}px`,
@@ -155,21 +170,10 @@ export function SolarLayout({ panels, mode }: SolarLayoutProps) {
   };
 
   return (
-    <div ref={wrapperRef} style={{ width: '100%', height: '100%' }}>
-      {/* Spike: Debug overlay */}
-      <div style={debugOverlayStyle}>
-        {`Zoom: ${(currentZoom * 100).toFixed(0)}%
-Last event: ${lastEvent}
-Test instructions:
-- Plain scroll/trackpad → should SCROLL page
-- Ctrl+scroll (Win) / Cmd+scroll (Mac) → should ZOOM
-- Drag → should PAN
-- Pinch → should ZOOM`}
-      </div>
-
+    <div ref={wrapperRef} className="solar-layout-wrapper">
       <TransformWrapper
         ref={transformRef}
-        initialScale={1}
+        initialScale={initialScale}
         minScale={MIN_ZOOM}
         maxScale={MAX_ZOOM}
         centerOnInit={true}
@@ -178,18 +182,15 @@ Test instructions:
           disabled: true,
         }}
         panning={{
-          velocityDisabled: true,
+          velocityDisabled: prefersReducedMotion,
         }}
         doubleClick={{
-          disabled: true,
+          disabled: true, // Prevent accidental zoom when tapping panels
         }}
-        onTransformed={(_ref, state) => {
-          setCurrentZoom(state.scale);
-        }}
-        onPanning={() => setLastEvent('panning')}
-        onZoom={() => setLastEvent('zoom')}
-        onPinching={() => setLastEvent('pinching')}
         smooth={!prefersReducedMotion}
+        onTransformed={onTransformed}
+        onPanning={onManualZoom}
+        onZoom={onManualZoom}
       >
         <TransformComponent
           wrapperStyle={{
@@ -197,6 +198,7 @@ Test instructions:
             height: '100%',
             overflow: 'hidden',
           }}
+          wrapperClass="transform-component-wrapper"
         >
           <div style={paddingContainerStyle}>
             <div style={contentWrapperStyle}>
@@ -209,14 +211,15 @@ Test instructions:
                 onLoad={() => setImageLoaded(true)}
                 onError={() => setImageError(true)}
               />
-              {imageLoaded && panels.map(panel => (
-                <PanelOverlay
-                  key={panel.display_label}
-                  panel={panel}
-                  mode={mode}
-                  isMobile={isMobile}
-                />
-              ))}
+              {imageLoaded &&
+                panels.map((panel) => (
+                  <PanelOverlay
+                    key={panel.display_label}
+                    panel={panel}
+                    mode={mode}
+                    isMobile={isMobile}
+                  />
+                ))}
             </div>
           </div>
         </TransformComponent>
