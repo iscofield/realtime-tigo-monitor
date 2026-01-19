@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import type { PanelData } from '../hooks/useWebSocket';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 import { analyzeStringForMismatches, type StringAnalysis } from '../utils/mismatchDetection';
+import { MOBILE_BREAKPOINT } from '../constants';
 
 // Column configuration
 const ALL_COLUMNS = new Set([
@@ -71,6 +73,22 @@ const controlsStyle: CSSProperties = {
   gap: '16px',
   marginBottom: '16px',
   alignItems: 'flex-start',
+};
+
+const controlsRowStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '12px',
+  alignItems: 'center',
+  width: '100%',
+};
+
+const columnTogglesRowStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '8px',
+  width: '100%',
+  marginTop: '8px',
 };
 
 const thresholdContainerStyle: CSSProperties = {
@@ -216,6 +234,9 @@ const tempIndicatorStyle: CSSProperties = {
 };
 
 export function TableView({ panels }: TableViewProps) {
+  // Mobile detection
+  const isMobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+
   // State management with localStorage persistence
   const [threshold, setThreshold] = useState<number>(() => {
     try {
@@ -368,70 +389,145 @@ export function TableView({ panels }: TableViewProps) {
     <div style={containerStyle} data-testid="panel-table">
       {/* Controls */}
       <div style={controlsStyle}>
-        {/* Threshold selector */}
-        <div style={thresholdContainerStyle}>
-          <label style={thresholdLabelStyle} htmlFor="threshold-select">
-            Mismatch Threshold
-          </label>
-          <select
-            id="threshold-select"
-            style={thresholdSelectStyle}
-            value={threshold}
-            onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
-            data-testid="threshold-select"
-          >
-            {VALID_THRESHOLDS.map(t => (
-              <option key={t} value={t}>{t}%</option>
-            ))}
-          </select>
-        </div>
+        {isMobile ? (
+          // Mobile layout: threshold + expand/collapse on first row, column toggles below
+          <>
+            <div style={controlsRowStyle}>
+              {/* Threshold selector */}
+              <div style={thresholdContainerStyle}>
+                <label style={thresholdLabelStyle} htmlFor="threshold-select">
+                  Mismatch Threshold
+                </label>
+                <select
+                  id="threshold-select"
+                  style={thresholdSelectStyle}
+                  value={threshold}
+                  onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
+                  data-testid="threshold-select"
+                >
+                  {VALID_THRESHOLDS.map(t => (
+                    <option key={t} value={t}>{t}%</option>
+                  ))}
+                </select>
+              </div>
 
-        {/* Column visibility toggles */}
-        <div style={columnToggleContainerStyle}>
-          {COLUMN_DEFINITIONS.map(col => (
-            <button
-              key={col.key}
-              style={{
-                ...columnToggleButtonStyle,
-                backgroundColor: visibleColumns.has(col.key) ? '#4a90d9' : '#444',
-                color: visibleColumns.has(col.key) ? '#fff' : '#888',
-              }}
-              onClick={() => toggleColumn(col.key)}
-              title={col.label}
-              data-testid={`col-toggle-${col.key}`}
-            >
-              {col.shortLabel}
-            </button>
-          ))}
-        </div>
+              {/* Collapse/Expand all buttons */}
+              <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+                <button
+                  style={{
+                    ...columnToggleButtonStyle,
+                    backgroundColor: '#444',
+                    color: '#fff',
+                    whiteSpace: 'nowrap',
+                  }}
+                  onClick={expandAll}
+                  title="Expand all strings"
+                >
+                  Expand
+                </button>
+                <button
+                  style={{
+                    ...columnToggleButtonStyle,
+                    backgroundColor: '#444',
+                    color: '#fff',
+                    whiteSpace: 'nowrap',
+                  }}
+                  onClick={collapseAll}
+                  title="Collapse all strings"
+                >
+                  Collapse
+                </button>
+              </div>
+            </div>
 
-        {/* Collapse/Expand all buttons */}
-        <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
-          <button
-            style={{
-              ...columnToggleButtonStyle,
-              backgroundColor: '#444',
-              color: '#fff',
-              whiteSpace: 'nowrap',
-            }}
-            onClick={expandAll}
-            title="Expand all strings"
-          >
-            Expand All
-          </button>
-          <button
-            style={{
-              ...columnToggleButtonStyle,
-              backgroundColor: '#444',
-              color: '#fff',
-              whiteSpace: 'nowrap',
-            }}
-            onClick={collapseAll}
-            title="Collapse all strings"
-          >
-            Collapse All
-          </button>
-        </div>
+            {/* Column visibility toggles - separate row on mobile */}
+            <div style={columnTogglesRowStyle}>
+              {COLUMN_DEFINITIONS.map(col => (
+                <button
+                  key={col.key}
+                  style={{
+                    ...columnToggleButtonStyle,
+                    backgroundColor: visibleColumns.has(col.key) ? '#4a90d9' : '#444',
+                    color: visibleColumns.has(col.key) ? '#fff' : '#888',
+                  }}
+                  onClick={() => toggleColumn(col.key)}
+                  title={col.label}
+                  data-testid={`col-toggle-${col.key}`}
+                >
+                  {col.shortLabel}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          // Desktop layout: all controls in one row
+          <>
+            {/* Threshold selector */}
+            <div style={thresholdContainerStyle}>
+              <label style={thresholdLabelStyle} htmlFor="threshold-select">
+                Mismatch Threshold
+              </label>
+              <select
+                id="threshold-select"
+                style={thresholdSelectStyle}
+                value={threshold}
+                onChange={(e) => setThreshold(parseInt(e.target.value, 10))}
+                data-testid="threshold-select"
+              >
+                {VALID_THRESHOLDS.map(t => (
+                  <option key={t} value={t}>{t}%</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Column visibility toggles */}
+            <div style={columnToggleContainerStyle}>
+              {COLUMN_DEFINITIONS.map(col => (
+                <button
+                  key={col.key}
+                  style={{
+                    ...columnToggleButtonStyle,
+                    backgroundColor: visibleColumns.has(col.key) ? '#4a90d9' : '#444',
+                    color: visibleColumns.has(col.key) ? '#fff' : '#888',
+                  }}
+                  onClick={() => toggleColumn(col.key)}
+                  title={col.label}
+                  data-testid={`col-toggle-${col.key}`}
+                >
+                  {col.shortLabel}
+                </button>
+              ))}
+            </div>
+
+            {/* Collapse/Expand all buttons */}
+            <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+              <button
+                style={{
+                  ...columnToggleButtonStyle,
+                  backgroundColor: '#444',
+                  color: '#fff',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={expandAll}
+                title="Expand all strings"
+              >
+                Expand All
+              </button>
+              <button
+                style={{
+                  ...columnToggleButtonStyle,
+                  backgroundColor: '#444',
+                  color: '#fff',
+                  whiteSpace: 'nowrap',
+                }}
+                onClick={collapseAll}
+                title="Collapse all strings"
+              >
+                Collapse All
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* System sections */}

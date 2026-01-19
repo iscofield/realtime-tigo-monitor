@@ -7,6 +7,7 @@ export type DisplayMode = 'watts' | 'voltage' | 'sn';
 interface PanelOverlayProps {
   panel: PanelData;
   mode: DisplayMode;
+  isMobile?: boolean;
 }
 
 const baseStyle: CSSProperties = {
@@ -22,17 +23,16 @@ const baseStyle: CSSProperties = {
   textShadow: '1px 1px 2px rgba(0,0,0,0.8)',
 };
 
-const offlineStyle: CSSProperties = {
+const mobileBaseStyle: CSSProperties = {
   ...baseStyle,
-  backgroundColor: '#808080',
+  padding: '6px 10px',
+  fontSize: '16px',
+  borderRadius: '6px',
 };
 
-const noDataStyle: CSSProperties = {
-  ...baseStyle,
-  backgroundColor: '#808080',
-};
+export function PanelOverlay({ panel, mode, isMobile = false }: PanelOverlayProps) {
+  const styleBase = isMobile ? mobileBaseStyle : baseStyle;
 
-export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
   const positionStyle: CSSProperties = {
     left: `${panel.position.x_percent}%`,
     top: `${panel.position.y_percent}%`,
@@ -47,7 +47,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
       return (
         <div
           data-testid={`panel-${panel.display_label}`}
-          style={{ ...offlineStyle, ...positionStyle }}
+          style={{ ...styleBase, ...positionStyle, backgroundColor: '#808080' }}
         >
           <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
           <div>{snLast4}</div>
@@ -58,7 +58,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
     return (
       <div
         data-testid={`panel-${panel.display_label}`}
-        style={{ ...offlineStyle, ...positionStyle }}
+        style={{ ...styleBase, ...positionStyle, backgroundColor: '#808080' }}
       >
         <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
         <div style={{ color: '#ff4444', fontSize: '1.2em', fontWeight: 'bold' }}>✕</div>
@@ -75,7 +75,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
       <div
         data-testid={`panel-${panel.display_label}`}
         style={{
-          ...baseStyle,
+          ...styleBase,
           ...positionStyle,
           backgroundColor: '#4a90d9',
           opacity: staleOpacity,
@@ -98,7 +98,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
     return (
       <div
         data-testid={`panel-${panel.display_label}`}
-        style={{ ...noDataStyle, ...positionStyle }}
+        style={{ ...styleBase, ...positionStyle, backgroundColor: '#808080' }}
       >
         <div style={{ fontWeight: 'bold' }}>{panel.display_label}</div>
         <div>—</div>
@@ -122,7 +122,7 @@ export function PanelOverlay({ panel, mode }: PanelOverlayProps) {
     <div
       data-testid={`panel-${panel.display_label}`}
       style={{
-        ...baseStyle,
+        ...styleBase,
         ...positionStyle,
         backgroundColor,
         opacity: staleOpacity,

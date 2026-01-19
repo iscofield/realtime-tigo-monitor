@@ -45,6 +45,23 @@ const modeToggleContainerStyle: CSSProperties = {
   flexShrink: 0,
 };
 
+const modeToggleMobileStyle: CSSProperties = {
+  ...modeToggleContainerStyle,
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  right: 0,
+  zIndex: 999,
+  borderBottom: '1px solid #e0e0e0',
+  boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+};
+
+// Spacer to prevent content from being hidden behind fixed mode toggle on mobile
+const modeToggleSpacerStyle: CSSProperties = {
+  height: '52px', // Matches mode toggle height (10px padding * 2 + button height)
+  flexShrink: 0,
+};
+
 const layoutContainerStyle: CSSProperties = {
   flexGrow: 1,
   overflow: 'hidden',
@@ -152,10 +169,15 @@ function App() {
         <ConnectionStatusDisplay status={status} error={error} onRetry={retry} />
 
         {/* FR-4.6: Mode toggle inside page content (only for layout view) */}
+        {/* On mobile, fixed at top; on desktop, inline */}
         {activeTab === 'layout' && (
-          <div style={modeToggleContainerStyle}>
-            <ModeToggle mode={mode} setMode={setMode} />
-          </div>
+          <>
+            <div style={isMobile ? modeToggleMobileStyle : modeToggleContainerStyle}>
+              <ModeToggle mode={mode} setMode={setMode} />
+            </div>
+            {/* Spacer to account for fixed header on mobile */}
+            {isMobile && <div style={modeToggleSpacerStyle} />}
+          </>
         )}
 
         {/* FR-1.4: Tab switching preserves WebSocket connection */}
