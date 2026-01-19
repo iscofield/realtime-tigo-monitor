@@ -25,7 +25,7 @@ export const MOBILE_BREAKPOINT = 767;
 
 // Wheel zoom input handling
 export const WHEEL_DELTA_PER_STEP = 100;  // Pixels of scroll delta per zoom step
-export const WHEEL_DEBOUNCE_MS = 50;       // Debounce interval for wheel events
+export const WHEEL_DEBOUNCE_MS = 16;       // ~1 frame at 60fps, allows smooth trackpad zoom
 
 // Pinch gesture handling
 export const PINCH_THRESHOLD_PX = 10;  // Min distance change before treating as pinch vs pan
