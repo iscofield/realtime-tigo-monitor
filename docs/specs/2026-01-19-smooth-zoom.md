@@ -98,7 +98,7 @@ This creates the appearance of the image "redrawing from top-left" during zoom, 
 - Set `false` on: fit-to-viewport OR fit-to-width button clicks
 - On resize: only call `centerView()` if `hasManuallyZoomed === false`
 
-**FR-7.5**: Programmatic zoom operations (fit-to-viewport, fit-to-width) MUST NOT trigger `hasManuallyZoomed = true`. Use an `isProgrammaticZoom` ref guard to suppress the `onZoom` callback during programmatic calls.
+**FR-7.5**: Programmatic zoom operations (fit-to-viewport, fit-to-width) MUST NOT trigger `hasManuallyZoomed = true`. Use an `isProgrammaticZoom` ref guard to suppress the `onZoom` callback during programmatic calls. **Implementation note:** The pattern assumes `onZoom` fires synchronously during `centerView()`/`setTransform()` calls. Verify during implementation with console logging; if callbacks fire asynchronously (e.g., on animation frames), a persistent flag with animation-end reset may be needed instead.
 
 ## Non-Functional Requirements
 
@@ -173,6 +173,37 @@ App
 ```
 
 ### Component Structure
+
+```tsx
+// hooks/useMediaQuery.ts - SSR-safe media query hook
+import { useState, useEffect } from 'react';
+
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false);
+
+  useEffect(() => {
+    // SSR guard
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+
+    const mediaQuery = window.matchMedia(query);
+    setMatches(mediaQuery.matches);
+
+    const handler = (event: MediaQueryListEvent) => setMatches(event.matches);
+
+    // Modern API (addEventListener) with fallback (addListener for Safari < 14)
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', handler);
+      return () => mediaQuery.removeEventListener('change', handler);
+    } else {
+      // Safari < 14 fallback
+      mediaQuery.addListener(handler);
+      return () => mediaQuery.removeListener(handler);
+    }
+  }, [query]);
+
+  return matches;
+}
+```
 
 ```tsx
 // App.tsx - Main component with zoom state management
@@ -671,6 +702,21 @@ The library's `activationKeys` does NOT work for wheel events because it checks 
 - [ ] Safari/iOS pinch and pan
 - [ ] Firefox/macOS trackpad behavior
 - [ ] Edge/Windows trackpad behavior
+- [ ] Chrome/Windows touchpad
+- [ ] Firefox/Windows mouse wheel
+- [ ] Chrome/Android pinch and pan
+- [ ] Samsung Internet/Android pinch and pan
+
+**Interaction edge cases:**
+- [ ] Zoom while panning (lift one finger during two-finger gesture)
+- [ ] Pan at MIN_ZOOM (0.25x) - verify content still movable
+- [ ] Pan at MAX_ZOOM (2.0x) - verify bounds work correctly
+- [ ] Rapid zoom direction changes (zoom in → zoom out quickly)
+
+**Accessibility:**
+- [ ] Keyboard navigation of zoom controls (Tab to buttons, Enter to activate)
+- [ ] Focus visible styles on zoom control buttons
+- [ ] Zoom level announced on change (aria-live region or equivalent)
 
 **Resize behavior:**
 - [ ] Window resize re-fits when `hasManuallyZoomed = false`
@@ -780,11 +826,21 @@ return () => wrapper.removeEventListener('wheel', handleWheel, options);
 
 ---
 
-**Specification Version:** 1.4
+**Specification Version:** 1.5
 **Last Updated:** January 2026
 **Authors:** Claude
 
 ## Changelog
+
+### v1.5 (January 2026)
+**Summary:** Address fourth review cycle - SSR hook, callback verification, expanded testing
+
+**Changes:**
+- FR-7.5: Added implementation note to verify synchronous callback behavior during development
+- Added `useMediaQuery` SSR-safe hook implementation to Component Structure section
+- Expanded Browser-specific test matrix: Chrome/Windows, Firefox/Windows, Chrome/Android, Samsung Internet
+- Added Interaction edge cases test section: mid-gesture changes, zoom limit panning, rapid direction changes
+- Added Accessibility test section: keyboard navigation, focus styles, zoom announcements
 
 ### v1.4 (January 2026)
 **Summary:** Address third review cycle - debouncing, edge cases, documentation clarity
