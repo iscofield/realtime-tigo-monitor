@@ -70,6 +70,7 @@ const modeToggleSpacerStyle: CSSProperties = {
 
 const layoutContainerStyle: CSSProperties = {
   flexGrow: 1,
+  position: 'relative',
   overflow: 'hidden',
 };
 
@@ -159,7 +160,16 @@ function App() {
 
       // Re-fit only if user hasn't manually zoomed
       if (!hasManuallyZoomed.current && transformRef.current) {
-        transformRef.current.centerView(newFitZooms.fitViewportZoom, 0);
+        // Use explicit setTransform instead of centerView for reliable positioning
+        const wrapperBounds =
+          transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
+        if (wrapperBounds) {
+          const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
+          const contentHeight = (LAYOUT_HEIGHT + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
+          const centerX = (wrapperBounds.width - contentWidth) / 2;
+          const centerY = Math.max(0, (wrapperBounds.height - contentHeight) / 2);
+          transformRef.current.setTransform(centerX, centerY, newFitZooms.fitViewportZoom, 0);
+        }
       }
     };
 

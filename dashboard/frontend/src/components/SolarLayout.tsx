@@ -166,11 +166,27 @@ export function SolarLayout({
 
   // Fix for tab switching: centerOnInit doesn't always work reliably when remounting
   // Manually center the view after a short delay to ensure the container has proper dimensions
+  // Uses explicit setTransform instead of centerView for reliable positioning
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (transformRef.current) {
-        transformRef.current.centerView(initialScale, 0);
-      }
+      if (!transformRef.current) return;
+
+      // Get wrapper bounds for accurate positioning
+      const wrapperBounds =
+        transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
+      if (!wrapperBounds) return;
+
+      // Calculate content dimensions at initial scale
+      const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * initialScale;
+      const contentHeight = (LAYOUT_HEIGHT + CONTENT_PADDING * 2) * initialScale;
+
+      // Calculate centered positions
+      const centerX = (wrapperBounds.width - contentWidth) / 2;
+      // Use Math.max(0, ...) to ensure content never goes above viewport
+      const centerY = Math.max(0, (wrapperBounds.height - contentHeight) / 2);
+
+      // Use setTransform with explicit positions instead of centerView
+      transformRef.current.setTransform(centerX, centerY, initialScale, 0);
     }, 50);
     return () => clearTimeout(timer);
   }, [transformRef, initialScale]);
