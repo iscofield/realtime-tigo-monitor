@@ -17,9 +17,13 @@ import {
 } from '../constants';
 import './SolarLayout.css';
 
-// Wheel uses smaller step than button zoom (ZOOM_STEP=0.25) for smoother feel
-const WHEEL_ZOOM_STEP = 0.1;
-const ANIMATION_MS = 200;
+// Wheel zoom configuration
+// Base step scaled by deltaY magnitude for proportional feel across input devices
+const WHEEL_ZOOM_SENSITIVITY = 0.002; // Multiplied by pixel delta for zoom step
+const MIN_WHEEL_ZOOM_STEP = 0.02; // Minimum step to ensure some zoom happens
+const MAX_WHEEL_ZOOM_STEP = 0.15; // Cap to prevent jarring jumps
+const WHEEL_ANIMATION_MS = 100; // Shorter animation for snappier wheel response
+const PIXELS_PER_LINE = 40; // Approximate pixels per line for deltaMode=1 (mouse wheels)
 
 interface SolarLayoutProps {
   panels: PanelData[];
@@ -77,10 +81,26 @@ export function SolarLayout({
 
   // Custom wheel handler - checks for Ctrl/Cmd modifier before zooming
   // This works around the library's broken activationKeys (GitHub #113, #370)
+  //
+  // IMPORTANT: On macOS, trackpad pinch gestures generate synthetic wheel events
+  // with ctrlKey=true. We must NOT intercept these - let the library handle pinch
+  // natively via touch/gesture events. We only handle actual Ctrl+scroll (keyboard).
+  //
+  // Heuristic to detect synthetic pinch vs real Ctrl+scroll:
+  // - Pinch events have ctrlKey=true but NO keyboard Ctrl press
+  // - We can't detect this directly, but pinch events typically have very small
+  //   deltaY values (< 10) while real mouse wheel has larger values
+  // - However, this isn't reliable, so we check metaKey only (Cmd+scroll on Mac)
+  //   and let ctrlKey events pass through to the library's pinch handler
   const handleWheel = useCallback(
     (event: WheelEvent) => {
-      // Only zoom if Ctrl (Windows/Linux) or Cmd (Mac) is held
-      if (event.ctrlKey || event.metaKey) {
+      // On macOS: Only handle Cmd+scroll (metaKey), not Ctrl+scroll
+      // ctrlKey on Mac is often synthetic from pinch gestures
+      // On Windows/Linux: Handle Ctrl+scroll (ctrlKey)
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const shouldZoom = isMac ? event.metaKey : event.ctrlKey;
+
+      if (shouldZoom) {
         event.preventDefault();
 
         if (!transformRef.current) return;
@@ -88,20 +108,35 @@ export function SolarLayout({
         // Ignore horizontal-only scroll (deltaY === 0)
         if (event.deltaY === 0) return;
 
-        // Debounce: Prevent animation overlap on rapid scroll
+        // Debounce: Prevent animation overlap on very rapid scroll
         const now = Date.now();
         if (now - lastZoomTime.current < WHEEL_DEBOUNCE_MS) return;
         lastZoomTime.current = now;
 
         onManualZoom(); // Track as manual zoom
 
+        // Normalize deltaY to pixels based on deltaMode
+        // deltaMode 0 = pixels (trackpad, smooth-scroll mouse)
+        // deltaMode 1 = lines (traditional mouse wheel, ~40px per line)
+        // deltaMode 2 = pages (rare, ~800px per page)
+        let deltaPixels = event.deltaY;
+        if (event.deltaMode === 1) {
+          deltaPixels = event.deltaY * PIXELS_PER_LINE;
+        } else if (event.deltaMode === 2) {
+          deltaPixels = event.deltaY * window.innerHeight;
+        }
+
+        // Calculate proportional zoom step based on normalized pixel delta
+        const rawStep = Math.abs(deltaPixels) * WHEEL_ZOOM_SENSITIVITY;
+        const zoomStep = Math.max(MIN_WHEEL_ZOOM_STEP, Math.min(MAX_WHEEL_ZOOM_STEP, rawStep));
+
         // Determine zoom direction based on wheel delta
         if (event.deltaY < 0) {
           // Scroll up = zoom in (centered on viewport, not cursor)
-          transformRef.current.zoomIn(WHEEL_ZOOM_STEP, ANIMATION_MS);
+          transformRef.current.zoomIn(zoomStep, WHEEL_ANIMATION_MS);
         } else {
           // Scroll down = zoom out (centered on viewport, not cursor)
-          transformRef.current.zoomOut(WHEEL_ZOOM_STEP, ANIMATION_MS);
+          transformRef.current.zoomOut(zoomStep, WHEEL_ANIMATION_MS);
         }
       }
       // Without modifier: let event bubble naturally (browser handles scroll/pan)
