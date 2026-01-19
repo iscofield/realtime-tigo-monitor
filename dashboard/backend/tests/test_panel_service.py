@@ -99,8 +99,10 @@ class TestPanelService:
         # Update panel
         service.update_panel(sn="4-C3F23CR", watts=385.0, voltage_in=42.5)
 
-        # Simulate time passing beyond staleness threshold
-        service.last_update["A1"] = datetime.now(timezone.utc) - timedelta(seconds=150)
+        # Simulate time passing beyond staleness threshold (use actual setting + buffer)
+        settings = get_settings()
+        stale_seconds = settings.staleness_threshold_seconds + 50
+        service.last_update["A1"] = datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)
 
         service.check_staleness()
         assert service.panel_state["A1"].stale is True
