@@ -295,8 +295,10 @@ import {
 } from 'react-zoom-pan-pinch';
 
 // Constants for custom wheel handler
+// Wheel uses smaller step than button zoom (ZOOM_STEP=0.25) for smoother feel
 const WHEEL_ZOOM_STEP = 0.1;
 const ANIMATION_MS = 200;
+const ZOOM_DEBOUNCE_MS = 50; // Prevent animation overlap on rapid scroll
 
 interface SolarLayoutProps {
   panels: PanelData[];
@@ -319,6 +321,7 @@ export function SolarLayout({
 
   // Ref for wrapper element to attach custom wheel handler
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const lastZoomTime = useRef(0); // Debounce rapid scroll (GitHub #408)
 
   // Custom wheel handler - works around library's broken activationKeys
   // Library checks event.key instead of event.ctrlKey/metaKey (GitHub #113, #370)
@@ -329,17 +332,25 @@ export function SolarLayout({
 
       if (!transformRef.current) return;
 
+      // Guard: Ignore horizontal-only scroll (deltaY === 0)
+      if (event.deltaY === 0) return;
+
+      // Debounce: Prevent animation overlap on rapid scroll
+      const now = Date.now();
+      if (now - lastZoomTime.current < ZOOM_DEBOUNCE_MS) return;
+      lastZoomTime.current = now;
+
       onManualZoom(); // Track as manual zoom
 
       if (event.deltaY < 0) {
-        // Scroll up = zoom in
+        // Scroll up = zoom in (centered on viewport, not cursor)
         transformRef.current.zoomIn(WHEEL_ZOOM_STEP, ANIMATION_MS);
       } else {
-        // Scroll down = zoom out
+        // Scroll down = zoom out (centered on viewport, not cursor)
         transformRef.current.zoomOut(WHEEL_ZOOM_STEP, ANIMATION_MS);
       }
     }
-    // Without modifier: event bubbles naturally (page can scroll if needed)
+    // Without modifier: event bubbles naturally (page scrolls if scrollable)
   }, [transformRef, onManualZoom]);
 
   // Attach custom wheel handler
@@ -347,9 +358,10 @@ export function SolarLayout({
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
 
-    // passive: false allows preventDefault for Ctrl+wheel
-    wrapper.addEventListener('wheel', handleWheel, { passive: false });
-    return () => wrapper.removeEventListener('wheel', handleWheel);
+    // passive: false required to call preventDefault() on modern browsers
+    const options = { passive: false };
+    wrapper.addEventListener('wheel', handleWheel, options);
+    return () => wrapper.removeEventListener('wheel', handleWheel, options);
   }, [handleWheel]);
 
   return (
@@ -462,12 +474,12 @@ export function ZoomControls({
       console.warn('ZoomControls: transformRef not ready');
       return;
     }
-    // Set guard BEFORE calling library method
+    // Set guard BEFORE calling library method, reset immediately after
+    // Library callbacks fire synchronously, so guard only needs to be set during the call
     isProgrammaticZoomRef.current = true;
     onFitAction(); // Clears hasManuallyZoomed
     transformRef.current.centerView(fitViewportZoom, ANIMATION_MS);
-    // Clear guard after animation completes
-    setTimeout(() => { isProgrammaticZoomRef.current = false; }, ANIMATION_MS + 50);
+    isProgrammaticZoomRef.current = false;
   };
 
   const handleFitWidth = () => {
@@ -476,25 +488,19 @@ export function ZoomControls({
       return;
     }
 
-    // Set guard BEFORE calling library method
-    isProgrammaticZoomRef.current = true;
-    onFitAction(); // Clears hasManuallyZoomed (fit-to-width should also re-fit on resize)
-
     // Calculate centered X position for fit-to-width
     const wrapperBounds = transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
-    if (!wrapperBounds) {
-      isProgrammaticZoomRef.current = false;
-      return;
-    }
+    if (!wrapperBounds) return;
 
     const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * fitWidthZoom;
     const centerX = (wrapperBounds.width - contentWidth) / 2;
 
+    // Set guard, call method, reset immediately (callbacks are synchronous)
+    isProgrammaticZoomRef.current = true;
+    onFitAction(); // Clears hasManuallyZoomed (fit-to-width should also re-fit on resize)
     // Y=0 to start at top, allowing downward pan
     transformRef.current.setTransform(centerX, 0, fitWidthZoom, ANIMATION_MS);
-
-    // Clear guard after animation completes
-    setTimeout(() => { isProgrammaticZoomRef.current = false; }, ANIMATION_MS + 50);
+    isProgrammaticZoomRef.current = false;
   };
 
   return (
@@ -568,12 +574,23 @@ The library's `activationKeys` does NOT work for wheel events because it checks 
 4. Lets event bubble naturally without modifier
 
 **Test results with custom handler:**
-- [x] Plain wheel → No zoom (events bubble)
-- [x] Ctrl+wheel → Zooms in/out ✓
+- [x] Plain wheel → No zoom, page scrolls if viewport is scrollable
+- [x] Ctrl+wheel → Zooms in/out centered on **viewport center** (not cursor position - `zoomIn()`/`zoomOut()` don't support cursor-centered zoom)
 - [x] Drag → Pans view ✓
-- [x] Pinch-to-zoom → Works (library native) ✓
+- [x] Pinch-to-zoom → Works (library native), centered on pinch point ✓
 - [x] Panel overlays → Scale correctly at all zoom levels ✓
 - [x] Bundle size → ~77KB gzipped total (+~8KB from library) ✓
+
+**Test environment:**
+- Browser: Chrome 131 (Playwright headless mode)
+- Platform: macOS (Darwin 24.6.0)
+- Input: Programmatic wheel events via Playwright `browser_evaluate`
+- Trackpad: Not tested in spike (Playwright uses synthetic events)
+
+**Edge cases identified for Phase 2 testing:**
+- Rapid Ctrl+scroll (animation overlap) - mitigated with 50ms debounce
+- Horizontal scroll (deltaY === 0) - guarded to prevent spurious zoom
+- Physical trackpad/mouse testing required in Phase 2 (synthetic events in spike)
 
 **Decision:** Proceed with custom wheel handler approach. Spike code on `feature/smooth-zoom-spike` branch.
 
@@ -633,9 +650,9 @@ The library's `activationKeys` does NOT work for wheel events because it checks 
 ### Phase 2: Testing via Playwright MCP
 
 **Desktop (1280x720 viewport):**
-- [ ] Ctrl+wheel zooms centered on cursor
-- [ ] Plain wheel does NOT zoom (verify: pans or does nothing)
-- [ ] Trackpad two-finger scroll does NOT zoom
+- [ ] Ctrl+wheel zooms centered on **viewport center** (not cursor position - this is a limitation of `zoomIn()`/`zoomOut()`)
+- [ ] Plain wheel does NOT zoom (verify: page scrolls if scrollable, otherwise no effect)
+- [ ] Trackpad two-finger scroll does NOT zoom (same as plain wheel)
 - [ ] Click-and-drag pans
 - [ ] Horizontal pan does NOT trigger browser back gesture (Safari/Edge)
 - [ ] Zoom control buttons work (+, -, fit-viewport, fit-width)
@@ -713,21 +730,32 @@ The library's `activationKeys` does NOT work for wheel events because it checks 
 
 **Custom Wheel Handler Pattern (required for modifier key support):**
 ```typescript
+const lastZoomTime = useRef(0);
+const ZOOM_DEBOUNCE_MS = 50;
+
 const handleWheel = useCallback((event: WheelEvent) => {
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault();
     if (!transformRef.current) return;
+    if (event.deltaY === 0) return; // Ignore horizontal-only scroll
+
+    // Debounce rapid scroll to prevent animation overlap (GitHub #408)
+    const now = Date.now();
+    if (now - lastZoomTime.current < ZOOM_DEBOUNCE_MS) return;
+    lastZoomTime.current = now;
 
     if (event.deltaY < 0) {
-      transformRef.current.zoomIn(ZOOM_STEP, ANIMATION_MS);
+      transformRef.current.zoomIn(WHEEL_ZOOM_STEP, ANIMATION_MS);
     } else {
-      transformRef.current.zoomOut(ZOOM_STEP, ANIMATION_MS);
+      transformRef.current.zoomOut(WHEEL_ZOOM_STEP, ANIMATION_MS);
     }
   }
 }, []);
 
 // Attach with { passive: false } to allow preventDefault
-wrapper.addEventListener('wheel', handleWheel, { passive: false });
+const options = { passive: false };
+wrapper.addEventListener('wheel', handleWheel, options);
+return () => wrapper.removeEventListener('wheel', handleWheel, options);
 ```
 
 **ReactZoomPanPinchRef Methods:**
@@ -752,11 +780,25 @@ wrapper.addEventListener('wheel', handleWheel, { passive: false });
 
 ---
 
-**Specification Version:** 1.3
+**Specification Version:** 1.4
 **Last Updated:** January 2026
 **Authors:** Claude
 
 ## Changelog
+
+### v1.4 (January 2026)
+**Summary:** Address third review cycle - debouncing, edge cases, documentation clarity
+
+**Changes:**
+- Added rapid scroll debouncing (50ms `ZOOM_DEBOUNCE_MS`) to prevent animation overlap (GitHub #408)
+- Added `deltaY === 0` guard to prevent spurious zoom on horizontal-only scroll
+- Updated event listener cleanup to pass options consistently to add/remove
+- Changed `isProgrammaticZoom` guard to immediate reset pattern (callbacks are synchronous)
+- Added comment explaining `WHEEL_ZOOM_STEP` (0.1) vs button `ZOOM_STEP` (0.25)
+- Updated Phase 0 findings with detailed test environment (Chrome 131, macOS, Playwright)
+- Clarified Ctrl+wheel zooms on **viewport center** (not cursor position) in test matrix
+- Clarified plain wheel behavior: "page scrolls if scrollable, otherwise no effect"
+- Added note that physical trackpad testing needed in Phase 2 (spike used synthetic events)
 
 ### v1.3 (January 2026)
 **Summary:** Spike completed - custom wheel handler validated, activationKeys confirmed broken
