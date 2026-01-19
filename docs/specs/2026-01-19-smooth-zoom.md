@@ -625,7 +625,23 @@ The library's `activationKeys` does NOT work for wheel events because it checks 
 
 **Decision:** Proceed with custom wheel handler approach. Spike code on `feature/smooth-zoom-spike` branch.
 
-### Phase 1: Core Implementation
+### Phase 1: Core Implementation ✅ COMPLETED
+
+**Implementation Date:** January 2026
+
+**Implementation Notes:**
+- The library's `animation` prop does not exist in v3.7.0; used `smooth` prop instead
+- Library callbacks fire synchronously during method calls, confirming the `isProgrammaticZoom` guard pattern works
+- Bundle size: 78.73KB gzipped total (within NFR-3 requirements)
+
+**E2E Test Results (Playwright MCP):**
+- [x] Zoom in/out buttons work (ZOOM_STEP = 0.25)
+- [x] Fit-to-viewport scales and centers correctly
+- [x] Fit-to-width fills width, allows vertical pan
+- [x] Zoom limits enforced (25%-200%), buttons disabled at limits
+- [x] Panel overlays positioned correctly at all zoom levels
+- [x] Mode switching (Watts/Voltage) preserves zoom state
+- [x] Mobile viewport layout correct (bottom nav, fixed mode toggle)
 
 1. **Add dependency**
    - Install `react-zoom-pan-pinch@^3.7.0`
@@ -826,11 +842,24 @@ return () => wrapper.removeEventListener('wheel', handleWheel, options);
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** January 2026
 **Authors:** Claude
 
 ## Changelog
+
+### v1.6 (January 2026)
+**Summary:** Phase 1 implementation completed
+
+**Changes:**
+- Phase 1: Marked as COMPLETED with implementation notes and E2E test results
+- NFR-2: Corrected API - library uses `smooth` prop, not `animation.disabled` (v3.7.0)
+- Verified `isProgrammaticZoom` guard pattern works (callbacks fire synchronously)
+- Bundle size confirmed: 78.73KB gzipped total
+
+**Implementation Deviations:**
+- Used `smooth={!prefersReducedMotion}` instead of `animation={{ disabled: prefersReducedMotion }}` (API difference)
+- Removed deprecated files: useWheelZoom.ts, usePinchZoom.ts, utils/zoom.ts
 
 ### v1.5 (January 2026)
 **Summary:** Address fourth review cycle - SSR hook, callback verification, expanded testing
