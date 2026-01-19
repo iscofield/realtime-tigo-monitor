@@ -5,6 +5,56 @@ import { useMediaQuery } from '../hooks/useMediaQuery';
 import { analyzeStringForMismatches, type StringAnalysis } from '../utils/mismatchDetection';
 import { MOBILE_BREAKPOINT } from '../constants';
 
+// Format relative time from ISO timestamp
+function formatRelativeTime(isoTimestamp: string | undefined): { text: string; isSeconds: boolean } {
+  if (!isoTimestamp) {
+    return { text: '—', isSeconds: false };
+  }
+
+  const timestamp = new Date(isoTimestamp);
+  const now = new Date();
+  const diffMs = now.getTime() - timestamp.getTime();
+  const diffSeconds = Math.floor(diffMs / 1000);
+
+  if (diffSeconds < 0) {
+    return { text: '0s', isSeconds: true };
+  }
+
+  if (diffSeconds < 60) {
+    return { text: `${diffSeconds}s`, isSeconds: true };
+  }
+
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  return { text: `${diffMinutes} min`, isSeconds: false };
+}
+
+// Component that auto-updates for seconds display
+interface RelativeTimeCellProps {
+  lastUpdate: string | undefined;
+  style: CSSProperties;
+}
+
+function RelativeTimeCell({ lastUpdate, style }: RelativeTimeCellProps) {
+  const [, setTick] = useState(0);
+
+  const { text, isSeconds } = formatRelativeTime(lastUpdate);
+
+  // Only set up interval if we're showing seconds
+  useEffect(() => {
+    if (!isSeconds || !lastUpdate) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setTick(t => t + 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isSeconds, lastUpdate]);
+
+  return <td style={style}>{text}</td>;
+}
+
 // Column configuration
 const ALL_COLUMNS = new Set([
   'display_label', 'tigo_label', 'node_id', 'sn', 'actual_system',
@@ -654,6 +704,8 @@ function StringSection({ stringId, panels, analysis, visibleColumns, collapsed, 
                       {col.label}
                     </th>
                   ))}
+                  {/* Age column - always visible, not toggleable */}
+                  <th style={thStyle}>Age</th>
                 </tr>
               </thead>
               <tbody>
@@ -667,6 +719,8 @@ function StringSection({ stringId, panels, analysis, visibleColumns, collapsed, 
                       {col.key === 'watts' && `${Math.round(summary.power)}W`}
                     </td>
                   ))}
+                  {/* Age column - empty for summary row */}
+                  <td style={tdStyle}>—</td>
                 </tr>
 
                 {/* Panel rows */}
@@ -725,6 +779,8 @@ function StringSection({ stringId, panels, analysis, visibleColumns, collapsed, 
                           </td>
                         );
                       })}
+                      {/* Age column - auto-updating relative time */}
+                      <RelativeTimeCell lastUpdate={panel.last_update} style={tdStyle} />
                     </tr>
                   );
                 })}

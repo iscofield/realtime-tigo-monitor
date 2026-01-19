@@ -93,10 +93,12 @@ export function SolarLayout({ panels, mode, zoom, scrollRef, onZoomChange }: Sol
   };
 
   // Inner sizer - sets the scrollable area to match scaled content
+  // margin: auto centers the sizer when it's smaller than the scroll container
   const sizerStyle: CSSProperties = {
     width: `${LAYOUT_WIDTH * zoom}px`,
     height: `${LAYOUT_HEIGHT * zoom}px`,
     position: 'relative',
+    margin: 'auto',
   };
 
   // Transform wrapper - applies visual scaling, stays at native dimensions

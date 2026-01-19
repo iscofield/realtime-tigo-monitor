@@ -25,6 +25,7 @@ export interface PanelData {
   stale?: boolean;
   is_temporary?: boolean;
   actual_system?: string;  // Which CCA actually sent data for this panel
+  last_update?: string;  // ISO timestamp of when panel data was last received
   position: Position;
   // Backward compatibility: accept voltage as alias for voltage_in
   voltage?: number | null;
