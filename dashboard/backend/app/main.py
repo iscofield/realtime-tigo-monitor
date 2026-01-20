@@ -13,6 +13,10 @@ from .config import get_settings
 from .panel_service import PanelService
 from .websocket_manager import ConnectionManager
 from .mqtt_client import MQTTClient
+from .config_router import router as config_router
+from .config_service import get_config_service
+from .discovery_router import router as discovery_router
+from .discovery_router import discovery_websocket_router
 
 # Configure logging
 settings = get_settings()
@@ -103,11 +107,14 @@ async def lifespan(app: FastAPI):
     global mqtt_client, mock_refresh_task
 
     # Load panel configuration (FR-1.5)
+    # Allow startup without config for setup wizard
     try:
         panel_service.load_config()
+    except FileNotFoundError:
+        logger.info("No panel configuration found - setup wizard mode")
     except Exception as e:
         logger.error(f"Failed to load panel configuration: {e}")
-        raise
+        # Don't raise - allow app to start for setup wizard
 
     # Start WebSocket background tasks
     ws_manager.start_background_tasks()
@@ -157,6 +164,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include configuration router for multi-user setup
+app.include_router(config_router)
+
+# Include discovery router for setup wizard
+app.include_router(discovery_router)
+app.include_router(discovery_websocket_router)
 
 # Serve static files (layout image)
 app.mount("/static", StaticFiles(directory="static"), name="static")

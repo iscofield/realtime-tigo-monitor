@@ -4,16 +4,24 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Set
 
+import yaml
+
 from .models import PanelMapping, PanelConfig, PanelData, Position
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Config paths for multi-user setup
+YAML_PANELS_PATH = Path("config/panels.yaml")
+LEGACY_JSON_PATH = Path("config/panel_mapping.json")
+
 
 class PanelService:
     def __init__(self, config_path: str = "config/panel_mapping.json"):
         self.config_path = Path(config_path)
+        self.yaml_path = YAML_PANELS_PATH
         self.panel_mapping: Optional[PanelMapping] = None
+        self._using_yaml = False
         self.panels_by_sn: dict[str, PanelConfig] = {}
         self.panel_state: dict[str, PanelData] = {}
         self.last_update: dict[str, datetime] = {}
@@ -26,9 +34,65 @@ class PanelService:
         self.node_mappings: dict[str, dict[str, str]] = {}
 
     def load_config(self) -> None:
-        """Load and validate panel mapping configuration (FR-1.5)."""
+        """Load and validate panel mapping configuration (FR-1.5).
+
+        Precedence (per Phase 1 spec):
+        1. If YAML files exist, use YAML (ignore JSON)
+        2. If only JSON exists, use JSON
+        """
+        # Check for YAML config first (Phase 1 multi-user format)
+        if self.yaml_path.exists():
+            self._load_yaml_config()
+            return
+
+        # Fall back to legacy JSON format
         if not self.config_path.exists():
-            raise FileNotFoundError(f"Panel mapping config not found: {self.config_path}")
+            raise FileNotFoundError(
+                f"No configuration found. Expected YAML at {self.yaml_path} "
+                f"or JSON at {self.config_path}"
+            )
+
+        self._load_legacy_json_config()
+
+    def _load_yaml_config(self) -> None:
+        """Load configuration from YAML format (Phase 1)."""
+        logger.info(f"Loading YAML config from {self.yaml_path}")
+
+        with open(self.yaml_path, "r") as f:
+            data = yaml.safe_load(f)
+
+        if data is None:
+            data = {"panels": [], "translations": {}}
+
+        # Convert YAML format to internal PanelMapping format
+        panels = []
+        for p in data.get("panels", []):
+            position = None
+            if "position" in p and p["position"]:
+                position = Position(
+                    x_percent=p["position"]["x_percent"],
+                    y_percent=p["position"]["y_percent"]
+                )
+            panels.append(PanelConfig(
+                sn=p["serial"],
+                tigo_label=p["tigo_label"],
+                display_label=p["display_label"],
+                string=p["string"],
+                system=p["cca"],  # YAML uses 'cca', internal uses 'system'
+                position=position if position else Position(x_percent=0, y_percent=0),
+            ))
+
+        self.panel_mapping = PanelMapping(
+            panels=panels,
+            translations=data.get("translations", {})
+        )
+        self._config_mtime = self.yaml_path.stat().st_mtime
+        self._using_yaml = True
+        logger.info(f"Loaded {len(panels)} panels from YAML config")
+
+    def _load_legacy_json_config(self) -> None:
+        """Load configuration from legacy JSON format."""
+        logger.info(f"Loading legacy JSON config from {self.config_path}")
 
         with open(self.config_path, "r") as f:
             data = json.load(f)
@@ -36,6 +100,7 @@ class PanelService:
         # Pydantic validation handles FR-1.5 requirements
         self.panel_mapping = PanelMapping(**data)
         self._config_mtime = self.config_path.stat().st_mtime
+        self._using_yaml = False
 
         # Build lookup by serial number
         self.panels_by_sn = {p.sn: p for p in self.panel_mapping.panels}
@@ -77,9 +142,21 @@ class PanelService:
         Uses a 2-second tolerance to avoid spurious reloads on NAS mounts
         where mtime can fluctuate due to network timing issues.
         """
-        if not self.config_path.exists():
+        # Determine which config file to check
+        if self._using_yaml:
+            config_file = self.yaml_path
+        else:
+            config_file = self.config_path
+
+        if not config_file.exists():
+            # Check if YAML was added (upgrade from JSON)
+            if self.yaml_path.exists() and not self._using_yaml:
+                logger.info("YAML config detected, switching from JSON...")
+                self.load_config()
+                return True
             return False
-        current_mtime = self.config_path.stat().st_mtime
+
+        current_mtime = config_file.stat().st_mtime
         # Require at least 2 seconds difference to avoid NAS timing jitter
         if current_mtime > self._config_mtime + 2.0:
             logger.info("Config file changed, reloading...")

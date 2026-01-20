@@ -1,0 +1,26 @@
+# Panel definitions - generated during setup, can be manually edited
+# Copy this file to panels.yaml and customize for your setup
+
+panels:
+  # Example panel entry:
+  - serial: "4-C3F23CR"           # Panel serial number from Tigo optimizer
+    cca: "primary"                # Which CCA this panel connects to
+    string: "A"                   # String name (must match system.yaml)
+    tigo_label: "A1"              # Label as reported by Tigo
+    display_label: "A1"           # Label shown in UI (can differ for translations)
+    position:                     # Optional: position on layout image (Phase 2)
+      x_percent: 35.5
+      y_percent: 11.75
+
+  # Example with translation (Tigo reports different label than display):
+  # - serial: "4-C3F277H"
+  #   cca: "primary"
+  #   string: "F"
+  #   tigo_label: "B9"            # What Tigo reports
+  #   display_label: "F6"         # What we show in the UI
+
+# Translations for label overrides (optional, for documentation)
+# These are applied automatically based on tigo_label -> display_label mapping
+translations:
+  # "B9": "F6"
+  # "B10": "F7"

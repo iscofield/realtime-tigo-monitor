@@ -1,0 +1,30 @@
+# Solar Tigo Viewer System Configuration
+# Copy this file to system.yaml and customize for your setup
+
+version: 1  # Schema version for forward/backward compatibility
+
+mqtt:
+  server: "192.168.1.100"      # Your MQTT broker IP/hostname
+  port: 1883                   # MQTT port (default: 1883)
+  username: "mqtt_user"        # Optional: MQTT username
+  password: "mqtt_password"    # Optional: MQTT password
+
+# List of Tigo CCA devices
+# Each CCA connects to one serial port and manages multiple strings of panels
+ccas:
+  - name: "primary"                    # Name used in MQTT topics (taptap/primary/...)
+    serial_device: "/dev/ttyACM2"      # Serial device path on Raspberry Pi
+    strings:
+      - name: "A"                      # String name (1-2 uppercase letters)
+        panel_count: 8                 # Number of panels in this string
+      - name: "B"
+        panel_count: 10
+
+  # Example second CCA (uncomment if you have two):
+  # - name: "secondary"
+  #   serial_device: "/dev/ttyACM3"
+  #   strings:
+  #     - name: "F"
+  #       panel_count: 11
+  #     - name: "G"
+  #       panel_count: 11

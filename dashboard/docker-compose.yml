@@ -12,7 +12,8 @@ services:
       - TAPTAP_PRIMARY_STATE_FILE=/app/state/primary/taptap.state
       - TAPTAP_SECONDARY_STATE_FILE=/app/state/secondary/taptap.state
     volumes:
-      - ../config/panel_mapping.json:/app/config/panel_mapping.json:ro
+      # Config directory - writable for setup wizard to save YAML configs
+      - ../config:/app/config
       - ../assets/layout.png:/app/static/layout.png:ro
       # Mount taptap state files for status checking (read-only)
       - ../tigo-mqtt/data/primary:/app/state/primary:ro
