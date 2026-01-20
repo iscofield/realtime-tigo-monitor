@@ -33,3 +33,15 @@ dist/
 .playwright-mcp/
 docs/specs/prompt.md
 backend/.env
+
+# Multi-user configuration (Phase 1)
+# User-specific config files are git-ignored
+# Example templates (*.example.yaml) are tracked
+config/system.yaml
+config/panels.yaml
+config/layout.yaml
+config/*.bak
+config/.layout-history/
+
+# Legacy config backup (created during migration)
+config/panel_mapping.json.backup
