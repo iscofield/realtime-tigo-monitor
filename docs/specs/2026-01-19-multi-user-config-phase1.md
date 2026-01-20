@@ -214,9 +214,18 @@ The wizard MUST:
 
 The wizard MUST wait for MQTT data and show discovery progress:
 - Display expected panels from topology (grayed out initially)
+- **Panel display hierarchy:**
+  - **CCA sections**: Each CCA displayed as a distinct section with header showing:
+    - CCA name and serial device path
+    - Total panel count for CCA (discovered/expected)
+    - Status badge: "● Reporting" (green) if any panels discovered, "○ No Data" (red) if none
+  - **String groups within CCA**: Panels grouped by string with header showing:
+    - String name (e.g., "String A")
+    - Per-string count (e.g., "4 / 7")
+  - **All panels visible**: No scrolling container - all panels displayed at once for full visibility
 - As panels report in via MQTT:
-  - Show checkmark icon next to discovered panels
-  - Display serial number, current power, voltage
+  - Panel card highlighted (green border/background when discovered)
+  - Display current power (watts), serial number
   - Update in real-time via WebSocket (no polling needed)
 - Progress indicator: "Discovered X of Y expected panels"
 - "All panels discovered" celebration state
@@ -1489,11 +1498,21 @@ def test_disk_full_preserves_original():
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.6 (January 2026)
+**Summary:** Enhanced discovery UI with CCA/string segmentation
+
+**Changes:**
+- Updated FR-3.5 to specify panel display hierarchy:
+  - CCA sections with name, device path, total count, and reporting status badge
+  - String groups within each CCA with header showing per-string count (e.g., "String A (4/7)")
+  - No scrolling container - all panels visible at once for better overview
+- Panel cards show watts and serial number when discovered
 
 ### v1.5 (January 2026)
 **Summary:** Address review comments - serialization, API consistency, and testing clarity
