@@ -178,7 +178,8 @@ class DiscoveryService:
             if not node_serial:
                 continue
 
-            tigo_label = node_data.get("node_name", "")
+            # taptap-mqtt uses the label as the dictionary key, not as a field
+            tigo_label = node_key
             watts = node_data.get("power", 0.0)
             voltage = node_data.get("voltage_in", 0.0)
 
