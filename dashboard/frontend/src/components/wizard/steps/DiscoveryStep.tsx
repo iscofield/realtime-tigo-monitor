@@ -40,12 +40,36 @@ const progressBarStyle = (percent: number): CSSProperties => ({
 
 const panelGridStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-  gap: '12px',
-  maxHeight: '400px',
-  overflowY: 'auto',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
+  gap: '8px',
   padding: '4px',
 };
+
+const ccaSectionStyle: CSSProperties = {
+  padding: '16px',
+  backgroundColor: '#fafafa',
+  borderRadius: '8px',
+  border: '1px solid #e0e0e0',
+};
+
+const ccaHeaderStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: '12px',
+  paddingBottom: '8px',
+  borderBottom: '1px solid #e0e0e0',
+};
+
+const ccaStatusBadgeStyle = (hasDiscoveredPanels: boolean): CSSProperties => ({
+  display: 'inline-block',
+  padding: '4px 10px',
+  borderRadius: '12px',
+  fontSize: '12px',
+  fontWeight: 500,
+  backgroundColor: hasDiscoveredPanels ? '#e8f5e9' : '#ffebee',
+  color: hasDiscoveredPanels ? '#2e7d32' : '#c62828',
+});
 
 const panelCardStyle = (discovered: boolean): CSSProperties => ({
   padding: '12px',
@@ -119,16 +143,6 @@ export function DiscoveryStep({
 
   const discoveredCount = Object.keys(discoveredPanels).length;
   const progressPercent = expectedPanelCount > 0 ? (discoveredCount / expectedPanelCount) * 100 : 0;
-
-  // Generate expected panel labels
-  const expectedPanels: { cca: string; label: string }[] = [];
-  topology.ccas.forEach(cca => {
-    cca.strings.forEach(string => {
-      for (let i = 1; i <= string.panel_count; i++) {
-        expectedPanels.push({ cca: cca.name, label: `${string.name}${i}` });
-      }
-    });
-  });
 
   const connectWebSocket = useCallback(() => {
     const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/discovery`;
@@ -317,30 +331,60 @@ export function DiscoveryStep({
         )}
       </div>
 
-      {/* Panel Grid */}
-      <div>
-        <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>Expected Panels</h3>
-        <div style={panelGridStyle}>
-          {expectedPanels.map(({ cca, label }) => {
-            const discovered = Object.values(discoveredPanels).find(
-              p => p.cca === cca && p.tigo_label === label
-            );
-            return (
-              <div key={`${cca}-${label}`} style={panelCardStyle(!!discovered)}>
-                <div style={{ fontWeight: 600 }}>{label}</div>
-                <div style={{ fontSize: '12px', color: '#666' }}>{cca}</div>
-                {discovered && (
-                  <div style={{ marginTop: '4px', fontSize: '12px' }}>
-                    <div>{discovered.watts?.toFixed(0) || '—'}W</div>
-                    <div style={{ fontFamily: 'monospace', fontSize: '10px', color: '#999' }}>
-                      {discovered.serial}
-                    </div>
-                  </div>
-                )}
+      {/* Panel Grid - Segmented by CCA */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {topology.ccas.map(cca => {
+          // Get expected panels for this CCA
+          const ccaPanels: { label: string }[] = [];
+          cca.strings.forEach(string => {
+            for (let i = 1; i <= string.panel_count; i++) {
+              ccaPanels.push({ label: `${string.name}${i}` });
+            }
+          });
+
+          // Count discovered panels for this CCA
+          const discoveredForCCA = Object.values(discoveredPanels).filter(p => p.cca === cca.name);
+          const hasDiscoveredPanels = discoveredForCCA.length > 0;
+
+          return (
+            <div key={cca.name} style={ccaSectionStyle}>
+              <div style={ccaHeaderStyle}>
+                <div>
+                  <span style={{ fontWeight: 600, fontSize: '16px' }}>{cca.name}</span>
+                  <span style={{ marginLeft: '8px', fontSize: '14px', color: '#666' }}>
+                    ({cca.serial_device})
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <span style={{ fontSize: '14px', color: '#666' }}>
+                    {discoveredForCCA.length} / {ccaPanels.length} panels
+                  </span>
+                  <span style={ccaStatusBadgeStyle(hasDiscoveredPanels)}>
+                    {hasDiscoveredPanels ? '● Reporting' : '○ No Data'}
+                  </span>
+                </div>
               </div>
-            );
-          })}
-        </div>
+              <div style={panelGridStyle}>
+                {ccaPanels.map(({ label }) => {
+                  const discovered = discoveredForCCA.find(p => p.tigo_label === label);
+                  return (
+                    <div key={`${cca.name}-${label}`} style={panelCardStyle(!!discovered)}>
+                      <div style={{ fontWeight: 600 }}>{label}</div>
+                      {discovered && (
+                        <div style={{ marginTop: '4px', fontSize: '12px' }}>
+                          <div>{discovered.watts?.toFixed(0) || '—'}W</div>
+                          <div style={{ fontFamily: 'monospace', fontSize: '10px', color: '#999' }}>
+                            {discovered.serial}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Navigation */}
