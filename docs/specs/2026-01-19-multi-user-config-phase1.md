@@ -37,6 +37,8 @@ All user configuration MUST use YAML format:
 
 ```yaml
 # Solar Tigo Viewer System Configuration
+version: 1  # Schema version for forward/backward compatibility
+
 mqtt:
   server: "192.168.1.100"
   port: 1883
@@ -95,7 +97,24 @@ The backend MUST support reading from both:
 - New YAML format (`config/system.yaml`, `config/panels.yaml`)
 - Legacy JSON format (`config/panel_mapping.json`) for existing installations
 
-If both formats exist, YAML takes precedence with a warning logged.
+**Precedence rules:**
+- If YAML files exist, use YAML (ignore JSON)
+- If only JSON exists, use JSON and show migration banner
+
+**Migration workflow:**
+1. Dashboard detects legacy JSON config on startup
+2. Shows banner: "Legacy configuration detected. [Migrate to YAML] [Dismiss]"
+3. "Migrate to YAML" button opens migration wizard:
+   - Pre-fills MQTT settings (user must provide, not in JSON)
+   - Infers CCA topology from existing panel data
+   - Converts panel positions/labels to YAML format
+   - Offers preview before saving
+4. After migration, JSON file is renamed to `panel_mapping.json.backup`
+
+**Edge cases:**
+- Malformed JSON: Show error with option to start fresh with setup wizard
+- JSON panels not in YAML (after partial migration): Ignored with warning log
+- Phase 2 layout editor: Requires YAML format; migration required first
 
 ### FR-2: Tigo-MQTT Configuration Generation
 
@@ -133,6 +152,11 @@ The dashboard MUST provide generated files as a downloadable ZIP containing:
 - `.env.example`
 - `README.md` with deployment instructions
 
+Note: The ZIP assumes the user will clone the tigo-mqtt repository to get the Dockerfile and taptap binary. The README MUST include:
+1. Clone instructions for the tigo-mqtt repository
+2. Instructions to copy generated configs into the cloned directory
+3. Build and run commands
+
 ### FR-3: Setup Wizard
 
 **FR-3.1: First-Run Detection**
@@ -159,8 +183,10 @@ The wizard MUST collect system topology:
   - Serial device path (e.g., `/dev/ttyACM2`)
   - Add/remove strings
   - For each string:
-    - Name (single letter recommended, e.g., "A", "B")
+    - Name (1-2 letters recommended, e.g., "A", "B", "AA")
     - Expected panel count
+
+Note: Per-string configuration (voltage thresholds, HA prefixes) is not required. The taptap-mqtt binary handles all string-level settings automatically based on the MODULES definition.
 
 Visual display: Collapsible cards for each CCA showing strings and panel counts.
 
@@ -183,10 +209,20 @@ The wizard MUST wait for MQTT data and show discovery progress:
 - As panels report in via MQTT:
   - Show checkmark icon next to discovered panels
   - Display serial number, current power, voltage
-  - Update in real-time
+  - Update in real-time via WebSocket (no polling needed)
 - Progress indicator: "Discovered X of Y expected panels"
 - "All panels discovered" celebration state
 - Manual "Continue anyway" option if some panels don't report
+
+**Discovery Timing:**
+- **Suggestion timeout**: After 2 minutes with no new discoveries, show "Continue anyway" button prominently
+- **Stale panel warning**: If a discovered panel stops reporting for >60 seconds, show warning icon (may indicate intermittent connection)
+- **Restart discovery**: Button to clear discovered panels and restart (preserves topology config)
+- **Partial success thresholds**:
+  - 100% discovered: Green "All panels found!" message
+  - 90-99% discovered: Yellow "Most panels found" - safe to continue
+  - 50-89% discovered: Orange warning - "Some panels missing, check connections"
+  - <50% discovered: Red warning - "Many panels missing, verify tigo-mqtt is running"
 
 **FR-3.6: Wizard Step 5 - Validation & Translations**
 
@@ -198,17 +234,29 @@ The wizard MUST show validation results:
 
 **Translation Needed:**
 - Panels where Tigo reports unexpected labels
-- Example: "Tigo reports B9, but topology expects string F. Should this panel display as F6?"
-- Allow user to specify display_label override
-- Common for installations where physical wiring differs from logical grouping
+- Display context to help user decide:
+  - "Panel with serial 4-C3F277H reports as **B9** from CCA 'primary'"
+  - "Your topology doesn't have a B9 position. What should this panel display as?"
+- Input field for display_label with suggestions based on unassigned positions
+- **Default behavior**: If left blank, uses Tigo label as-is
+- **Skip option**: "I'll configure this later" - panel saved with `display_label = tigo_label`
+- **Bulk translation**: Pattern-based option for common scenarios:
+  - "Rename all B-string panels (B9, B10) to F-string (F6, F7)"
+  - Input: "B{n} → F{n-3}" (maps B9→F6, B10→F7)
+
+**Translation UX Notes:**
+- User may not know correct labels during initial setup
+- Emphasize that translations can be edited later in Settings
+- Show physical context if available (e.g., "This panel is currently producing 245W")
 
 **Unexpected Panels:**
 - Panels discovered that weren't in expected topology
-- Option to add to configuration
+- Option to add to configuration with suggested string assignment
 
 **Missing Panels:**
 - Expected panels that weren't discovered
 - Warning displayed, option to wait longer or proceed
+- "Mark as offline" option to acknowledge and continue
 
 **FR-3.7: Wizard Step 6 - Review & Save**
 
@@ -250,6 +298,58 @@ The backend MUST expose REST endpoints:
 | `/api/config/panels` | PUT | Update panel configuration |
 | `/api/config/generate-tigo-mqtt` | POST | Generate and return tigo-mqtt files |
 | `/api/config/status` | GET | Check if configuration exists |
+| `/api/config/mqtt/test` | POST | Test MQTT broker connectivity |
+
+**Generate Tigo-MQTT Endpoint Details:**
+
+```
+POST /api/config/generate-tigo-mqtt
+Content-Type: application/json
+
+Request Body:
+{
+  "mqtt": { "server": "...", "port": 1883, ... },
+  "ccas": [ ... ],
+  "panels": [ ... ]
+}
+// OR empty {} to use currently saved config
+
+Response:
+Content-Type: application/zip
+Content-Disposition: attachment; filename="tigo-mqtt-config.zip"
+Body: Binary ZIP stream
+```
+
+**MQTT Test Endpoint Details:**
+
+```
+POST /api/config/mqtt/test
+Content-Type: application/json
+
+Request Body:
+{
+  "server": "192.168.1.100",
+  "port": 1883,
+  "username": "mqtt_user",
+  "password": "mqtt_password"
+}
+
+Response (success):
+{
+  "success": true,
+  "message": "Connected successfully",
+  "broker_info": {
+    "version": "mosquitto/2.0.15"  // if available
+  }
+}
+
+Response (failure):
+{
+  "success": false,
+  "error_type": "auth_failed" | "connection_refused" | "timeout" | "dns_error",
+  "message": "Authentication failed: bad username or password"
+}
+```
 
 **FR-5.2: Configuration Validation**
 
@@ -257,8 +357,19 @@ All configuration updates MUST be validated:
 - Required fields present
 - CCA names are unique
 - String names are unique within a CCA
-- Serial device paths are valid format
+- Serial device paths are valid format (e.g., `/dev/ttyACM0`, `/dev/ttyUSB0`)
 - Panel serial numbers are unique
+
+**CCA Name Validation:**
+- Lowercase alphanumeric and hyphens only: `^[a-z][a-z0-9-]*$`
+- Must start with a letter (not number or hyphen)
+- Maximum 32 characters (Docker service name limit)
+- Reserved names not allowed: `build`, `test`, `temp`
+
+**String Name Validation:**
+- Uppercase letters only: `^[A-Z]{1,2}$`
+- 1-2 characters (e.g., "A", "B", "AA", "AB")
+- Must be valid for MQTT topic segments
 
 Return validation errors with field-level detail.
 
@@ -303,6 +414,13 @@ The backend MUST provide matching logic:
 - Configuration files MUST survive Docker container restarts
 - Files stored in mounted volume (`config/`)
 - Atomic writes to prevent corruption (write to temp, then rename)
+
+**Backup and error handling:**
+- Before overwriting any config file, create backup: `{filename}.bak`
+- Only one backup kept (most recent)
+- If temp file write fails (disk full), return error without modifying original
+- If rename fails (permissions), attempt to restore from temp file, return error
+- Log all config write operations with timestamp
 
 **NFR-2: Setup Time**
 
@@ -407,7 +525,9 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
             "mem_limit": "256m",
             "group_add": ["dialout"],
             "env_file": [".env"],
-            "devices": [cca.serial_device],
+            # Device mapping: host_path:container_path
+            # Container path matches host path for simplicity
+            "devices": [f"{cca.serial_device}:{cca.serial_device}"],
             "volumes": [
                 f"./config-{cca.name}.ini:/app/config-template.ini:ro",
                 f"./data/{cca.name}:/data",
@@ -417,10 +537,13 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
                 "driver": "json-file",
                 "options": {"max-size": "10m", "max-file": "3"}
             },
+            # Healthcheck: file must be modified within last minute
+            # start_period allows 2 minutes for taptap initialization
+            # (CCA handshake and module discovery can be slow)
             "healthcheck": {
                 "test": ["CMD", "sh", "-c",
                     "test -f /run/taptap/taptap.run && "
-                    "find /run/taptap/taptap.run -mmin -2 | grep -q ."],
+                    "find /run/taptap/taptap.run -mmin -1 | grep -q ."],
                 "interval": "60s",
                 "timeout": "10s",
                 "retries": 3,
@@ -431,18 +554,51 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
     return yaml.dump({"services": services}, default_flow_style=False)
 ```
 
+### Tigo Label Parsing Utility
+
+```python
+import re
+
+def parse_tigo_label(label: str) -> tuple[str, int] | None:
+    """
+    Parse a Tigo label into string name and position number.
+
+    Examples:
+        "A1" -> ("A", 1)
+        "AA12" -> ("AA", 12)
+        "B10" -> ("B", 10)
+        "invalid" -> None
+    """
+    match = re.match(r'^([A-Za-z]+)(\d+)$', label)
+    if match:
+        string_part, num_part = match.groups()
+        return (string_part, int(num_part))
+    return None
+```
+
 ### INI Config Generation Logic
 
 ```python
 def generate_ini_config(cca: CCAConfig, panels: list[Panel], mqtt: MQTTConfig) -> str:
-    """Generate config-{name}.ini for a single CCA."""
+    """Generate config-{name}.ini for a single CCA.
+
+    Raises:
+        ValueError: If CCA has no panels configured or label parsing fails.
+    """
     # Build MODULES line from panels
     modules = []
     for panel in panels:
         if panel.cca == cca.name:
-            # Format: STRING:LABEL_NUM:SERIAL
-            label_num = panel.tigo_label[1:]  # A1 -> 1
-            modules.append(f"{panel.string}:{label_num}:{panel.serial}")
+            # Format: STRING:POSITION:SERIAL (verified against taptap-mqtt source)
+            parsed = parse_tigo_label(panel.tigo_label)
+            if parsed is None:
+                raise ValueError(f"Invalid tigo_label format: {panel.tigo_label}")
+            string_name, position = parsed
+            modules.append(f"{string_name}:{position}:{panel.serial}")
+
+    if not modules:
+        raise ValueError(f"CCA '{cca.name}' has no panels configured. "
+                        "Each CCA must have at least one panel.")
 
     modules_line = ",".join(modules)
 
@@ -506,24 +662,45 @@ def match_discovered_panel(
                 confidence="high"
             )
 
-    # Try matching by Tigo label to expected string/position
-    tigo_label = discovered.tigo_label  # e.g., "A1"
-    string_name = tigo_label[0]  # "A"
-    position = tigo_label[1:]  # "1"
+    # Parse the Tigo label using robust regex
+    parsed = parse_tigo_label(discovered.tigo_label)
+    if parsed is None:
+        return MatchResult(
+            status="unmatched",
+            tigo_label=discovered.tigo_label,
+            error="Invalid label format - expected pattern like 'A1' or 'AA12'"
+        )
 
+    string_name, position = parsed
+
+    # Try matching to the CCA that reported this panel first
     for cca in expected_topology.ccas:
         if cca.name == discovered.cca:
             for string in cca.strings:
                 if string.name == string_name:
-                    pos_num = int(position)
-                    if pos_num <= string.panel_count:
+                    if position <= string.panel_count:
                         return MatchResult(
                             status="matched",
-                            suggested_label=tigo_label,
+                            suggested_label=discovered.tigo_label,
                             confidence="medium"
                         )
 
-    # No match - might need translation
+    # Fallback: Check ALL CCAs - might be a wiring issue
+    for cca in expected_topology.ccas:
+        if cca.name != discovered.cca:  # Skip already-checked CCA
+            for string in cca.strings:
+                if string.name == string_name:
+                    if position <= string.panel_count:
+                        return MatchResult(
+                            status="possible_wiring_issue",
+                            tigo_label=discovered.tigo_label,
+                            reported_cca=discovered.cca,
+                            expected_cca=cca.name,
+                            warning=f"Panel reports from '{discovered.cca}' but "
+                                    f"string '{string_name}' is configured on '{cca.name}'"
+                        )
+
+    # No match in any CCA - needs translation
     return MatchResult(
         status="unmatched",
         tigo_label=discovered.tigo_label,
@@ -544,13 +721,38 @@ type WizardStep =
 
 interface WizardState {
   currentStep: WizardStep;
+  furthestStep: WizardStep;  // Track progress for back navigation
   mqttConfig: MQTTConfig | null;
   systemTopology: SystemConfig | null;
   discoveredPanels: Map<string, DiscoveredPanel>;
   translations: Map<string, string>;  // tigo_label -> display_label
   validationResults: ValidationResult | null;
+  configDownloaded: boolean;  // Track if user downloaded tigo-mqtt configs
 }
 ```
+
+**Wizard Navigation & Persistence:**
+
+1. **Back navigation**: Users can navigate back to any previously completed step. State is preserved. Forward navigation requires re-validation if data changed.
+
+2. **Browser persistence**: Wizard state is persisted to `localStorage` after each step completion:
+   - Key: `solar-tigo-wizard-state`
+   - Cleared on successful wizard completion
+   - On page load, check for existing state and offer "Resume setup" or "Start over"
+
+3. **Cancel flow**: "Cancel Setup" button available on all steps:
+   - Confirmation dialog: "Your progress will be lost. Continue?"
+   - Clears localStorage state
+   - Redirects to demo mode or blank state
+
+4. **Re-entry after download**: If user completed step 3 (generate-download) and returns:
+   - Detect `configDownloaded: true` in saved state
+   - Show: "Welcome back! Have you deployed tigo-mqtt? [Yes, start discovery] [No, re-download configs]"
+
+5. **Error recovery**: If save fails in step 6:
+   - Show error with retry button
+   - State remains in localStorage
+   - Option to download config as YAML files manually
 
 ## Task Breakdown
 
@@ -645,6 +847,46 @@ interface WizardState {
     - Document new configuration system
     - Update setup instructions
 
+### Testing Tasks
+
+19. **Unit tests for configuration validation**
+    - Test CCA name validation rules
+    - Test string name validation rules
+    - Test YAML schema validation
+    - Test legacy JSON parsing
+
+20. **Unit tests for config generation**
+    - Test docker-compose.yml generation
+    - Test INI file generation
+    - Test ZIP assembly
+    - Test `parse_tigo_label()` with edge cases
+
+21. **Integration tests for wizard flow**
+    - Mock MQTT broker for discovery testing
+    - Test each wizard step transition
+    - Test state persistence/recovery
+
+22. **E2E tests for complete wizard flow**
+    - Use Playwright MCP to test full wizard
+    - Verify generated configs are valid
+
+23. **Migration tests**
+    - Test JSON → YAML migration
+    - Test malformed JSON handling
+    - Test backup file creation
+
+## Acceptance Criteria
+
+| Criterion | Measurement |
+|-----------|-------------|
+| All 6 wizard steps complete without errors | Manual test pass |
+| Generated `docker-compose.yml` passes validation | `docker compose config` exits 0 |
+| Generated INI files are parseable | Python ConfigParser loads without error |
+| Discovery detects panels within 30s of first message | Automated test with mock MQTT |
+| Config saves atomically | No corruption on simulated crash |
+| Backward compatibility with JSON | Existing installations work unchanged |
+| MQTT test correctly identifies auth failures | Returns `error_type: "auth_failed"` |
+
 ## Context / Documentation
 
 ### Files to Reference During Implementation
@@ -666,11 +908,30 @@ interface WizardState {
 
 ---
 
-**Specification Version:** 1.0
+**Specification Version:** 1.1
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.1 (January 2026)
+**Summary:** Address review feedback - validation, error handling, and UX improvements
+
+**Changes:**
+- Added schema version field to YAML config for future migrations
+- Added robust `parse_tigo_label()` utility for multi-character string names (e.g., "AA12")
+- Added CCA and string name validation rules with regex patterns
+- Added cross-CCA matching to detect possible wiring issues
+- Added discovery timing specs (timeouts, thresholds, stale panel warnings)
+- Added wizard navigation and state persistence (localStorage, back navigation)
+- Expanded translation UX with bulk translation patterns and skip options
+- Added detailed migration workflow for legacy JSON configs
+- Added API request/response schemas for generate-tigo-mqtt and mqtt/test endpoints
+- Fixed healthcheck timing (-mmin -1 instead of -mmin -2)
+- Added config backup and error handling specs
+- Added validation for empty MODULES line (CCA must have panels)
+- Clarified Docker build approach (user clones tigo-mqtt repo)
+- Added Testing Tasks and Acceptance Criteria sections
 
 ### v1.0 (January 2026)
 **Summary:** Initial specification for multi-user configuration support
