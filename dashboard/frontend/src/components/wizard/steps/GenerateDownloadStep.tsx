@@ -236,11 +236,8 @@ export function GenerateDownloadStep({
         <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>Deployment Instructions</h3>
         <ol style={{ margin: 0, paddingLeft: '20px', lineHeight: 1.8 }}>
           <li>Copy the ZIP file to your Raspberry Pi</li>
-          <li>Extract the files:
-            <pre style={codeBlockStyle}>unzip tigo-mqtt-config.zip</pre>
-          </li>
-          <li>Copy <code>.env.example</code> to <code>.env</code> and add your MQTT credentials:
-            <pre style={codeBlockStyle}>cp .env.example .env{'\n'}nano .env</pre>
+          <li>Extract and copy files to your tigo-mqtt directory:
+            <pre style={codeBlockStyle}>unzip tigo-mqtt-config.zip -d /path/to/tigo-mqtt/</pre>
           </li>
           <li>Build and start the containers:
             <pre style={codeBlockStyle}>docker compose up -d --build</pre>
@@ -248,7 +245,7 @@ export function GenerateDownloadStep({
           <li>Verify the services are running:
             <pre style={codeBlockStyle}>docker compose ps</pre>
           </li>
-          <li>Return here and click "Start Discovery" to continue</li>
+          <li>Return here and click "Next: Discovery" to continue</li>
         </ol>
       </div>
 
