@@ -122,6 +122,16 @@ const warningButtonStyle: CSSProperties = {
   backgroundColor: '#ff9800',
 };
 
+/**
+ * Extract the string name from a tigo_label (e.g., "A" from "A1", "AA" from "AA12").
+ * Returns null if the label doesn't match expected format.
+ */
+function extractStringName(tigoLabel: string | undefined): string | null {
+  if (!tigoLabel) return null;
+  const match = tigoLabel.match(/^([A-Za-z]+)/);
+  return match ? match[1].toUpperCase() : null;
+}
+
 interface DiscoveryStepProps {
   mqttConfig: MQTTConfig;
   topology: SystemConfig;
@@ -374,9 +384,10 @@ export function DiscoveryStep({
 
               {/* Strings within CCA */}
               {cca.strings.map(string => {
-                // Get discovered panels for this string
+                // Get discovered panels for this string (case-insensitive match)
+                const stringNameUpper = string.name.toUpperCase();
                 const discoveredForString = discoveredForCCA.filter(p =>
-                  p.tigo_label && p.tigo_label.startsWith(string.name)
+                  extractStringName(p.tigo_label) === stringNameUpper
                 );
 
                 return (
@@ -390,7 +401,10 @@ export function DiscoveryStep({
                     <div style={panelGridStyle}>
                       {Array.from({ length: string.panel_count }, (_, i) => {
                         const label = `${string.name}${i + 1}`;
-                        const discovered = discoveredForString.find(p => p.tigo_label === label);
+                        const labelUpper = label.toUpperCase();
+                        const discovered = discoveredForString.find(p =>
+                          p.tigo_label?.toUpperCase() === labelUpper
+                        );
                         return (
                           <div key={`${cca.name}-${label}`} style={panelCardStyle(!!discovered)}>
                             <div style={{ fontWeight: 600 }}>{label}</div>
