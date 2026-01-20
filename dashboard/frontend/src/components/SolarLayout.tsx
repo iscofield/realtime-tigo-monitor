@@ -17,7 +17,7 @@ import {
 import './SolarLayout.css';
 
 // Zoom step for pinch gestures (smaller than button ZOOM_STEP=0.25 for finer control)
-const PINCH_ZOOM_STEP = 0.02;
+const PINCH_ZOOM_STEP = 0.008;
 
 interface SolarLayoutProps {
   panels: PanelData[];
@@ -103,8 +103,27 @@ export function SolarLayout({
         const scaleFactor = 1 - event.deltaY * PINCH_ZOOM_STEP;
         const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.scale * scaleFactor));
 
-        // Use setTransform with 0 animation for immediate response
-        transformRef.current.setTransform(state.positionX, state.positionY, newScale, 0);
+        // Anchor zoom on cursor position (keep point under cursor fixed)
+        // Get cursor position relative to the wrapper
+        const wrapper = wrapperRef.current;
+        if (wrapper) {
+          const rect = wrapper.getBoundingClientRect();
+          const cursorX = event.clientX - rect.left;
+          const cursorY = event.clientY - rect.top;
+
+          // Calculate new position to keep cursor point fixed
+          // Point under cursor in content coords: (cursorX - posX) / scale
+          // After zoom, same point should be at cursor: (cursorX - newPosX) / newScale
+          // Solving: newPosX = cursorX - (cursorX - posX) * newScale / scale
+          const scaleRatio = newScale / state.scale;
+          const newPosX = cursorX - (cursorX - state.positionX) * scaleRatio;
+          const newPosY = cursorY - (cursorY - state.positionY) * scaleRatio;
+
+          transformRef.current.setTransform(newPosX, newPosY, newScale, 0);
+        } else {
+          // Fallback: zoom without anchor
+          transformRef.current.setTransform(state.positionX, state.positionY, newScale, 0);
+        }
       } else {
         // Plain wheel = pan (two-finger trackpad scroll)
         // Apply wheel deltas as pan offsets (negative because scroll direction is inverted)
