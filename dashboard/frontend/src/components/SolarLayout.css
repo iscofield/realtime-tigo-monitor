@@ -1,11 +1,7 @@
 /* SolarLayout wrapper styles */
-/* Use position absolute to constrain to parent instead of expanding to content */
 .solar-layout-wrapper {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  width: 100%;
+  height: 100%;
 }
 
 /* Prevent horizontal pan from triggering browser back gesture (Safari/Edge) */
