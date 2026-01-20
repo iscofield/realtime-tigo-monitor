@@ -115,6 +115,14 @@ The backend MUST support reading from both:
 - Malformed JSON: Show error with option to start fresh with setup wizard
 - JSON panels not in YAML (after partial migration): Ignored with warning log
 - Phase 2 layout editor: Requires YAML format; migration required first
+- Existing backup file: Overwrite with warning log "Existing backup file replaced"
+- Config directory read-only: Migration fails with error "Cannot write to config directory"
+
+**YAML error handling:**
+- Malformed YAML (parse error): Show error "Configuration file is corrupted" with options:
+  - "Reset configuration" - deletes YAML, falls back to JSON or starts fresh
+  - "Edit manually" - shows file path for user to fix
+- YAML schema validation failure: Show specific field errors with line numbers
 
 ### FR-2: Tigo-MQTT Configuration Generation
 
@@ -240,9 +248,11 @@ The wizard MUST show validation results:
 - Input field for display_label with suggestions based on unassigned positions
 - **Default behavior**: If left blank, uses Tigo label as-is
 - **Skip option**: "I'll configure this later" - panel saved with `display_label = tigo_label`
-- **Bulk translation**: Pattern-based option for common scenarios:
-  - "Rename all B-string panels (B9, B10) to F-string (F6, F7)"
-  - Input: "B{n} → F{n-3}" (maps B9→F6, B10→F7)
+- **Bulk translation**: Simple offset-based option for common scenarios:
+  - "Rename B-string panels to F-string"
+  - Input: Source string "B", Target string "F", Offset "-3"
+  - Preview shown before applying: "B9 → F6, B10 → F7"
+  - Validation: Rejects if result would be negative/zero position
 
 **Translation UX Notes:**
 - User may not know correct labels during initial setup
@@ -306,19 +316,30 @@ The backend MUST expose REST endpoints:
 POST /api/config/generate-tigo-mqtt
 Content-Type: application/json
 
-Request Body:
+Request Body (option 1 - provide full config):
 {
   "mqtt": { "server": "...", "port": 1883, ... },
   "ccas": [ ... ],
-  "panels": [ ... ]
+  "panels": [ ... ]  // Optional - may be empty for initial setup
 }
-// OR empty {} to use currently saved config
 
-Response:
+Request Body (option 2 - use saved config):
+{}
+
+Response (success):
 Content-Type: application/zip
 Content-Disposition: attachment; filename="tigo-mqtt-config.zip"
 Body: Binary ZIP stream
+
+Response (error - no config available):
+Status: 400 Bad Request
+{
+  "error": "no_config",
+  "message": "No saved configuration found. Provide config in request body."
+}
 ```
+
+Note: During wizard step 3, the frontend MUST always send full config inline (option 1) since no config is saved until step 6.
 
 **MQTT Test Endpoint Details:**
 
@@ -337,10 +358,9 @@ Request Body:
 Response (success):
 {
   "success": true,
-  "message": "Connected successfully",
-  "broker_info": {
-    "version": "mosquitto/2.0.15"  // if available
-  }
+  "message": "Connected successfully"
+  // Note: broker_info omitted - most MQTT brokers don't expose version
+  // through standard protocol. Would require subscribing to $SYS topics.
 }
 
 Response (failure):
@@ -364,7 +384,9 @@ All configuration updates MUST be validated:
 - Lowercase alphanumeric and hyphens only: `^[a-z][a-z0-9-]*$`
 - Must start with a letter (not number or hyphen)
 - Maximum 32 characters (Docker service name limit)
-- Reserved names not allowed: `build`, `test`, `temp`
+- Reserved names not allowed: `build`, `test`, `temp`, `default`, `host`, `none`, `bridge`
+- Names starting with underscore not allowed (Docker internal convention)
+- Validation tested with `docker compose config` for edge cases
 
 **String Name Validation:**
 - Uppercase letters only: `^[A-Z]{1,2}$`
@@ -562,17 +584,28 @@ import re
 def parse_tigo_label(label: str) -> tuple[str, int] | None:
     """
     Parse a Tigo label into string name and position number.
+    String names are normalized to uppercase (Tigo reports uppercase).
 
-    Examples:
+    Valid inputs:
         "A1" -> ("A", 1)
         "AA12" -> ("AA", 12)
         "B10" -> ("B", 10)
-        "invalid" -> None
+        "a1" -> ("A", 1)     # lowercase normalized to uppercase
+        "A01" -> ("A", 1)    # leading zeros stripped by int()
+
+    Invalid inputs (returns None):
+        "" -> None           # empty string
+        "1A" -> None         # number first
+        "A" -> None          # no number
+        "123" -> None        # no letters
+        "A-1" -> None        # hyphen
+        "A 1" -> None        # space
+        "A1B" -> None        # letter after number
     """
     match = re.match(r'^([A-Za-z]+)(\d+)$', label)
     if match:
         string_part, num_part = match.groups()
-        return (string_part, int(num_part))
+        return (string_part.upper(), int(num_part))  # Normalize to uppercase
     return None
 ```
 
@@ -719,15 +752,38 @@ type WizardStep =
   | 'validation'
   | 'review-save';
 
+type MatchStatus = 'matched' | 'unmatched' | 'possible_wiring_issue';
+
+interface MatchResult {
+  status: MatchStatus;
+  panel?: Panel;
+  suggested_label?: string;
+  confidence?: 'high' | 'medium' | 'low';
+  tigo_label?: string;
+  needs_translation?: boolean;
+  error?: string;
+  reported_cca?: string;
+  expected_cca?: string;
+  warning?: string;
+}
+
 interface WizardState {
   currentStep: WizardStep;
   furthestStep: WizardStep;  // Track progress for back navigation
   mqttConfig: MQTTConfig | null;
   systemTopology: SystemConfig | null;
-  discoveredPanels: Map<string, DiscoveredPanel>;
-  translations: Map<string, string>;  // tigo_label -> display_label
-  validationResults: ValidationResult | null;
+  // Use Record instead of Map for JSON serialization to localStorage
+  discoveredPanels: Record<string, DiscoveredPanel>;
+  translations: Record<string, string>;  // tigo_label -> display_label
+  validationResults: MatchResult[] | null;
   configDownloaded: boolean;  // Track if user downloaded tigo-mqtt configs
+}
+
+// Persisted state wrapper with versioning
+interface PersistedWizardState {
+  version: 1;
+  state: WizardState;
+  savedAt: string;  // ISO timestamp
 }
 ```
 
@@ -735,24 +791,39 @@ interface WizardState {
 
 1. **Back navigation**: Users can navigate back to any previously completed step. State is preserved. Forward navigation requires re-validation if data changed.
 
-2. **Browser persistence**: Wizard state is persisted to `localStorage` after each step completion:
+2. **State invalidation on back-edit**: When user modifies a previous step, downstream steps are invalidated:
+   ```typescript
+   // When topology changes in step 2, invalidate steps 3-5
+   if (stepChanged === 'system-topology') {
+     state.configDownloaded = false;
+     state.discoveredPanels = {};
+     state.validationResults = null;
+     // Show warning: "Your config changes require re-downloading and re-discovery"
+   }
+   ```
+
+3. **Browser persistence**: Wizard state is persisted to `localStorage` after each step completion:
    - Key: `solar-tigo-wizard-state`
-   - Cleared on successful wizard completion
+   - Storage size: ~20KB for 100 panels (well under 5MB limit)
+   - Wrap `localStorage.setItem()` in try/catch for Safari private mode
+   - State expires after 7 days (prompt user to start fresh)
    - On page load, check for existing state and offer "Resume setup" or "Start over"
 
-3. **Cancel flow**: "Cancel Setup" button available on all steps:
+4. **Cancel flow**: "Cancel Setup" button available on all steps:
    - Confirmation dialog: "Your progress will be lost. Continue?"
    - Clears localStorage state
    - Redirects to demo mode or blank state
 
-4. **Re-entry after download**: If user completed step 3 (generate-download) and returns:
+5. **Re-entry after download**: If user completed step 3 (generate-download) and returns:
    - Detect `configDownloaded: true` in saved state
    - Show: "Welcome back! Have you deployed tigo-mqtt? [Yes, start discovery] [No, re-download configs]"
 
-5. **Error recovery**: If save fails in step 6:
+6. **Error recovery**: If save fails in step 6:
    - Show error with retry button
    - State remains in localStorage
    - Option to download config as YAML files manually
+
+**UI handling for `possible_wiring_issue`:** Displayed in a separate "Wiring Warnings" section (orange) between "Matched Panels" and "Translation Needed". Shows the warning message and allows user to confirm the panel assignment or flag for investigation.
 
 ## Task Breakdown
 
@@ -859,7 +930,23 @@ interface WizardState {
     - Test docker-compose.yml generation
     - Test INI file generation
     - Test ZIP assembly
-    - Test `parse_tigo_label()` with edge cases
+    - Test `parse_tigo_label()` with edge cases:
+      ```python
+      # Valid inputs
+      assert parse_tigo_label("A1") == ("A", 1)
+      assert parse_tigo_label("AA12") == ("AA", 12)
+      assert parse_tigo_label("Z99") == ("Z", 99)
+      assert parse_tigo_label("a1") == ("A", 1)  # lowercase normalized
+
+      # Invalid inputs (should return None)
+      assert parse_tigo_label("") is None
+      assert parse_tigo_label("1A") is None      # number first
+      assert parse_tigo_label("A") is None       # no number
+      assert parse_tigo_label("123") is None     # no letters
+      assert parse_tigo_label("A-1") is None     # hyphen
+      assert parse_tigo_label("A 1") is None     # space
+      assert parse_tigo_label("A1B") is None     # letter after number
+      ```
 
 21. **Integration tests for wizard flow**
     - Mock MQTT broker for discovery testing
@@ -879,13 +966,21 @@ interface WizardState {
 
 | Criterion | Measurement |
 |-----------|-------------|
-| All 6 wizard steps complete without errors | Manual test pass |
-| Generated `docker-compose.yml` passes validation | `docker compose config` exits 0 |
+| All 6 wizard steps complete without errors | Manual test with 1, 2, and 4 CCA configurations |
+| Generated `docker-compose.yml` passes validation | `docker compose config` exits 0 for configs with 1, 2, 4 CCAs, hyphenated names, max-length names |
 | Generated INI files are parseable | Python ConfigParser loads without error |
-| Discovery detects panels within 30s of first message | Automated test with mock MQTT |
-| Config saves atomically | No corruption on simulated crash |
-| Backward compatibility with JSON | Existing installations work unchanged |
+| Each panel appears in UI within 5s of MQTT message | Per NFR-3, automated test per-panel latency |
+| All test panels discovered within 30s of broker connection | Automated test with 20-panel mock MQTT scenario |
+| Config saves atomically | Kill process during 100 sequential saves; verify no partial/corrupt files |
+| Backward compatibility with JSON | Dashboard displays panels correctly using only legacy `panel_mapping.json` (tested with 3 sample configs) |
 | MQTT test correctly identifies auth failures | Returns `error_type: "auth_failed"` |
+
+**Test scenarios for docker-compose validation:**
+- Single CCA with name "solar"
+- Two CCAs with names "primary", "secondary"
+- CCA with hyphenated name "my-solar-array"
+- CCA with 32-character name (maximum length)
+- Different serial device paths (`/dev/ttyACM0`, `/dev/ttyUSB0`)
 
 ## Context / Documentation
 
@@ -908,11 +1003,32 @@ interface WizardState {
 
 ---
 
-**Specification Version:** 1.1
+**Specification Version:** 1.2
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.2 (January 2026)
+**Summary:** Refine implementation details and improve testability
+
+**Changes:**
+- Enhanced `parse_tigo_label()` docstring with all edge cases, added uppercase normalization
+- Added explicit test cases for `parse_tigo_label()` in testing section
+- Changed WizardState to use `Record<>` instead of `Map<>` for JSON serialization compatibility
+- Added `PersistedWizardState` wrapper with version and timestamp for localStorage
+- Added localStorage error handling (Safari private mode), size estimation, 7-day expiry
+- Added state invalidation rules for back navigation (editing step 2 invalidates steps 3-5)
+- Defined `MatchStatus` and `MatchResult` TypeScript types
+- Added UI handling for `possible_wiring_issue` status
+- Clarified generate-tigo-mqtt API behavior when no config saved (returns 400)
+- Simplified MQTT test endpoint (removed unreliable broker_info)
+- Simplified bulk translation to offset-based (removed expression parsing complexity)
+- Expanded reserved CCA names list (added `default`, `host`, `none`, `bridge`)
+- Added YAML error handling (malformed YAML, schema validation)
+- Added backup overwrite behavior and config directory write check
+- Improved acceptance criteria with specific test scenarios
+- Fixed timing inconsistency: 5s per-panel latency vs 30s total discovery
 
 ### v1.1 (January 2026)
 **Summary:** Address review feedback - validation, error handling, and UX improvements
