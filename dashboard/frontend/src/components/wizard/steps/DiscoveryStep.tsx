@@ -71,6 +71,20 @@ const ccaStatusBadgeStyle = (hasDiscoveredPanels: boolean): CSSProperties => ({
   color: hasDiscoveredPanels ? '#2e7d32' : '#c62828',
 });
 
+const stringHeaderStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  padding: '8px 12px',
+  backgroundColor: '#e3f2fd',
+  borderRadius: '6px',
+  marginBottom: '8px',
+};
+
+const stringSectionStyle: CSSProperties = {
+  marginBottom: '16px',
+};
+
 const panelCardStyle = (discovered: boolean): CSSProperties => ({
   padding: '12px',
   borderRadius: '6px',
@@ -334,17 +348,10 @@ export function DiscoveryStep({
       {/* Panel Grid - Segmented by CCA */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         {topology.ccas.map(cca => {
-          // Get expected panels for this CCA
-          const ccaPanels: { label: string }[] = [];
-          cca.strings.forEach(string => {
-            for (let i = 1; i <= string.panel_count; i++) {
-              ccaPanels.push({ label: `${string.name}${i}` });
-            }
-          });
-
           // Count discovered panels for this CCA
           const discoveredForCCA = Object.values(discoveredPanels).filter(p => p.cca === cca.name);
           const hasDiscoveredPanels = discoveredForCCA.length > 0;
+          const totalPanelsForCCA = cca.strings.reduce((sum, s) => sum + s.panel_count, 0);
 
           return (
             <div key={cca.name} style={ccaSectionStyle}>
@@ -357,31 +364,51 @@ export function DiscoveryStep({
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   <span style={{ fontSize: '14px', color: '#666' }}>
-                    {discoveredForCCA.length} / {ccaPanels.length} panels
+                    {discoveredForCCA.length} / {totalPanelsForCCA} panels
                   </span>
                   <span style={ccaStatusBadgeStyle(hasDiscoveredPanels)}>
                     {hasDiscoveredPanels ? '● Reporting' : '○ No Data'}
                   </span>
                 </div>
               </div>
-              <div style={panelGridStyle}>
-                {ccaPanels.map(({ label }) => {
-                  const discovered = discoveredForCCA.find(p => p.tigo_label === label);
-                  return (
-                    <div key={`${cca.name}-${label}`} style={panelCardStyle(!!discovered)}>
-                      <div style={{ fontWeight: 600 }}>{label}</div>
-                      {discovered && (
-                        <div style={{ marginTop: '4px', fontSize: '12px' }}>
-                          <div>{discovered.watts?.toFixed(0) || '—'}W</div>
-                          <div style={{ fontFamily: 'monospace', fontSize: '10px', color: '#999' }}>
-                            {discovered.serial}
-                          </div>
-                        </div>
-                      )}
+
+              {/* Strings within CCA */}
+              {cca.strings.map(string => {
+                // Get discovered panels for this string
+                const discoveredForString = discoveredForCCA.filter(p =>
+                  p.tigo_label && p.tigo_label.startsWith(string.name)
+                );
+
+                return (
+                  <div key={`${cca.name}-${string.name}`} style={stringSectionStyle}>
+                    <div style={stringHeaderStyle}>
+                      <span style={{ fontWeight: 500 }}>String {string.name}</span>
+                      <span style={{ fontSize: '13px', color: '#666' }}>
+                        {discoveredForString.length} / {string.panel_count}
+                      </span>
                     </div>
-                  );
-                })}
-              </div>
+                    <div style={panelGridStyle}>
+                      {Array.from({ length: string.panel_count }, (_, i) => {
+                        const label = `${string.name}${i + 1}`;
+                        const discovered = discoveredForString.find(p => p.tigo_label === label);
+                        return (
+                          <div key={`${cca.name}-${label}`} style={panelCardStyle(!!discovered)}>
+                            <div style={{ fontWeight: 600 }}>{label}</div>
+                            {discovered && (
+                              <div style={{ marginTop: '4px', fontSize: '12px' }}>
+                                <div>{discovered.watts?.toFixed(0) || '—'}W</div>
+                                <div style={{ fontFamily: 'monospace', fontSize: '10px', color: '#999' }}>
+                                  {discovered.serial}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           );
         })}
