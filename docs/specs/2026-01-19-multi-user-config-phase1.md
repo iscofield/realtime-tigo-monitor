@@ -250,9 +250,18 @@ The wizard MUST show validation results:
 - **Skip option**: "I'll configure this later" - panel saved with `display_label = tigo_label`
 - **Bulk translation**: Simple offset-based option for common scenarios:
   - "Rename B-string panels to F-string"
-  - Input: Source string "B", Target string "F", Offset "-3"
+  - Input: Source string "B", Target string "F", Offset (integer)
   - Preview shown before applying: "B9 → F6, B10 → F7"
-  - Validation: Rejects if result would be negative/zero position
+  - **Offset rules:**
+    - Can be positive, negative, or zero
+    - Zero offset: changes string letter only (B9 → F9)
+    - Positive offset: shifts position up (B1 → F4 with offset +3)
+    - Negative offset: shifts position down (B9 → F6 with offset -3)
+    - No maximum offset (validated per-result, not per-offset)
+  - **Application scope:** Applied to ALL discovered panels matching source string
+    - Non-contiguous panels are fine (B9, B11 both get translated, B10 skipped if absent)
+  - **Validation:** Rejects if ANY result would have position ≤ 0
+    - Error example: "B1 with offset -3 would result in F-2 (invalid)"
 
 **Translation UX Notes:**
 - User may not know correct labels during initial setup
@@ -309,6 +318,66 @@ The backend MUST expose REST endpoints:
 | `/api/config/generate-tigo-mqtt` | POST | Generate and return tigo-mqtt files |
 | `/api/config/status` | GET | Check if configuration exists |
 | `/api/config/mqtt/test` | POST | Test MQTT broker connectivity |
+| `/api/config/validate` | POST | Validate discovered panels against topology |
+
+**HTTP Status Codes:**
+- `200 OK` - Success (unless otherwise specified)
+- `400 Bad Request` - Validation error or invalid request
+- `500 Internal Server Error` - Server-side error (disk full, permission denied, etc.)
+
+**Standard Error Response Format:**
+
+All error responses use this format:
+```json
+{
+  "success": false,
+  "error": "error_code",           // Machine-readable error code
+  "message": "Human-readable message",
+  "details": []                    // Optional, for validation errors
+}
+```
+
+Error codes: `validation_error`, `no_config`, `permission_denied`, `disk_full`, `parse_error`, `auth_failed`, `connection_refused`, `timeout`, `dns_error`
+
+**Config Status Endpoint Details:**
+
+```
+GET /api/config/status
+
+Response (200 OK):
+{
+  "configured": boolean,        // true if system.yaml exists and is valid
+  "has_panels": boolean,        // true if panels.yaml exists and has panels
+  "legacy_detected": boolean,   // true if panel_mapping.json exists
+  "migration_available": boolean // true if legacy exists and no YAML
+}
+```
+
+This endpoint is used for first-run detection (FR-3.1). If `configured` is false, redirect to setup wizard.
+
+**System Config Endpoint Details:**
+
+```
+GET /api/config/system
+Response (200 OK): SystemConfig object (see Backend Models)
+
+PUT /api/config/system
+Request Body: SystemConfig object
+Response (200 OK): { "success": true }
+Response (400 Bad Request): Standard error format with error="validation_error"
+```
+
+**Panels Config Endpoint Details:**
+
+```
+GET /api/config/panels
+Response (200 OK): { "panels": Panel[] }
+
+PUT /api/config/panels
+Request Body: { "panels": Panel[] }
+Response (200 OK): { "success": true }
+Response (400 Bad Request): Standard error format with error="validation_error"
+```
 
 **Generate Tigo-MQTT Endpoint Details:**
 
@@ -355,19 +424,70 @@ Request Body:
   "password": "mqtt_password"
 }
 
-Response (success):
+Response (200 OK - success):
 {
   "success": true,
   "message": "Connected successfully"
-  // Note: broker_info omitted - most MQTT brokers don't expose version
-  // through standard protocol. Would require subscribing to $SYS topics.
 }
 
-Response (failure):
+Response (400 Bad Request - failure):
 {
   "success": false,
-  "error_type": "auth_failed" | "connection_refused" | "timeout" | "dns_error",
+  "error": "auth_failed",  // or: connection_refused, timeout, dns_error
   "message": "Authentication failed: bad username or password"
+}
+```
+
+**Panel Validation Endpoint Details:**
+
+Used by the wizard in step 5 to match discovered panels against expected topology.
+
+```
+POST /api/config/validate
+Content-Type: application/json
+
+Request Body:
+{
+  "discovered_panels": [
+    {
+      "serial": "AB12345678",
+      "cca": "primary",
+      "tigo_label": "A1",
+      "watts": 245.7,
+      "voltage": 32.5
+    }
+  ],
+  "topology": {
+    "ccas": [
+      {
+        "name": "primary",
+        "serial_device": "/dev/ttyACM2",
+        "strings": [
+          { "name": "A", "panel_count": 12 }
+        ]
+      }
+    ]
+  }
+}
+
+Response (200 OK):
+{
+  "success": true,
+  "results": [
+    {
+      "status": "matched",
+      "panel": { "serial": "AB12345678", "cca": "primary", "string": "A", "tigo_label": "A1", "display_label": "A1" },
+      "confidence": "high",
+      "tigo_label": "A1",
+      "needs_translation": false
+    }
+  ],
+  "summary": {
+    "total": 12,
+    "matched": 10,
+    "unmatched": 1,
+    "possible_wiring_issues": 1
+  }
 }
 ```
 
@@ -392,6 +512,7 @@ All configuration updates MUST be validated:
 - Uppercase letters only: `^[A-Z]{1,2}$`
 - 1-2 characters (e.g., "A", "B", "AA", "AB")
 - Must be valid for MQTT topic segments
+- **Case normalization:** Both UI and API normalize input to uppercase. User enters "a" → stored as "A". This aligns with `parse_tigo_label()` which also normalizes to uppercase.
 
 Return validation errors with field-level detail.
 
@@ -407,7 +528,17 @@ The backend MUST support a discovery mode:
 
 **FR-6.2: Discovery WebSocket Events**
 
-During setup wizard, the backend MUST emit WebSocket events:
+During setup wizard, the backend MUST emit WebSocket events.
+
+**WebSocket connection handling:**
+- Auto-reconnect with exponential backoff (1s, 2s, 4s, max 30s)
+- Discovered panels persist in frontend state across reconnects
+- Show "Connection lost, reconnecting..." banner during disconnection
+- If reconnect fails after 5 attempts: show "Discovery paused. [Retry] [Continue anyway]"
+  - **[Retry]**: Resets attempt counter to 0 and immediately attempts reconnection
+  - **[Continue anyway]**: Proceeds to validation step (step 5) with panels discovered so far
+- On successful reconnect: resume discovery, existing panels preserved
+- **Note:** Panels that report during WebSocket disconnection are not retroactively discovered. They will appear on their next MQTT update (typically within 5 seconds per UPDATE interval in INI config).
 
 ```json
 {
@@ -419,6 +550,22 @@ During setup wizard, the backend MUST emit WebSocket events:
     "watts": 245,
     "voltage": 32.5
   }
+}
+```
+
+**Frontend timestamp handling:** The `panel_discovered` event does NOT include timestamps. The frontend is responsible for adding them when storing in state:
+
+```typescript
+function handlePanelDiscovered(event: PanelDiscoveredEvent) {
+  const now = new Date().toISOString();
+  const existing = state.discoveredPanels[event.data.serial];
+
+  const panel: DiscoveredPanel = {
+    ...event.data,
+    discovered_at: existing?.discovered_at ?? now,  // Preserve original discovery time
+    last_seen_at: now  // Always update last seen
+  };
+  state.discoveredPanels[event.data.serial] = panel;
 }
 ```
 
@@ -676,6 +823,104 @@ RUN_FILE = /run/taptap/taptap.run
 """
 ```
 
+### Backend Models
+
+The following Pydantic models define the configuration data structures. These parallel the Frontend Types.
+
+```python
+from pydantic import BaseModel
+
+# JSON Serialization Convention:
+# All API responses use snake_case for consistency. Both Python and TypeScript
+# interfaces use snake_case field names (tigo_label, panel_count, etc.).
+# This simplifies implementation - no alias conversion needed.
+
+class StringConfig(BaseModel):
+    """A string of panels connected in series."""
+    name: str           # 1-2 uppercase letters (A, B, AA)
+    panel_count: int
+
+class CCAConfig(BaseModel):
+    """Configuration for a Tigo CCA device."""
+    name: str           # lowercase alphanumeric + hyphens
+    serial_device: str  # e.g., /dev/ttyACM2
+    strings: list[StringConfig]
+
+class MQTTConfig(BaseModel):
+    """MQTT broker connection settings."""
+    server: str
+    port: int = 1883
+    username: str | None = None
+    password: str | None = None
+
+class SystemConfig(BaseModel):
+    """Top-level system configuration."""
+    version: int = 1
+    mqtt: MQTTConfig
+    ccas: list[CCAConfig]
+
+class Panel(BaseModel):
+    """A configured panel with serial and label info.
+
+    Note: No alias_generator - uses snake_case to match TypeScript interface.
+    Serialized to frontend as-is (snake_case fields).
+    """
+    serial: str
+    cca: str
+    string: str
+    tigo_label: str
+    display_label: str
+```
+
+### Panel Discovery Types
+
+```python
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+@dataclass
+class DiscoveredPanel:
+    """A panel discovered via MQTT during the setup wizard.
+
+    Note: This is a backend-internal type used for tracking discovered panels.
+    It is NOT directly serialized to the frontend. The frontend builds its own
+    DiscoveredPanel objects from PanelDiscoveredEvent data + client-side timestamps
+    (see "Frontend timestamp handling" section).
+    """
+    serial: str
+    cca: str
+    tigo_label: str
+    watts: float       # Can be decimal (e.g., 245.7)
+    voltage: float
+    discovered_at: str   # ISO timestamp (backend tracking)
+    last_seen_at: str    # For stale panel detection (backend tracking)
+
+@dataclass
+class MatchResult:
+    """Result of matching a discovered panel to expected configuration.
+
+    Return semantics by status:
+    - 'matched' with confidence='high': panel field populated (known serial)
+    - 'matched' with confidence='medium': suggested_label populated (new panel by topology)
+    - 'possible_wiring_issue': tigo_label, reported_cca, expected_cca, warning populated
+    - 'unmatched': tigo_label populated, may have needs_translation=True or error set
+
+    Note: Serialized to frontend via POST /api/config/validate endpoint as JSON.
+    Uses snake_case field names to match frontend TypeScript interface.
+    Manual serialization: dataclasses.asdict(match_result)
+    """
+    status: Literal['matched', 'unmatched', 'possible_wiring_issue']
+    panel: Optional[Panel] = None             # Set for high-confidence serial match (Panel defined in Backend Models)
+    suggested_label: Optional[str] = None     # Set for medium-confidence topology match
+    confidence: Optional[Literal['high', 'medium', 'low']] = None
+    tigo_label: Optional[str] = None
+    needs_translation: bool = False
+    error: Optional[str] = None
+    reported_cca: Optional[str] = None        # For wiring issue detection
+    expected_cca: Optional[str] = None        # For wiring issue detection
+    warning: Optional[str] = None
+```
+
 ### Panel Discovery Matching Algorithm
 
 ```python
@@ -741,6 +986,106 @@ def match_discovered_panel(
     )
 ```
 
+### Frontend Types
+
+The following TypeScript types mirror the backend Pydantic models and are used throughout the wizard and dashboard.
+
+```typescript
+// Configuration types (mirror backend Pydantic models)
+interface MQTTConfig {
+  server: string;
+  port: number;      // Required field; form defaults to 1883, backend validates as required
+  username?: string;
+  password?: string;
+}
+
+// Note: Port is required in both frontend and backend. The form pre-fills 1883 as the
+// default value, but users must explicitly submit it. Backend does not auto-default.
+
+interface StringConfig {
+  name: string;        // 1-2 uppercase letters (A, B, AA)
+  panel_count: number;
+}
+
+interface CCAConfig {
+  name: string;           // lowercase alphanumeric + hyphens
+  serial_device: string;  // e.g., /dev/ttyACM2
+  strings: StringConfig[];
+}
+
+interface SystemConfig {
+  version: number;
+  mqtt: MQTTConfig;
+  ccas: CCAConfig[];
+}
+
+interface Panel {
+  serial: string;
+  cca: string;
+  string: string;
+  tigo_label: string;
+  display_label: string;
+}
+
+interface DiscoveredPanel {
+  serial: string;
+  cca: string;
+  tigo_label: string;
+  watts: number;
+  voltage: number;
+  discovered_at: string;  // ISO timestamp (added by frontend)
+  last_seen_at: string;   // For stale panel detection (added by frontend)
+}
+
+// WebSocket events emitted during discovery
+interface PanelDiscoveredEvent {
+  type: 'panel_discovered';
+  data: {
+    serial: string;
+    cca: string;
+    tigo_label: string;
+    watts: number;
+    voltage: number;
+  };
+}
+
+interface DiscoveryCompleteEvent {
+  type: 'discovery_complete';
+  data: { total_panels: number };
+}
+
+interface PanelStaleEvent {
+  type: 'panel_stale';
+  data: { serial: string; last_seen: string };
+}
+
+// Connection status events for UI feedback
+interface ConnectionStatusEvent {
+  type: 'connection_status';
+  data: {
+    status: 'connected' | 'disconnected';
+    reason?: string;  // Present when status is 'disconnected'
+  };
+}
+
+// Timeout event when discovery takes too long
+interface DiscoveryTimeoutEvent {
+  type: 'discovery_timeout';
+  data: {
+    panels_found: number;
+    expected: number;  // From topology configuration
+    elapsed_seconds: number;
+  };
+}
+
+type WizardWebSocketEvent =
+  | PanelDiscoveredEvent
+  | DiscoveryCompleteEvent
+  | PanelStaleEvent
+  | ConnectionStatusEvent
+  | DiscoveryTimeoutEvent;
+```
+
 ### Frontend Wizard State Machine
 
 ```typescript
@@ -754,6 +1099,7 @@ type WizardStep =
 
 type MatchStatus = 'matched' | 'unmatched' | 'possible_wiring_issue';
 
+// Note: Corresponding Python dataclass is defined in the backend section below
 interface MatchResult {
   status: MatchStatus;
   panel?: Panel;
@@ -769,7 +1115,15 @@ interface MatchResult {
 
 interface WizardState {
   currentStep: WizardStep;
-  furthestStep: WizardStep;  // Track progress for back navigation
+  /**
+   * furthestStep tracks the highest step completed successfully.
+   * Used for:
+   * 1. Step indicator styling (completed vs future steps)
+   * 2. Preventing skip-ahead (can only navigate to steps <= furthestStep + 1)
+   * Reset to 'mqtt-config' when starting fresh.
+   * On invalidation: furthestStep = min(furthestStep, invalidatedStep - 1)
+   */
+  furthestStep: WizardStep;
   mqttConfig: MQTTConfig | null;
   systemTopology: SystemConfig | null;
   // Use Record instead of Map for JSON serialization to localStorage
@@ -793,12 +1147,33 @@ interface PersistedWizardState {
 
 2. **State invalidation on back-edit**: When user modifies a previous step, downstream steps are invalidated:
    ```typescript
-   // When topology changes in step 2, invalidate steps 3-5
-   if (stepChanged === 'system-topology') {
-     state.configDownloaded = false;
+   function invalidateDownstreamState(stepChanged: WizardStep, state: WizardState): void {
+     // MQTT config changes affect everything downstream
+     if (stepChanged === 'mqtt-config') {
+       state.configDownloaded = false;
+       state.discoveredPanels = {};
+       state.validationResults = null;
+       // Warning: "MQTT settings changed. You'll need to re-download and redeploy."
+     }
+
+     // Topology changes affect download, discovery, and validation
+     if (stepChanged === 'system-topology') {
+       state.configDownloaded = false;
+       state.discoveredPanels = {};
+       state.validationResults = null;
+       // Warning: "Your config changes require re-downloading and re-discovery"
+     }
+
+     // Note: Editing translations in step 5 does NOT require re-validation
+     // of step 6's summary - translations are purely display-layer changes
+   }
+
+   // Discovery restart (button click, not back navigation)
+   function restartDiscovery(state: WizardState): void {
      state.discoveredPanels = {};
      state.validationResults = null;
-     // Show warning: "Your config changes require re-downloading and re-discovery"
+     // Note: translations preserved - user can re-use if panels match
+     // Note: configDownloaded preserved - no need to re-download
    }
    ```
 
@@ -806,8 +1181,18 @@ interface PersistedWizardState {
    - Key: `solar-tigo-wizard-state`
    - Storage size: ~20KB for 100 panels (well under 5MB limit)
    - Wrap `localStorage.setItem()` in try/catch for Safari private mode
-   - State expires after 7 days (prompt user to start fresh)
+   - State expiry check:
+     ```typescript
+     function isStateExpired(state: PersistedWizardState): boolean {
+       const savedAt = new Date(state.savedAt);
+       const now = new Date();
+       const daysDiff = (now.getTime() - savedAt.getTime()) / (1000 * 60 * 60 * 24);
+       return daysDiff > 7;
+     }
+     ```
+   - **Expired state UX:** Auto-clear with message "Your previous setup session expired. Starting fresh." (stale state is likely invalid anyway - MQTT settings may have changed, panels may have been added/removed)
    - On page load, check for existing state and offer "Resume setup" or "Start over"
+   - **Concurrent sessions:** Multiple browser tabs are NOT supported. Last-write-wins for localStorage. On final save (step 6), if another tab has saved config, show warning: "Configuration was modified in another session. Overwrite?"
 
 4. **Cancel flow**: "Cancel Setup" button available on all steps:
    - Confirmation dialog: "Your progress will be lost. Continue?"
@@ -952,6 +1337,13 @@ interface PersistedWizardState {
     - Mock MQTT broker for discovery testing
     - Test each wizard step transition
     - Test state persistence/recovery
+    - Test stale panel detection:
+      - Simulate panel reporting for 30 seconds
+      - Stop panel reports for 65 seconds
+      - Verify `PanelStaleEvent` is emitted
+      - Verify UI shows warning icon
+      - Resume panel reports
+      - Verify warning clears and `last_seen_at` updates
 
 22. **E2E tests for complete wizard flow**
     - Use Playwright MCP to test full wizard
@@ -962,18 +1354,61 @@ interface PersistedWizardState {
     - Test malformed JSON handling
     - Test backup file creation
 
+24. **Unit tests for wizard state persistence**
+    - Test localStorage save/restore cycle
+    - Test state versioning (v1 → v2 migration path if version increments)
+    - Test 7-day expiry detection
+    - Test Safari private mode error handling (localStorage unavailable)
+    - Test state invalidation on back-edit (editing step 2 clears steps 3-5)
+    - Test `furthestStep` tracking (increments on step completion, decrements on invalidation)
+
+25. **Integration tests for bulk translation**
+    - Test offset application (positive: +3, negative: -3, zero: 0)
+    - Test preview generation accuracy (B9 → F6 with offset -3)
+    - Test validation rejection (offset that would create position ≤0)
+    - Test non-contiguous panel handling (B9, B11 both translated)
+    - Test mixed translations (some bulk, some individual overrides)
+
 ## Acceptance Criteria
 
 | Criterion | Measurement |
 |-----------|-------------|
-| All 6 wizard steps complete without errors | Manual test with 1, 2, and 4 CCA configurations |
+| All 6 wizard steps complete without errors | Manual test with configurations from test matrix below |
 | Generated `docker-compose.yml` passes validation | `docker compose config` exits 0 for configs with 1, 2, 4 CCAs, hyphenated names, max-length names |
 | Generated INI files are parseable | Python ConfigParser loads without error |
 | Each panel appears in UI within 5s of MQTT message | Per NFR-3, automated test per-panel latency |
 | All test panels discovered within 30s of broker connection | Automated test with 20-panel mock MQTT scenario |
 | Config saves atomically | Kill process during 100 sequential saves; verify no partial/corrupt files |
-| Backward compatibility with JSON | Dashboard displays panels correctly using only legacy `panel_mapping.json` (tested with 3 sample configs) |
+| Backward compatibility with JSON | Dashboard displays panels correctly using only legacy `panel_mapping.json` (tested with 3 sample configs - see below) |
 | MQTT test correctly identifies auth failures | Returns `error_type: "auth_failed"` |
+| Translation bulk offset works correctly | Offset of -3 transforms B9→F6, B10→F7 accurately in preview and save |
+| Translation validates position bounds | Offset that would create position ≤0 shows validation error before apply |
+| State persistence survives browser close | Close browser at step 4, reopen, resume prompt appears with correct state |
+| State expiry is enforced | State older than 7 days is auto-cleared with informational message |
+
+**7-day expiry test approach:**
+```typescript
+// Test state expiry by manipulating savedAt timestamp
+it('clears state older than 7 days', () => {
+  const oldState: PersistedWizardState = {
+    version: 1,
+    state: { currentStep: 'discovery', mqttConfig: { server: 'test', port: 1883 } },
+    savedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() // 8 days ago
+  };
+  localStorage.setItem('solar-tigo-wizard-state', JSON.stringify(oldState));
+
+  mount(<SetupWizard />);
+
+  expect(screen.getByText(/previous setup session expired/i)).toBeVisible();
+  expect(localStorage.getItem('solar-tigo-wizard-state')).toBeNull();
+});
+```
+
+**Sample configs for backward compatibility testing:**
+
+1. **Minimal config**: 1 CCA, 1 string (A), 5 panels - tests simplest case
+2. **Production-like config**: 2 CCAs, 5 strings (A, B, F, G, H), 71 panels - based on current installation
+3. **Edge case config**: 1 CCA, 2 strings, panels with translations, non-sequential positions (A1, A3, A7)
 
 **Test scenarios for docker-compose validation:**
 - Single CCA with name "solar"
@@ -981,6 +1416,54 @@ interface PersistedWizardState {
 - CCA with hyphenated name "my-solar-array"
 - CCA with 32-character name (maximum length)
 - Different serial device paths (`/dev/ttyACM0`, `/dev/ttyUSB0`)
+
+**Wizard test matrix:**
+
+| CCAs | Strings/CCA | Panels/String | String Names | Translations | Notes |
+|------|-------------|---------------|--------------|--------------|-------|
+| 1    | 1           | 5             | A            | None         | Minimal |
+| 2    | 3           | 10-15         | A, B, C      | Partial      | Typical small |
+| 2    | 5           | 8-20          | A, B, F, G, H| All          | Production-like |
+| 4    | 2           | 20            | AA, AB       | None         | Multi-letter strings |
+| 1    | 2           | 50            | Z, ZZ        | Mixed        | Large string, edge names |
+| 2    | 1 each      | 5             | A on both    | None         | Wiring issue detection (see below) |
+
+**Additional test variations:**
+- **String name edge cases:** Single-letter (A), double-letter (AA), mixed (A + AA in same CCA)
+- **CCA name edge cases:** 32-character name (max length), hyphenated name (my-solar)
+- **Panel counts:** Min (1 panel per string), Max (50+ panels per string)
+- **Translation scenarios:** No translations, all translations, mixed (some translated, some not)
+
+**Wiring issue detection test:**
+- Configure: String "A" on "primary" CCA, String "A" on "secondary" CCA
+- Simulate: Panel "A1" reports from "secondary" CCA but was configured on "primary"
+- Expected: `possible_wiring_issue` status with warning: "Panel reports from 'secondary' but string 'A' is configured on 'primary'"
+
+**Error handling test cases:**
+
+| Scenario | Error Code | Expected Behavior |
+|----------|------------|-------------------|
+| localStorage unavailable (Safari private mode) | N/A (frontend-only) | Wizard works, shows warning "Progress won't be saved between sessions" |
+| Config write permission denied | `permission_denied` | Error message with file path, no data loss, retry option |
+| MQTT connection timeout | `timeout` | Shows error, suggests checking firewall/network |
+| MQTT auth failure | `auth_failed` | Shows error, suggests checking credentials |
+| Partial panel discovery (<50%) | N/A (warning) | Red warning, "Many panels missing, verify tigo-mqtt is running", can proceed |
+| Disk full during atomic write | `disk_full` | Original file preserved, error message, retry after clearing space |
+| Malformed YAML detected | `parse_error` | Options: "Reset configuration" or "Edit manually" with file path |
+| Schema validation failure | `validation_error` | Specific field errors with line numbers |
+| WebSocket disconnect during discovery | N/A (connection) | "Connection lost, reconnecting..." banner, auto-retry |
+
+**Testing disk full scenario:**
+```python
+# Use unittest.mock to simulate disk full:
+from unittest.mock import patch
+
+def test_disk_full_preserves_original():
+    with patch('builtins.open', side_effect=OSError(28, 'No space left on device')):
+        result = config_service.save_config(config)
+        assert result.error == "disk_full"
+        assert original_file_unchanged()
+```
 
 ## Context / Documentation
 
@@ -997,17 +1480,73 @@ interface PersistedWizardState {
 
 ### External Documentation
 
-- [PyYAML Documentation](https://pyyaml.org/wiki/PyYAMLDocumentation)
-- [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)
-- [React Hook Form](https://react-hook-form.com/) - Recommended for wizard forms
+- [PyYAML Documentation](https://pyyaml.org/wiki/PyYAMLDocumentation) - YAML parsing for Python
+- [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) - Environment-based config (Pydantic v2 syntax)
+- [React Hook Form](https://react-hook-form.com/) - Recommended for wizard forms (performant, minimal re-renders)
+- [Docker Compose Specification](https://docs.docker.com/compose/compose-file/) - For validating generated compose files
+
+**Note:** Verify link validity before implementation. Documentation URLs may change over time.
 
 ---
 
-**Specification Version:** 1.2
+**Specification Version:** 1.5
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.5 (January 2026)
+**Summary:** Address review comments - serialization, API consistency, and testing clarity
+
+**Changes:**
+- Removed `alias_generator` from Python Panel model (snake_case matches TypeScript)
+- Clarified DiscoveredPanel dataclass is backend-internal (not serialized to frontend)
+- Standardized ALL types on snake_case convention for simplicity
+- Added HTTP status codes section (200 OK for success, 400/500 for errors)
+- Standardized error response format across all endpoints with error codes
+- Clarified WebSocket [Retry] resets counter, [Continue anyway] proceeds with partial discovery
+- Documented that panels reporting during WebSocket disconnect are not retroactively discovered
+- Added disk full simulation test approach using `unittest.mock`
+- Added error codes to error handling table (permission_denied, disk_full, parse_error, validation_error)
+- Added ConnectionStatusEvent and DiscoveryTimeoutEvent WebSocket event types
+- Added 7-day state expiry test approach using timestamp manipulation
+- Clarified MatchResult serialization via POST /api/config/validate endpoint
+- Clarified port default handling (form pre-fills 1883, required in API)
+- Added POST /api/config/validate endpoint for discovered panel matching
+
+### v1.4 (January 2026)
+**Summary:** API schemas, Python models, WebSocket handling, and error recovery
+
+**Changes:**
+- Added Backend Models section with Pydantic models: `StringConfig`, `CCAConfig`, `MQTTConfig`, `SystemConfig`, `Panel`
+- Added JSON serialization convention note (snake_case → camelCase via Pydantic alias_generator)
+- Added frontend timestamp handling for WebSocket events (discoveredAt/lastSeenAt added client-side)
+- Added discovery restart invalidation function (`restartDiscovery`)
+- Added WebSocket reconnection handling (exponential backoff, state preservation)
+- Added complete response schemas for CRUD endpoints (`/api/config/status`, `/api/config/system`, `/api/config/panels`)
+- Added concurrent session handling note (last-write-wins, overwrite warning on final save)
+- Added wiring issue detection test scenario to test matrix
+- Added stale panel detection test case
+- Added error handling test cases table (8 scenarios)
+- Clarified string name case normalization (UI and API auto-uppercase)
+- Noted watts/voltage can be decimal values
+
+### v1.3 (January 2026)
+**Summary:** Complete type definitions, enhance test coverage, and clarify implementation details
+
+**Changes:**
+- Added Python `DiscoveredPanel` and `MatchResult` dataclasses with docstrings explaining return field semantics
+- Added complete Frontend Types section: `MQTTConfig`, `StringConfig`, `CCAConfig`, `SystemConfig`, `Panel`, `DiscoveredPanel`
+- Added WebSocket event types: `PanelDiscoveredEvent`, `DiscoveryCompleteEvent`, `PanelStaleEvent`, `WizardWebSocketEvent`
+- Added MQTT config invalidation rule (MQTT changes require re-download/redeploy)
+- Clarified `furthestStep` usage: step indicator styling, preventing skip-ahead, reset behavior
+- Clarified bulk translation edge cases: offset can be positive/negative/zero, non-contiguous panels handled, validation rejects position ≤0
+- Added state expiry check implementation with UX (auto-clear with message)
+- Specified 3 sample configs for backward compatibility testing (minimal, production-like, edge case)
+- Added comprehensive wizard test matrix with string/panel variations
+- Added test tasks 24-25 for state persistence and bulk translation
+- Added acceptance criteria for translations and state persistence
+- Added Docker Compose Specification link, noted link validity verification
 
 ### v1.2 (January 2026)
 **Summary:** Refine implementation details and improve testability
