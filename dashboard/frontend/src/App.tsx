@@ -28,15 +28,17 @@ import {
 const initialState = getInitialStateFromUrl();
 
 const appStyle: CSSProperties = {
-  minHeight: '100vh',
+  height: '100vh',
   backgroundColor: '#f5f5f5',
   display: 'flex',
   flexDirection: 'column',
+  overflow: 'hidden',
 };
 
 const mainStyle: CSSProperties = {
   position: 'relative',
   flexGrow: 1,
+  minHeight: 0, // Allow flex child to shrink below content size
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
@@ -70,7 +72,7 @@ const modeToggleSpacerStyle: CSSProperties = {
 
 const layoutContainerStyle: CSSProperties = {
   flexGrow: 1,
-  position: 'relative',
+  minHeight: 0, // Allow flex child to shrink below content size
   overflow: 'hidden',
 };
 
