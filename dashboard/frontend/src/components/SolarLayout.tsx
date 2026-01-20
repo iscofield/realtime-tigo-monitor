@@ -13,17 +13,11 @@ import {
   MIN_ZOOM,
   MAX_ZOOM,
   CONTENT_PADDING,
-  WHEEL_DEBOUNCE_MS,
 } from '../constants';
 import './SolarLayout.css';
 
-// Wheel zoom configuration
-// Base step scaled by deltaY magnitude for proportional feel across input devices
-const WHEEL_ZOOM_SENSITIVITY = 0.002; // Multiplied by pixel delta for zoom step
-const MIN_WHEEL_ZOOM_STEP = 0.02; // Minimum step to ensure some zoom happens
-const MAX_WHEEL_ZOOM_STEP = 0.15; // Cap to prevent jarring jumps
-const WHEEL_ANIMATION_MS = 100; // Shorter animation for snappier wheel response
-const PIXELS_PER_LINE = 40; // Approximate pixels per line for deltaMode=1 (mouse wheels)
+// Zoom step for pinch gestures (smaller than button ZOOM_STEP=0.25 for finer control)
+const PINCH_ZOOM_STEP = 0.02;
 
 interface SolarLayoutProps {
   panels: PanelData[];
@@ -76,72 +70,53 @@ export function SolarLayout({
   // Ref for the wrapper element to attach wheel listener
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // Debounce ref to prevent animation overlap on rapid scroll (GitHub #408)
-  const lastZoomTime = useRef(0);
+  // Helper to get current transform state from the library
+  const getTransformState = useCallback(() => {
+    if (!transformRef.current) return null;
+    // Access the transform state from the library's instance
+    const instance = transformRef.current.instance;
+    const { positionX, positionY, scale } = instance.transformState;
+    return { positionX, positionY, scale };
+  }, [transformRef]);
 
-  // Custom wheel handler - checks for Ctrl/Cmd modifier before zooming
-  // This works around the library's broken activationKeys (GitHub #113, #370)
-  //
-  // IMPORTANT: On macOS, trackpad pinch gestures generate synthetic wheel events
-  // with ctrlKey=true. We must NOT intercept these - let the library handle pinch
-  // natively via touch/gesture events. We only handle actual Ctrl+scroll (keyboard).
-  //
-  // Heuristic to detect synthetic pinch vs real Ctrl+scroll:
-  // - Pinch events have ctrlKey=true but NO keyboard Ctrl press
-  // - We can't detect this directly, but pinch events typically have very small
-  //   deltaY values (< 10) while real mouse wheel has larger values
-  // - However, this isn't reliable, so we check metaKey only (Cmd+scroll on Mac)
-  //   and let ctrlKey events pass through to the library's pinch handler
+  // Custom wheel handler for both zoom and pan
+  // - Ctrl/Cmd + wheel = zoom (works around library's broken activationKeys, GitHub #113, #370)
+  // - Plain wheel = pan (two-finger trackpad scroll)
   const handleWheel = useCallback(
     (event: WheelEvent) => {
-      // On macOS: Only handle Cmd+scroll (metaKey), not Ctrl+scroll
-      // ctrlKey on Mac is often synthetic from pinch gestures
-      // On Windows/Linux: Handle Ctrl+scroll (ctrlKey)
-      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-      const shouldZoom = isMac ? event.metaKey : event.ctrlKey;
+      if (!transformRef.current) return;
 
-      if (shouldZoom) {
-        event.preventDefault();
+      const state = getTransformState();
+      if (!state) return;
 
-        if (!transformRef.current) return;
+      event.preventDefault();
 
+      // Ctrl/Cmd + wheel = zoom (pinch gesture on macOS trackpad)
+      if (event.ctrlKey || event.metaKey) {
         // Ignore horizontal-only scroll (deltaY === 0)
         if (event.deltaY === 0) return;
 
-        // Debounce: Prevent animation overlap on very rapid scroll
-        const now = Date.now();
-        if (now - lastZoomTime.current < WHEEL_DEBOUNCE_MS) return;
-        lastZoomTime.current = now;
-
         onManualZoom(); // Track as manual zoom
 
-        // Normalize deltaY to pixels based on deltaMode
-        // deltaMode 0 = pixels (trackpad, smooth-scroll mouse)
-        // deltaMode 1 = lines (traditional mouse wheel, ~40px per line)
-        // deltaMode 2 = pages (rare, ~800px per page)
-        let deltaPixels = event.deltaY;
-        if (event.deltaMode === 1) {
-          deltaPixels = event.deltaY * PIXELS_PER_LINE;
-        } else if (event.deltaMode === 2) {
-          deltaPixels = event.deltaY * window.innerHeight;
-        }
+        // Calculate new scale based on wheel delta (no debounce for responsiveness)
+        // deltaY is typically ~1-3 for trackpad pinch, negative = zoom in
+        const scaleFactor = 1 - event.deltaY * PINCH_ZOOM_STEP;
+        const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, state.scale * scaleFactor));
 
-        // Calculate proportional zoom step based on normalized pixel delta
-        const rawStep = Math.abs(deltaPixels) * WHEEL_ZOOM_SENSITIVITY;
-        const zoomStep = Math.max(MIN_WHEEL_ZOOM_STEP, Math.min(MAX_WHEEL_ZOOM_STEP, rawStep));
+        // Use setTransform with 0 animation for immediate response
+        transformRef.current.setTransform(state.positionX, state.positionY, newScale, 0);
+      } else {
+        // Plain wheel = pan (two-finger trackpad scroll)
+        // Apply wheel deltas as pan offsets (negative because scroll direction is inverted)
+        const newX = state.positionX - event.deltaX;
+        const newY = state.positionY - event.deltaY;
 
-        // Determine zoom direction based on wheel delta
-        if (event.deltaY < 0) {
-          // Scroll up = zoom in (centered on viewport, not cursor)
-          transformRef.current.zoomIn(zoomStep, WHEEL_ANIMATION_MS);
-        } else {
-          // Scroll down = zoom out (centered on viewport, not cursor)
-          transformRef.current.zoomOut(zoomStep, WHEEL_ANIMATION_MS);
-        }
+        // Use setTransform for immediate response (no animation for smooth scrolling feel)
+        transformRef.current.setTransform(newX, newY, state.scale, 0);
+        onManualZoom(); // Track as manual interaction
       }
-      // Without modifier: let event bubble naturally (browser handles scroll/pan)
     },
-    [transformRef, onManualZoom]
+    [transformRef, getTransformState, onManualZoom]
   );
 
   // Attach custom wheel handler with passive: false to allow preventDefault
@@ -163,33 +138,6 @@ export function SolarLayout({
       setImageLoaded(true);
     }
   }, [retryCount]);
-
-  // Fix for tab switching: centerOnInit doesn't always work reliably when remounting
-  // Manually center the view after a short delay to ensure the container has proper dimensions
-  // Uses explicit setTransform instead of centerView for reliable positioning
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (!transformRef.current) return;
-
-      // Get wrapper bounds for accurate positioning
-      const wrapperBounds =
-        transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
-      if (!wrapperBounds) return;
-
-      // Calculate content dimensions at initial scale
-      const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * initialScale;
-      const contentHeight = (LAYOUT_HEIGHT + CONTENT_PADDING * 2) * initialScale;
-
-      // Calculate centered positions
-      const centerX = (wrapperBounds.width - contentWidth) / 2;
-      // Use Math.max(0, ...) to ensure content never goes above viewport
-      const centerY = Math.max(0, (wrapperBounds.height - contentHeight) / 2);
-
-      // Use setTransform with explicit positions instead of centerView
-      transformRef.current.setTransform(centerX, centerY, initialScale, 0);
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [transformRef, initialScale]);
 
   // Handle image load error
   if (imageError) {
