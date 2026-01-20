@@ -52,7 +52,7 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
             "mem_limit": "256m",
             "group_add": ["dialout"],
             "env_file": [".env"],
-            "devices": [f"{cca.serial_device}:{cca.serial_device}"],
+            "devices": [cca.serial_device],
             "volumes": [
                 f"./config-{cca.name}.ini:/app/config-template.ini:ro",
                 f"./data/{cca.name}:/data",
@@ -69,7 +69,7 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
                 "test": [
                     "CMD", "sh", "-c",
                     "test -f /run/taptap/taptap.run && "
-                    "find /run/taptap/taptap.run -mmin -1 | grep -q ."
+                    "find /run/taptap/taptap.run -mmin -2 | grep -q ."
                 ],
                 "interval": "60s",
                 "timeout": "10s",
@@ -77,6 +77,37 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
                 "start_period": "120s"
             }
         }
+
+    # Add temp-id-monitor service
+    cca_names = [cca.name for cca in system_config.ccas]
+    taptap_services = [f"taptap-{name}" for name in cca_names]
+
+    # Build environment variables for container names
+    temp_id_env = []
+    if len(taptap_services) >= 1:
+        temp_id_env.append(f"PRIMARY_CONTAINER={taptap_services[0]}")
+    if len(taptap_services) >= 2:
+        temp_id_env.append(f"SECONDARY_CONTAINER={taptap_services[1]}")
+    else:
+        temp_id_env.append("ENABLE_SECONDARY=false")
+
+    services["temp-id-monitor"] = {
+        "build": "./temp-id-monitor",
+        "container_name": "temp-id-monitor",
+        "restart": "unless-stopped",
+        "network_mode": "host",
+        "env_file": [".env"],
+        "environment": temp_id_env,
+        "volumes": ["/var/run/docker.sock:/var/run/docker.sock:ro"],
+        "depends_on": taptap_services,
+        "logging": {
+            "driver": "json-file",
+            "options": {
+                "max-size": "10m",
+                "max-file": "3"
+            }
+        }
+    }
 
     compose = {"services": services}
 
@@ -139,6 +170,7 @@ TIMEOUT = 30
 LOG_LEVEL = info
 BINARY = /usr/local/bin/taptap
 SERIAL = {cca.serial_device}
+# WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
 ADDRESS =
 PORT = 502
 MODULES = {modules_line}
@@ -360,6 +392,7 @@ TIMEOUT = 30
 LOG_LEVEL = info
 BINARY = /usr/local/bin/taptap
 SERIAL = {cca.serial_device}
+# WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
 ADDRESS =
 PORT = 502
 # PLACEHOLDER: Update MODULES with actual serial numbers after discovery
