@@ -1,8 +1,8 @@
 import type { CSSProperties } from 'react';
-import { LayoutGrid, Table } from 'lucide-react';
+import { LayoutGrid, Table, Settings2 } from 'lucide-react';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 
-export type TabType = 'layout' | 'table';
+export type TabType = 'layout' | 'table' | 'editor';
 
 interface TabNavigationProps {
   activeTab: TabType;
@@ -84,6 +84,18 @@ export function TabNavigation({ activeTab, onTabChange }: TabNavigationProps) {
           <Table size={20} />
           <span>Table</span>
         </button>
+        <button
+          data-testid="editor-tab"
+          onClick={() => onTabChange('editor')}
+          style={{
+            ...mobileButtonBaseStyle,
+            backgroundColor: activeTab === 'editor' ? '#444' : 'transparent',
+          }}
+          aria-current={activeTab === 'editor' ? 'page' : undefined}
+        >
+          <Settings2 size={20} />
+          <span>Editor</span>
+        </button>
       </nav>
     );
   }
@@ -115,6 +127,19 @@ export function TabNavigation({ activeTab, onTabChange }: TabNavigationProps) {
       >
         <Table size={18} />
         Table View
+      </button>
+      <button
+        data-testid="editor-tab"
+        onClick={() => onTabChange('editor')}
+        style={{
+          ...desktopButtonBaseStyle,
+          backgroundColor: activeTab === 'editor' ? '#555' : 'transparent',
+          borderBottom: activeTab === 'editor' ? '2px solid #4CAF50' : '2px solid transparent',
+        }}
+        aria-current={activeTab === 'editor' ? 'page' : undefined}
+      >
+        <Settings2 size={18} />
+        Layout Editor
       </button>
     </nav>
   );

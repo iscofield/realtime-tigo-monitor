@@ -148,6 +148,48 @@ class PanelPosition(BaseModel):
     y_percent: float = Field(..., ge=0.0, le=100.0)
 
 
+class LayoutConfig(BaseModel):
+    """Layout editor configuration stored in config/layout.yaml."""
+    image_path: Optional[str] = None
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
+    image_hash: Optional[str] = None
+    aspect_ratio: Optional[float] = None
+    overlay_size: int = Field(default=50, ge=20, le=200)
+    last_modified: Optional[str] = None
+
+
+class LayoutConfigResponse(BaseModel):
+    """Response for GET /api/layout."""
+    image_path: Optional[str] = None
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
+    image_hash: Optional[str] = None
+    aspect_ratio: Optional[float] = None
+    overlay_size: int = 50
+    last_modified: Optional[str] = None
+
+
+class LayoutImageMetadata(BaseModel):
+    """Metadata returned after image upload."""
+    width: int
+    height: int
+    size_bytes: int
+    hash: str
+    aspect_ratio: float
+
+
+class LayoutImageUploadResponse(BaseModel):
+    """Response for POST /api/layout/image."""
+    success: bool = True
+    metadata: LayoutImageMetadata
+
+
+class LayoutUpdateRequest(BaseModel):
+    """Request body for PUT /api/layout."""
+    overlay_size: int = Field(..., ge=20, le=200)
+
+
 class Panel(BaseModel):
     """A configured panel with serial and label info."""
     serial: str = Field(..., min_length=1)

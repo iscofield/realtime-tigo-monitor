@@ -1,0 +1,21 @@
+# Layout Editor Configuration Example
+# Copy to layout.yaml and customize for your installation
+
+# Path to the layout image (relative to backend assets/)
+image_path: assets/layout.png
+
+# Image dimensions (auto-detected on upload)
+image_width: 1920
+image_height: 1080
+
+# SHA256 hash of the image (for cache validation)
+image_hash: sha256:abc123...
+
+# Aspect ratio (calculated from dimensions)
+aspect_ratio: 1.7778
+
+# Panel overlay size in pixels (20-200)
+overlay_size: 50
+
+# Last modification timestamp (ISO 8601)
+last_modified: '2026-01-21T12:00:00Z'

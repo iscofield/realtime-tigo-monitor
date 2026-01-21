@@ -23,6 +23,7 @@ from .config_models import (
     Panel,
     PanelPosition,
     ConfigStatusResponse,
+    LayoutConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = Path("config")
 DEFAULT_SYSTEM_YAML = DEFAULT_CONFIG_DIR / "system.yaml"
 DEFAULT_PANELS_YAML = DEFAULT_CONFIG_DIR / "panels.yaml"
+DEFAULT_LAYOUT_YAML = DEFAULT_CONFIG_DIR / "layout.yaml"
 DEFAULT_LEGACY_JSON = DEFAULT_CONFIG_DIR / "panel_mapping.json"
+DEFAULT_ASSETS_DIR = Path("assets")
+DEFAULT_LAYOUT_IMAGE = DEFAULT_ASSETS_DIR / "layout.png"
 
 
 class ConfigServiceError(Exception):
@@ -50,12 +54,17 @@ class ConfigService:
         config_dir: Path = DEFAULT_CONFIG_DIR,
         system_yaml_path: Optional[Path] = None,
         panels_yaml_path: Optional[Path] = None,
+        layout_yaml_path: Optional[Path] = None,
         legacy_json_path: Optional[Path] = None,
+        assets_dir: Optional[Path] = None,
     ):
         self.config_dir = config_dir
         self.system_yaml_path = system_yaml_path or (config_dir / "system.yaml")
         self.panels_yaml_path = panels_yaml_path or (config_dir / "panels.yaml")
+        self.layout_yaml_path = layout_yaml_path or (config_dir / "layout.yaml")
         self.legacy_json_path = legacy_json_path or (config_dir / "panel_mapping.json")
+        self.assets_dir = assets_dir or DEFAULT_ASSETS_DIR
+        self.layout_image_path = self.assets_dir / "layout.png"
 
     def get_config_status(self) -> ConfigStatusResponse:
         """Check configuration status (FR-3.1, FR-5.1).
@@ -186,6 +195,161 @@ class ConfigService:
             header="# Panel definitions - generated during setup, can be manually edited\n"
         )
         logger.info(f"Saved panels config to {self.panels_yaml_path}")
+
+    def load_layout_config(self) -> LayoutConfig:
+        """Load layout configuration from YAML file.
+
+        Returns default config if file doesn't exist.
+        """
+        if not self.layout_yaml_path.exists():
+            return LayoutConfig()
+
+        try:
+            with open(self.layout_yaml_path, "r") as f:
+                data = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            raise ConfigServiceError(
+                f"Layout configuration file is corrupted: {e}",
+                error_code="parse_error"
+            )
+
+        if data is None:
+            return LayoutConfig()
+
+        try:
+            return LayoutConfig(**data)
+        except ValidationError as e:
+            errors = [f"{err['loc']}: {err['msg']}" for err in e.errors()]
+            raise ConfigServiceError(
+                f"Layout configuration validation failed: {'; '.join(errors)}",
+                error_code="validation_error"
+            )
+
+    def save_layout_config(self, config: LayoutConfig) -> None:
+        """Save layout configuration to YAML file with atomic write.
+
+        Creates backup of existing file before overwriting.
+
+        Raises:
+            ConfigServiceError: If write fails
+        """
+        self._ensure_config_dir()
+        self._atomic_write_yaml(
+            self.layout_yaml_path,
+            config.model_dump(),
+            header="# Layout editor configuration\n"
+        )
+        logger.info(f"Saved layout config to {self.layout_yaml_path}")
+
+    def get_layout_image_path(self) -> Optional[Path]:
+        """Get the path to the layout image if it exists."""
+        if self.layout_image_path.exists():
+            return self.layout_image_path
+        return None
+
+    def save_layout_image(
+        self,
+        image_data: bytes,
+        content_type: str
+    ) -> tuple[int, int, str]:
+        """Save layout image with backup of existing.
+
+        Args:
+            image_data: Raw image bytes
+            content_type: MIME type of image
+
+        Returns:
+            Tuple of (width, height, sha256_hash)
+
+        Raises:
+            ConfigServiceError: If image is invalid or write fails
+        """
+        import hashlib
+        from PIL import Image
+        import io
+
+        # Validate image
+        try:
+            img = Image.open(io.BytesIO(image_data))
+            width, height = img.size
+        except Exception as e:
+            raise ConfigServiceError(
+                f"Invalid image file: {e}",
+                error_code="invalid_image"
+            )
+
+        # Compute hash
+        image_hash = f"sha256:{hashlib.sha256(image_data).hexdigest()}"
+
+        # Ensure assets directory exists
+        if not self.assets_dir.exists():
+            try:
+                self.assets_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise ConfigServiceError(
+                    f"Cannot create assets directory: {e}",
+                    error_code="permission_denied"
+                )
+
+        # Backup existing image
+        if self.layout_image_path.exists():
+            backup_path = self.assets_dir / "layout.backup.png"
+            try:
+                import shutil
+                shutil.copy2(self.layout_image_path, backup_path)
+                logger.debug(f"Created image backup: {backup_path}")
+            except OSError as e:
+                logger.warning(f"Could not create image backup: {e}")
+
+        # Write new image atomically
+        try:
+            fd, temp_path = tempfile.mkstemp(
+                dir=self.assets_dir,
+                prefix=".layout.",
+                suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(image_data)
+            except Exception:
+                os.close(fd)
+                raise
+
+            os.rename(temp_path, self.layout_image_path)
+            logger.info(f"Saved layout image: {self.layout_image_path}")
+
+        except OSError as e:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+            raise ConfigServiceError(
+                f"Failed to save layout image: {e}",
+                error_code="write_error"
+            )
+
+        return width, height, image_hash
+
+    def delete_layout_image(self) -> bool:
+        """Delete layout image if it exists.
+
+        Returns:
+            True if image was deleted, False if it didn't exist
+        """
+        if not self.layout_image_path.exists():
+            return False
+
+        try:
+            self.layout_image_path.unlink()
+            logger.info(f"Deleted layout image: {self.layout_image_path}")
+            return True
+        except OSError as e:
+            raise ConfigServiceError(
+                f"Failed to delete layout image: {e}",
+                error_code="delete_error"
+            )
 
     def load_legacy_json(self) -> Optional[PanelsConfig]:
         """Load legacy panel_mapping.json and convert to PanelsConfig.

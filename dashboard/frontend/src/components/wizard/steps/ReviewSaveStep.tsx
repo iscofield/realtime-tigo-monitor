@@ -6,8 +6,18 @@
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import { saveSystemConfig, savePanelsConfig } from '../../../api/config';
-import type { MQTTConfig, SystemConfig, DiscoveredPanel, Panel } from '../../../types/config';
+import type { MQTTConfig, SystemConfig, DiscoveredPanel } from '../../../types/config';
 import { UNASSIGNED_MARKER } from './mapping';
+
+// Local panel type for wizard display (differs from layout editor's Panel type)
+interface WizardPanel {
+  serial: string;
+  cca: string;
+  string: string;
+  tigo_label: string;
+  label: string;           // Display label for wizard UI
+  position: number;        // Position in string (1st, 2nd, etc)
+}
 
 const containerStyle: CSSProperties = {
   display: 'flex',
@@ -134,7 +144,7 @@ export function ReviewSaveStep({
 
   // Build final panels array from discovered panels and translations
   // Filters out explicitly unassigned panels (those with UNASSIGNED_MARKER translation)
-  const buildPanels = (): Panel[] => {
+  const buildPanels = (): WizardPanel[] => {
     return Object.values(discoveredPanels)
       .filter(dp => {
         // Exclude panels that have been explicitly unassigned
@@ -197,7 +207,7 @@ export function ReviewSaveStep({
   };
 
   // Group panels by CCA and string for display
-  const panelsByString: Record<string, Panel[]> = {};
+  const panelsByString: Record<string, WizardPanel[]> = {};
   panels.forEach(panel => {
     const key = `${panel.cca}-${panel.string}`;
     if (!panelsByString[key]) {

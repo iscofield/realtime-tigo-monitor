@@ -42,9 +42,19 @@ export interface Panel {
   serial: string;
   cca: string;
   string: string;
-  position: number;
-  label: string;           // User-facing label (display_label)
-  tigo_label?: string;     // Original Tigo label (optional after migration)
+  tigo_label: string;      // Original Tigo label
+  display_label: string;   // User-facing label
+  position?: PanelPosition | null;  // Layout position (percentage coordinates)
+}
+
+// Legacy panel format (for backward compatibility during Phase 1)
+export interface LegacyPanel {
+  serial: string;
+  cca: string;
+  string: string;
+  position: number;        // Position in string (1st, 2nd, etc)
+  label: string;           // User-facing label
+  tigo_label?: string;     // Original Tigo label
 }
 
 // A panel discovered via MQTT during setup wizard
@@ -204,4 +214,62 @@ export interface ValidationResult {
 export interface PanelsConfig {
   version: number;
   panels: Panel[];
+}
+
+// Layout editor types (Phase 2)
+
+export interface LayoutConfig {
+  image_path: string | null;
+  image_width: number | null;
+  image_height: number | null;
+  image_hash: string | null;
+  aspect_ratio: number | null;
+  overlay_size: number;
+  last_modified: string | null;
+}
+
+export interface LayoutImageMetadata {
+  width: number;
+  height: number;
+  size_bytes: number;
+  hash: string;
+  aspect_ratio: number;
+}
+
+export interface LayoutImageUploadResponse {
+  success: boolean;
+  metadata: LayoutImageMetadata;
+}
+
+// Editor state types
+export type EditorMode = 'view' | 'edit';
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface AlignmentGuide {
+  type: 'vertical' | 'horizontal';
+  position: number;  // x for vertical, y for horizontal
+  start: number;
+  end: number;
+}
+
+export interface SnapResult {
+  position: Point;
+  guides: AlignmentGuide[];
+}
+
+// Draft auto-save
+export interface LayoutDraft {
+  timestamp: number;
+  positions: Record<string, PanelPosition>;
+  overlaySize: number;
+}
+
+// Edit history for undo/redo
+export interface EditHistory {
+  states: Record<string, PanelPosition | null>[];
+  currentIndex: number;
 }

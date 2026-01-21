@@ -3,7 +3,7 @@ import type { DisplayMode } from '../components/PanelOverlay';
 import type { TabType } from '../components/TabNavigation';
 
 // Valid parameter values
-const VALID_VIEWS: TabType[] = ['layout', 'table'];
+const VALID_VIEWS: TabType[] = ['layout', 'table', 'editor'];
 const VALID_MODES: DisplayMode[] = ['watts', 'voltage', 'sn'];
 
 interface UrlParamState {

@@ -43,5 +43,11 @@ config/layout.yaml
 config/*.bak
 config/.layout-history/
 
+# Layout editor assets (Phase 2)
+# User-uploaded layout images are git-ignored
+dashboard/backend/assets/layout.png
+dashboard/backend/assets/layout.backup.png
+dashboard/backend/assets/.layout.*
+
 # Legacy config backup (created during migration)
 config/panel_mapping.json.backup
