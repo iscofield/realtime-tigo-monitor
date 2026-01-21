@@ -119,6 +119,8 @@ export interface UseWizardStateReturn {
   updateDiscoveredPanel: (serial: string, updates: Partial<DiscoveredPanel>) => void;
   clearDiscoveredPanels: () => void;
   setTranslation: (tigoLabel: string, displayLabel: string) => void;
+  removeTranslation: (tigoLabel: string) => void;
+  resetAllTranslations: () => void;
   setValidationResults: (results: MatchResult[]) => void;
 
   // Persistence
@@ -277,6 +279,23 @@ export function useWizardState(): UseWizardStateReturn {
     }));
   }, []);
 
+  const removeTranslation = useCallback((tigoLabel: string) => {
+    setState(prev => {
+      const { [tigoLabel]: _, ...remaining } = prev.translations;
+      return {
+        ...prev,
+        translations: remaining,
+      };
+    });
+  }, []);
+
+  const resetAllTranslations = useCallback(() => {
+    setState(prev => ({
+      ...prev,
+      translations: {},
+    }));
+  }, []);
+
   const setValidationResults = useCallback((results: MatchResult[]) => {
     setState(prev => ({
       ...prev,
@@ -317,6 +336,8 @@ export function useWizardState(): UseWizardStateReturn {
     updateDiscoveredPanel,
     clearDiscoveredPanels,
     setTranslation,
+    removeTranslation,
+    resetAllTranslations,
     setValidationResults,
     saveState,
     clearState,

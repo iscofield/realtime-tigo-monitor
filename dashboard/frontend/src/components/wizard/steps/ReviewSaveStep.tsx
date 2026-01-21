@@ -7,6 +7,7 @@ import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import { saveSystemConfig, savePanelsConfig } from '../../../api/config';
 import type { MQTTConfig, SystemConfig, DiscoveredPanel, Panel } from '../../../types/config';
+import { UNASSIGNED_MARKER } from './mapping';
 
 const containerStyle: CSSProperties = {
   display: 'flex',
@@ -132,19 +133,27 @@ export function ReviewSaveStep({
   const [saved, setSaved] = useState(false);
 
   // Build final panels array from discovered panels and translations
+  // Filters out explicitly unassigned panels (those with UNASSIGNED_MARKER translation)
   const buildPanels = (): Panel[] => {
-    return Object.values(discoveredPanels).map(dp => {
-      const displayLabel = translations[dp.tigo_label] || dp.tigo_label;
-      const stringMatch = displayLabel.match(/^([A-Z]{1,2})(\d+)$/);
+    return Object.values(discoveredPanels)
+      .filter(dp => {
+        // Exclude panels that have been explicitly unassigned
+        const translation = translations[dp.tigo_label];
+        return translation !== UNASSIGNED_MARKER;
+      })
+      .map(dp => {
+        const displayLabel = translations[dp.tigo_label] || dp.tigo_label;
+        const stringMatch = displayLabel.match(/^([A-Z]{1,2})(\d+)$/);
 
-      return {
-        serial: dp.serial,
-        label: displayLabel,
-        cca: dp.cca,
-        string: stringMatch ? stringMatch[1] : displayLabel.replace(/[0-9]/g, ''),
-        position: stringMatch ? parseInt(stringMatch[2], 10) : 1,
-      };
-    });
+        return {
+          serial: dp.serial,
+          cca: dp.cca,
+          string: stringMatch ? stringMatch[1] : displayLabel.replace(/[0-9]/g, ''),
+          position: stringMatch ? parseInt(stringMatch[2], 10) : 1,
+          label: displayLabel,
+          tigo_label: dp.tigo_label,
+        };
+      });
   };
 
   const panels = buildPanels();
@@ -157,8 +166,17 @@ export function ReviewSaveStep({
       // Save system config
       await saveSystemConfig(topology);
 
-      // Save panels config
-      await savePanelsConfig({ version: 1, panels });
+      // Save panels config - transform to backend format
+      // Backend expects: { serial, cca, string, tigo_label, display_label }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const backendPanels = panels.map(p => ({
+        serial: p.serial,
+        cca: p.cca,
+        string: p.string,
+        tigo_label: p.tigo_label!,
+        display_label: p.label,  // Map frontend 'label' to backend 'display_label'
+      })) as any[];
+      await savePanelsConfig({ version: 1, panels: backendPanels });
 
       setSaved(true);
     } catch (e) {

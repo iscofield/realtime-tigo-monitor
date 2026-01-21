@@ -239,9 +239,9 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             topology={wizardState.state.systemTopology!}
             discoveredPanels={wizardState.state.discoveredPanels}
             translations={wizardState.state.translations}
-            validationResults={wizardState.state.validationResults}
             onTranslationChange={wizardState.setTranslation}
-            onValidationComplete={wizardState.setValidationResults}
+            onTranslationRemove={wizardState.removeTranslation}
+            onResetAllTranslations={wizardState.resetAllTranslations}
             onNext={() => {
               wizardState.saveState();
               wizardState.goNext();
