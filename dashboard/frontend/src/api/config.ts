@@ -13,6 +13,9 @@ import type {
   CCAConfig,
   DiscoveredPanel,
   PanelsConfig,
+  LayoutConfig,
+  LayoutImageUploadResponse,
+  PanelPosition,
 } from '../types/config';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
@@ -279,5 +282,84 @@ export async function migrateFromLegacy(
   return apiFetch('/api/config/migrate', {
     method: 'POST',
     body: JSON.stringify(mqttConfig),
+  });
+}
+
+// Layout Editor API functions (Phase 2)
+
+/**
+ * Get layout configuration.
+ */
+export async function getLayoutConfig(): Promise<LayoutConfig> {
+  return apiFetch<LayoutConfig>('/api/layout');
+}
+
+/**
+ * Update layout configuration (overlay size).
+ */
+export async function updateLayoutConfig(overlaySize: number): Promise<void> {
+  await apiFetch('/api/layout', {
+    method: 'PUT',
+    body: JSON.stringify({ overlay_size: overlaySize }),
+  });
+}
+
+/**
+ * Upload layout image.
+ */
+export async function uploadLayoutImage(
+  file: File
+): Promise<LayoutImageUploadResponse> {
+  const url = `${API_BASE}/api/layout/image`;
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.detail?.message || errorData.message || `Upload failed: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Get layout image URL.
+ */
+export function getLayoutImageUrl(): string {
+  return `${API_BASE}/api/layout/image`;
+}
+
+/**
+ * Delete layout image.
+ */
+export async function deleteLayoutImage(): Promise<void> {
+  await apiFetch('/api/layout/image', {
+    method: 'DELETE',
+  });
+}
+
+/**
+ * Update panel positions.
+ */
+export async function updatePanelPositions(
+  positions: Record<string, PanelPosition | null>
+): Promise<void> {
+  // Get current panels config
+  const { panels } = await getPanelsConfig();
+
+  // Update positions
+  const updatedPanels = panels.map(panel => ({
+    ...panel,
+    position: positions[panel.serial] ?? panel.position ?? null,
+  }));
+
+  await apiFetch('/api/config/panels', {
+    method: 'PUT',
+    body: JSON.stringify({ panels: updatedPanels }),
   });
 }

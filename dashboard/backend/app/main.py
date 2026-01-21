@@ -17,6 +17,7 @@ from .config_router import router as config_router
 from .config_service import get_config_service
 from .discovery_router import router as discovery_router
 from .discovery_router import discovery_websocket_router
+from .layout_router import router as layout_router
 
 # Configure logging
 settings = get_settings()
@@ -167,6 +168,9 @@ app.add_middleware(
 
 # Include configuration router for multi-user setup
 app.include_router(config_router)
+
+# Include layout editor router
+app.include_router(layout_router)
 
 # Include discovery router for setup wizard
 app.include_router(discovery_router)

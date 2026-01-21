@@ -3,7 +3,7 @@
  * Shows real-time panel data in layout or table format.
  */
 
-import { useState, useRef, useCallback, useLayoutEffect } from 'react';
+import { useState, useRef, useCallback, useLayoutEffect, lazy, Suspense } from 'react';
 import type { CSSProperties, MutableRefObject } from 'react';
 import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -17,6 +17,9 @@ import { TabNavigation, type TabType } from './TabNavigation';
 import { TableView } from './TableView';
 import { ZoomControls } from './ZoomControls';
 import type { DisplayMode } from './PanelOverlay';
+
+// Lazy load the Layout Editor for code splitting
+const LayoutEditor = lazy(() => import('./layout-editor/LayoutEditor'));
 import {
   MOBILE_BREAKPOINT,
   LAYOUT_WIDTH,
@@ -78,6 +81,15 @@ const layoutContainerStyle: CSSProperties = {
   flexGrow: 1,
   minHeight: 0,
   overflow: 'hidden',
+};
+
+const editorLoadingStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  height: '100%',
+  color: '#888',
+  fontSize: '14px',
 };
 
 export function Dashboard() {
@@ -200,8 +212,12 @@ export function Dashboard() {
               onManualZoom={handleManualZoom}
             />
           </div>
-        ) : (
+        ) : activeTab === 'table' ? (
           <TableView panels={panels} />
+        ) : (
+          <Suspense fallback={<div style={editorLoadingStyle}>Loading editor...</div>}>
+            <LayoutEditor onClose={() => setActiveTab('layout')} />
+          </Suspense>
         )}
       </main>
 

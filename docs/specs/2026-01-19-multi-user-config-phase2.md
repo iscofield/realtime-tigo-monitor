@@ -50,8 +50,27 @@ layout:
   image_path: "assets/layout.png"
   image_width: 1920
   image_height: 1080
-  overlay_size: 50  # Base overlay size in pixels (adjustable)
+  image_hash: "sha256:a1b2c3..."  # Detect if image changed
+  aspect_ratio: 1.778             # Width/height ratio (for validation)
+  overlay_size: 50                # Base overlay size in pixels (adjustable)
+  last_modified: "2026-01-19T12:00:00Z"
 ```
+
+**Image Change Detection:**
+- On image upload, compute SHA256 hash and store
+- On dashboard load, compare current image hash with stored hash
+- If hash differs: prompt user "Layout image has changed. Panel positions may need adjustment."
+- Aspect ratio change > 5% triggers stronger warning about position validity
+
+**Image Change Warning UX Flow:**
+1. User uploads new image → Upload succeeds, hash is computed
+2. If previous image existed AND hash differs:
+   - Modal appears: "Layout image has changed. Panel positions may need adjustment."
+   - If aspect ratio changed >5%: "Warning: Aspect ratio has significantly changed. Positions may appear distorted."
+3. User options:
+   - **"Keep Positions"** (default): Close modal, positions preserved, user can adjust in editor
+   - **"Reset All Positions"**: Clear all positions, close modal, automatically enter Edit Layout mode with all panels in unpositioned sidebar
+4. After choosing either option, user can enter Edit Layout mode to adjust/position panels
 
 ### FR-2: Layout Editor Mode
 
@@ -106,9 +125,25 @@ Percentage-based positioning ensures positions remain valid across different dis
 **FR-3.3: Touch Support**
 
 Drag-and-drop MUST work on touch devices:
-- Touch and drag gesture
-- Prevent page scroll while dragging
-- Visual feedback for touch targets
+- Touch drag initiates after 250ms hold OR 8px movement (prevents scroll conflicts)
+- Prevent page scroll while dragging (`touch-action: none` on drag area)
+- Visual feedback for touch targets (scale up 1.1× on touch start)
+- Minimum touch target size: 48×48px (Material Design guideline)
+
+**Touch Sensor Configuration:**
+```typescript
+const touchSensor = useSensor(TouchSensor, {
+  activationConstraint: {
+    delay: 250,
+    tolerance: 8,
+  },
+});
+```
+
+**Gesture Conflicts:**
+- Pinch-to-zoom (if enabled): Panel drag only activates with single touch
+- Pull-to-refresh: Disabled on editor canvas via CSS `overscroll-behavior: none`
+- Haptic feedback: Optional vibration on snap events (if device supports)
 
 **FR-3.4: Keyboard Positioning**
 
@@ -123,26 +158,137 @@ Selected panels MUST support keyboard positioning:
 Users MUST be able to select and move multiple panels:
 - Ctrl/Cmd + Click to add to selection
 - Shift + Click to select range (by string order)
-- Drag selection box to select multiple
+- Drag selection box to select multiple (canvas-based for performance)
 - Move all selected panels together
 - Visual indication of selected panels (highlight border)
+
+**Selection Enhancements for Large Layouts:**
+- Selection counter badge showing "N selected" in toolbar
+- "Select All" / "Deselect All" buttons
+- "Select String..." dropdown to select all panels in a specific string
+- Lasso mode: selection box selects panels that intersect, not just fully contained
+- Warning if group move would cause overlapping positions
+
+**Touch Multi-Select:**
+- Long-press (500ms) on panel enters multi-select mode
+- Tap additional panels to add/remove from selection
+- "Done" button or tap empty area to exit multi-select mode
+- Two-finger tap as alternative to Ctrl+Click
+
+**FR-3.6: Single-Pointer Positioning Alternative (WCAG 2.2 Compliance)**
+
+Per WCAG 2.2 Success Criterion 2.5.7 (Level AA), all drag functionality MUST have a single-pointer alternative:
+
+- Click/tap panel to select it (shows selection highlight)
+- Click/tap destination location on canvas to move selected panel there
+- Visual indicator shows where panel will land before confirming
+- Alternative: Arrow buttons appear around selected panel for incremental 10px moves
+
+**Confirmation Mechanism:**
+1. Click panel to select → panel shows highlight
+2. Click destination on canvas → ghost preview appears at destination
+3. To confirm: click the ghost preview OR press Enter
+4. To cancel: click elsewhere OR press Escape
+5. Auto-cancel after 3 seconds of no interaction
+
+This two-step confirm ensures users don't accidentally move panels and enables users who cannot perform drag gestures to still reposition panels.
 
 ### FR-4: Snap-to-Align
 
 **FR-4.1: Alignment Guides**
 
-When dragging a panel, display alignment guides:
+When dragging a panel, display center-to-center alignment guides:
 - Vertical guide when panel center aligns with another panel's center (X)
 - Horizontal guide when panel center aligns with another panel's center (Y)
-- Edge guides when panel edges align
-- Guides appear as thin colored lines (e.g., cyan)
+- Guides appear as thin colored lines (dark cyan #008B8B with white outline for visibility on any background)
+
+**Note:** Edge alignment (left-to-left, right-to-right) is intentionally omitted for simplicity. Center alignment is sufficient for typical solar panel layout editing. Edge alignment can be added as a future enhancement if needed.
+
+**Implementation Approach:**
+Use @dnd-kit's modifier pattern with callbacks for guide state:
+```typescript
+import { createSnapModifier } from '@dnd-kit/modifiers';
+
+// Grid snap using built-in modifier
+const gridSize = overlaySize;
+const snapToGridModifier = createSnapModifier(gridSize);
+
+// Smart guide modifier: PURE FUNCTION (no setState inside!)
+const smartGuideModifier = useMemo(() => {
+  return ({ transform, activeNodeRect }) => {
+    if (!activeNodeRect) return transform;
+    // Convert transform delta to absolute position for snap calculation
+    const dragPosition = {
+      x: activeNodeRect.left + transform.x,
+      y: activeNodeRect.top + transform.y
+    };
+    const { position } = calculateSnap(
+      { width: activeNodeRect.width, height: activeNodeRect.height },
+      dragPosition,
+      spatialIndex,
+      true
+    );
+    return {
+      ...transform,
+      x: position.x - activeNodeRect.left,
+      y: position.y - activeNodeRect.top
+    };
+  };
+}, [spatialIndex]);
+
+// Guide state updates via callback (NOT inside modifier)
+// Use initial rect + delta to match modifier's position calculation
+// Note: Do NOT use `translated` + delta (double-counting transform)
+const handleDragMove = useCallback(({ active, delta }) => {
+  const initialRect = active.rect.current.initial;
+  if (!initialRect) return;
+  // initial rect + delta = same position modifier calculates
+  const dragPosition = {
+    x: initialRect.left + delta.x,
+    y: initialRect.top + delta.y
+  };
+  const { guides } = calculateSnap(
+    { width: initialRect.width, height: initialRect.height },
+    dragPosition,
+    spatialIndex,
+    true
+  );
+  setActiveGuides(guides);
+}, [spatialIndex]);
+
+// Implementation note: @dnd-kit's `active.rect.current` provides:
+// - `initial`: Original bounding rect before any transform
+// - `translated`: Bounding rect WITH current transform applied
+// The modifier receives `activeNodeRect` which is the initial rect,
+// so callback must use `initial + delta` (not `translated + delta`).
+
+<DndContext
+  onDragMove={handleDragMove}
+  modifiers={[smartGuideModifier]}
+>
+```
+This separates pure snap calculation (modifier) from React state updates (callback).
 
 **FR-4.2: Snap Behavior**
 
 Panels MUST snap to alignment guides when within threshold:
-- Snap threshold: 10 pixels (configurable)
-- Magnetic snap when approaching alignment point
+- Snap threshold: 10 pixels at 100% zoom (scales with zoom level)
+- Immediate snap when entering threshold (not gradual/magnetic)
 - Hold Shift while dragging to temporarily disable snap
+
+**Snap Priority (when multiple alignments possible):**
+1. Center alignment (highest priority)
+2. Edge alignment
+3. Closest distance wins ties
+
+**Threshold Scaling:**
+- At 50% zoom: effective threshold = 20 image pixels
+- At 200% zoom: effective threshold = 5 image pixels
+- Formula: `effectiveThreshold = SNAP_THRESHOLD / currentZoom`
+
+**Optional Feedback:**
+- Haptic vibration on snap (touch devices, if supported)
+- Subtle audio click (configurable, default off)
 
 **FR-4.3: Grid Snap (Optional)**
 
@@ -189,6 +335,26 @@ Overlay size MUST scale proportionally with image display size:
 - If image displays at 50% of actual size, overlays display at 50%
 - Maintains visual relationship at any zoom level
 
+**Zoom Interaction (with react-zoom-pan-pinch):**
+- Overlay scaling compounds with zoom: `renderedSize = baseSize × displayScale × zoomLevel`
+- At very low zoom (10%), overlays may become too small to read
+- At very high zoom (200%+), overlays may become too large relative to image
+
+**Size Constraints:**
+```typescript
+const MIN_RENDERED_SIZE = 20;  // pixels - minimum for readability
+const MAX_RENDERED_SIZE = 150; // pixels - maximum for usability
+
+const renderedSize = Math.max(
+  MIN_RENDERED_SIZE,
+  Math.min(MAX_RENDERED_SIZE, baseSize * displayScale * zoomLevel)
+);
+```
+
+**Clickability at High Zoom:**
+- Panels remain clickable/draggable at all zoom levels
+- Hit area scales with visual size (no fixed minimum for interaction)
+
 ### FR-6: Panel Identification During Editing
 
 **FR-6.1: Panel Labels**
@@ -204,6 +370,23 @@ Panels without positions MUST be clearly indicated:
 - Listed in a "Panels to Position" sidebar/drawer
 - Can be dragged from sidebar onto the layout image
 - Count badge showing "X panels need positioning"
+
+**Sidebar Enhancements:**
+- Sidebar state (collapsed/expanded) persists in localStorage
+- Filter by string: dropdown to show "All", "String A", "String B", etc.
+- "Place All Remaining" button: auto-arranges all unpositioned panels (uses FR-8.1 logic)
+- Drag from sidebar uses @dnd-kit's multiple droppable containers pattern
+
+**Sidebar-to-Canvas Drag:**
+```typescript
+// Sidebar panels use Draggable from @dnd-kit
+// Canvas is a DroppableContainer
+// On drop outside existing panel area, panel gets positioned at drop point
+<DndContext onDragEnd={handleDragEnd}>
+  <UnpositionedPanelsSidebar panels={unpositioned} />
+  <LayoutCanvas panels={positioned} />
+</DndContext>
+```
 
 **FR-6.3: Panel Search**
 
@@ -230,8 +413,14 @@ In normal view mode, panel overlays MUST show live data:
 Users MUST be able to toggle overlay display content:
 - Watts (default)
 - Voltage
+- Percentage of peak (panel's current output vs. historical max)
 - Label only
 - Hidden (show layout image only)
+
+**View Option Enhancements:**
+- Selected view option persists in localStorage (UI preference, not config file)
+- Keyboard shortcuts: 1=Watts, 2=Voltage, 3=Percentage, 4=Label, 5=Hidden
+- Show active view option in toolbar with dropdown
 
 **FR-7.3: Hover/Click Details**
 
@@ -245,25 +434,50 @@ Interacting with a panel overlay MUST show details:
 
 When entering edit mode with unpositioned panels:
 - Offer "Auto-Arrange" option
-- Place panels in a grid pattern, grouped by string
+- Place panels in a grid pattern, grouped by string (mirrors Phase 1 grid view layout)
 - Grid positioned in center of image
 - User then drags to actual positions
 
-**FR-8.2: Import from Phase 1 Grid**
+**Auto-Arrange Algorithm:**
+1. Group panels by string (A, B, C, etc.)
+2. Calculate grid dimensions based on panel count and overlay size
+3. Place each string group as a row
+4. Center the entire arrangement on the layout image
+5. Add small gaps between strings for visual separation
 
-If panels have no positions but Phase 1 grid view was in use:
-- Offer to derive initial positions from grid arrangement
-- Maps grid positions to percentage-based image positions
-- Provides starting point for refinement
+This provides a starting point similar to how panels appear in the Phase 1 grid view, making the transition intuitive.
 
 ### FR-9: Configuration Persistence
 
-**FR-9.1: Auto-Save Draft**
+**FR-9.1: Auto-Save Draft (Local Only)**
 
-While editing, periodically auto-save draft positions:
+While editing, periodically auto-save draft positions to localStorage:
 - Save to browser localStorage every 30 seconds
-- Restore draft if browser closes unexpectedly
+- Draft is LOCAL ONLY - not saved to server until explicit Save
 - Clear draft when user explicitly saves or discards
+
+**Visual Draft Indicator:**
+- Toolbar shows "Draft saved locally" with timestamp after each auto-save
+- Yellow dot indicator when unsaved changes exist
+- Tooltip clarifies: "Changes saved locally. Click Save to persist."
+
+**Draft Recovery on Page Load:**
+- If draft exists, show modal: "Resume unsaved layout changes from [timestamp]?"
+- Preview showing which panels have draft positions
+- Options: "Resume Draft", "Discard Draft", "View Changes"
+
+**Multi-Tab Conflict:**
+- Use BroadcastChannel API to detect concurrent editing
+- If another tab is editing, show warning: "Layout is being edited in another tab"
+- Last-write-wins for localStorage (same as Phase 1)
+
+**Server State Conflict:**
+- On draft restore, compare server timestamp with draft timestamp
+- If server state is newer: "Warning: Layout was modified on [date]. Your draft may overwrite those changes."
+
+**Draft Recovery Edge Cases:**
+- **Panel deleted in another session:** On draft restore, filter out positions for panels that no longer exist. Show info message: "Note: X panels in draft no longer exist and were skipped."
+- **Panel added in another session:** New panels appear in unpositioned sidebar as normal.
 
 **FR-9.2: Save to Config**
 
@@ -280,6 +494,72 @@ Maintain position history for rollback:
 - "Undo" option to revert to previous save
 - History stored in `config/.layout-history/`
 
+**FR-9.4: Undo/Redo (Required)**
+
+In-session undo/redo for position changes:
+- Ctrl+Z / Cmd+Z to undo
+- Ctrl+Y / Cmd+Shift+Z to redo
+- History stack tracks position changes during edit session
+- History cleared on Save or Cancel
+- Multi-select group moves count as ONE history entry
+
+**Scope:** Undo/redo applies to panel positions only. Overlay size changes are NOT undoable (they're applied immediately and can be manually reverted via slider).
+
+**Implementation:**
+```typescript
+interface EditHistory {
+  states: PanelPositionMap[];  // Array of position snapshots
+  currentIndex: number;        // Current position in history
+}
+
+// IMPORTANT: Initialize with starting positions when entering edit mode
+function initializeHistory(positions: PanelPositionMap): EditHistory {
+  return {
+    states: [structuredClone(positions)],  // Index 0 = initial state
+    currentIndex: 0
+  };
+}
+
+// Record state after each drag ends (or group move ends)
+function recordHistoryState(history: EditHistory, positions: PanelPositionMap) {
+  // Truncate any "future" states if we've undone then made new changes
+  history.states = history.states.slice(0, history.currentIndex + 1);
+  history.states.push(structuredClone(positions));
+  history.currentIndex = history.states.length - 1;
+
+  // Limit history depth (memory: 50 states × 100 panels × 50 bytes ≈ 250KB)
+  if (history.states.length > 50) {
+    history.states.shift();
+    history.currentIndex--;
+  }
+}
+
+function canUndo(history: EditHistory): boolean {
+  return history.currentIndex > 0;
+}
+
+function canRedo(history: EditHistory): boolean {
+  return history.currentIndex < history.states.length - 1;
+}
+
+function undo(history: EditHistory): PanelPositionMap | null {
+  if (!canUndo(history)) return null;
+  history.currentIndex--;
+  return history.states[history.currentIndex];
+}
+
+function redo(history: EditHistory): PanelPositionMap | null {
+  if (!canRedo(history)) return null;
+  history.currentIndex++;
+  return history.states[history.currentIndex];
+}
+```
+
+**UI Indicators:**
+- Undo button disabled when `!canUndo()` (at initial state)
+- Redo button disabled when `!canRedo()` (at latest state)
+- Keyboard shortcuts shown in tooltip: "Undo (Ctrl+Z)" / "Redo (Ctrl+Y)"
+
 ## Non-Functional Requirements
 
 **NFR-1: Editor Performance**
@@ -287,6 +567,26 @@ Maintain position history for rollback:
 - Drag operations MUST render at 60fps
 - Snap calculations MUST complete in <16ms
 - Layout with 100+ panels MUST remain responsive
+
+**Performance Measurement:**
+```typescript
+// Add performance marks for critical paths
+performance.mark('snap-calc-start');
+const result = calculateSnap(...);
+performance.mark('snap-calc-end');
+performance.measure('snap-calc', 'snap-calc-start', 'snap-calc-end');
+```
+
+**Test Fixture:**
+- Create test layout with 100 panels in worst-case arrangement (linear row = maximum snap checks)
+- Measure via React DevTools Profiler + Chrome Performance tab
+
+**Graceful Degradation:**
+If performance targets are missed on slow devices:
+1. Disable alignment guide rendering (keep snap behavior)
+2. Reduce guide line visual quality (no anti-aliasing)
+3. Skip every other frame for guide updates
+4. Show warning: "Editor may be slow with many panels"
 
 **NFR-2: Touch Responsiveness**
 
@@ -307,11 +607,223 @@ Maintain position history for rollback:
 - Sufficient color contrast for alignment guides
 - Focus indicators for selected panels
 
+**ARIA Live Regions:**
+- Announce snap events: "Aligned with panel A3"
+- Announce selection changes: "3 panels selected"
+- Announce save status: "Layout saved successfully"
+
+**@dnd-kit Announcements (context-appropriate for free positioning):**
+```typescript
+const announcements = {
+  onDragStart: ({ active }) =>
+    `Picked up panel ${active.data.current?.label}. Use arrow keys to fine-tune position.`,
+  onDragOver: () => '', // No discrete drop areas in free positioning
+  onDragEnd: ({ active }) => {
+    const label = active.data.current?.label;
+    const wasSnapped = active.data.current?.wasSnapped;
+    return wasSnapped
+      ? `Placed panel ${label}. Aligned with nearby panel.`
+      : `Placed panel ${label}.`;
+  },
+  onDragCancel: ({ active }) =>
+    `Cancelled. Panel ${active.data.current?.label} returned to original position.`,
+};
+```
+
+**High Contrast Mode:**
+- Support `prefers-contrast: more` media query
+- Default guides: dark cyan #008B8B with white 1px outline (works on most backgrounds)
+- High contrast: black guide with 2px white outline
+- Ensure all text meets WCAG AA contrast ratios (4.5:1 minimum)
+
+```css
+.alignment-guide {
+  background: #008B8B;
+  box-shadow: 0 0 0 1px white;
+}
+
+@media (prefers-contrast: more) {
+  .alignment-guide {
+    background: black;
+    box-shadow: 0 0 0 2px white;
+  }
+}
+```
+
+**Reduced Motion:**
+- Respect `prefers-reduced-motion: reduce`
+- Disable drag animations, snap animations
+- Instant transitions instead of smooth
+
 **NFR-5: Mobile Responsiveness**
 
 - Editor usable on tablet (768px+)
 - On phone (<768px), show warning that editor works best on larger screens
 - Grid view remains fully functional on phone
+
+## API Specification
+
+### Layout Image Endpoints
+
+**POST /api/layout/image**
+
+Upload a new layout image.
+
+Request:
+```
+Content-Type: multipart/form-data
+Body: image (file) - PNG, JPEG, or WebP, max 10MB
+```
+
+Response (200 OK):
+```json
+{
+  "success": true,
+  "metadata": {
+    "width": 1920,
+    "height": 1080,
+    "size_bytes": 524288,
+    "hash": "sha256:a1b2c3...",
+    "aspect_ratio": 1.778
+  }
+}
+```
+
+Error Responses:
+- 400: `{ "error": "invalid_format", "message": "File must be PNG, JPEG, or WebP" }`
+- 400: `{ "error": "file_too_large", "message": "File exceeds 10MB limit" }`
+- 500: `{ "error": "save_failed", "message": "Failed to save image" }`
+
+---
+
+**GET /api/layout/image**
+
+Retrieve the current layout image.
+
+Response (200 OK):
+```
+Content-Type: image/png (or jpeg/webp)
+Cache-Control: max-age=3600
+Body: (binary image data)
+```
+
+Error Responses:
+- 404: `{ "error": "not_found", "message": "No layout image configured" }`
+
+---
+
+**DELETE /api/layout/image**
+
+Remove the current layout image.
+
+Response (200 OK):
+```json
+{
+  "success": true
+}
+```
+
+Error Responses:
+- 404: `{ "error": "not_found", "message": "No layout image to delete" }`
+
+**Note:** Panel positions are preserved when image is deleted. If a new image is uploaded later, positions may need adjustment (especially if aspect ratio differs). The dashboard will fall back to grid view until a new image is uploaded.
+
+### Layout Configuration Endpoints
+
+**GET /api/layout**
+
+Get layout configuration.
+
+Response (200 OK):
+```json
+{
+  "image_path": "assets/layout.png",
+  "image_width": 1920,
+  "image_height": 1080,
+  "image_hash": "sha256:a1b2c3...",
+  "aspect_ratio": 1.778,
+  "overlay_size": 50,
+  "last_modified": "2026-01-19T12:00:00Z"
+}
+```
+
+Response (200 OK, no layout configured):
+```json
+{
+  "image_path": null,
+  "overlay_size": 50
+}
+```
+
+---
+
+**PUT /api/layout**
+
+Update layout configuration (overlay size).
+
+Request:
+```json
+{
+  "overlay_size": 60
+}
+```
+
+Response (200 OK):
+```json
+{
+  "success": true,
+  "layout": {
+    "image_path": "assets/layout.png",
+    "overlay_size": 60,
+    "last_modified": "2026-01-19T12:05:00Z"
+  }
+}
+```
+
+Error Responses:
+- 400: `{ "error": "invalid_overlay_size", "message": "Overlay size must be between 20 and 200" }`
+
+### Panel Position Endpoints
+
+Panel positions are managed via the existing `/api/config/panels` endpoint from Phase 1, extended with position data:
+
+**PUT /api/config/panels** (extended)
+
+Request body includes position for each panel:
+```json
+{
+  "panels": [
+    {
+      "serial": "4-C3F23CR",
+      "label": "A1",
+      "string": "A",
+      "position": {
+        "x_percent": 35.5,
+        "y_percent": 11.75
+      }
+    },
+    {
+      "serial": "4-D4G34DS",
+      "label": "B1",
+      "string": "B",
+      "position": null
+    }
+  ]
+}
+```
+
+**Position Schema:**
+```typescript
+position: {
+  x_percent: number;  // 0.0 to 100.0 (clamped, not rejected)
+  y_percent: number;  // 0.0 to 100.0 (clamped, not rejected)
+} | null  // null = unpositioned panel (shows in sidebar)
+```
+
+**Validation Rules:**
+- `position: null` or missing `position` field = unpositioned panel
+- Values outside 0-100 are clamped (not rejected) to allow edge placement
+- Both `x_percent` and `y_percent` required if `position` is not null
 
 ## High Level Design
 
@@ -397,6 +909,10 @@ sequenceDiagram
 
 ### Snap-to-Align Algorithm
 
+The snap algorithm uses spatial indexing for O(1) average-case lookups instead of O(n) per frame. Currently implements **center-to-center alignment** which is sufficient for most layout editing needs.
+
+**Note:** This section shows the **optimized implementation** using spatial indexing. The @dnd-kit modifier code in FR-4.1 uses the same `calculateSnap` function. Function signature: `calculateSnap({ width, height }, dragPosition, spatialIndex, snapEnabled)`.
+
 ```typescript
 interface Point {
   x: number;
@@ -417,10 +933,34 @@ interface AlignmentGuide {
 
 const SNAP_THRESHOLD = 10;  // pixels
 
+// Pre-compute spatial index (memoized, updates only when panels change)
+interface SpatialIndex {
+  xCenters: Map<number, Panel[]>;  // Panels by center X (bucketed)
+  yCenters: Map<number, Panel[]>;  // Panels by center Y (bucketed)
+}
+
+function buildSpatialIndex(panels: Panel[]): SpatialIndex {
+  const xCenters = new Map<number, Panel[]>();
+  const yCenters = new Map<number, Panel[]>();
+
+  for (const panel of panels) {
+    // Index by center positions (rounded to snap threshold for bucketing)
+    const centerX = Math.round((panel.position.x + panel.width / 2) / SNAP_THRESHOLD);
+    const centerY = Math.round((panel.position.y + panel.height / 2) / SNAP_THRESHOLD);
+
+    if (!xCenters.has(centerX)) xCenters.set(centerX, []);
+    if (!yCenters.has(centerY)) yCenters.set(centerY, []);
+    xCenters.get(centerX)!.push(panel);
+    yCenters.get(centerY)!.push(panel);
+  }
+
+  return { xCenters, yCenters };
+}
+
 function calculateSnap(
-  draggingPanel: Panel,
+  draggingPanel: { width: number; height: number; serial?: string },
   dragPosition: Point,
-  otherPanels: Panel[],
+  spatialIndex: SpatialIndex,
   snapEnabled: boolean
 ): SnapResult {
   if (!snapEnabled) {
@@ -434,44 +974,57 @@ function calculateSnap(
   const dragCenterX = dragPosition.x + draggingPanel.width / 2;
   const dragCenterY = dragPosition.y + draggingPanel.height / 2;
 
-  for (const panel of otherPanels) {
-    if (panel.serial === draggingPanel.serial) continue;
+  // Only check nearby buckets (±1 bucket range)
+  // This handles edge cases where panel is near bucket boundary
+  const centerXBucket = Math.round(dragCenterX / SNAP_THRESHOLD);
+  const centerYBucket = Math.round(dragCenterY / SNAP_THRESHOLD);
 
-    const panelCenterX = panel.position.x + panel.width / 2;
-    const panelCenterY = panel.position.y + panel.height / 2;
+  // Check X alignment (vertical guides) - center-to-center
+  for (let b = centerXBucket - 1; b <= centerXBucket + 1; b++) {
+    const candidates = spatialIndex.xCenters.get(b) || [];
+    for (const panel of candidates) {
+      if (panel.serial === draggingPanel.serial) continue;
 
-    // Check vertical alignment (X centers match)
-    const xDiff = Math.abs(dragCenterX - panelCenterX);
-    if (xDiff < SNAP_THRESHOLD) {
-      snappedX = panelCenterX - draggingPanel.width / 2;
-      guides.push({
-        type: 'vertical',
-        position: panelCenterX,
-        start: Math.min(dragPosition.y, panel.position.y),
-        end: Math.max(
-          dragPosition.y + draggingPanel.height,
-          panel.position.y + panel.height
-        )
-      });
+      const panelCenterX = panel.position.x + panel.width / 2;
+      const xDiff = Math.abs(dragCenterX - panelCenterX);
+
+      if (xDiff < SNAP_THRESHOLD) {
+        snappedX = panelCenterX - draggingPanel.width / 2;
+        guides.push({
+          type: 'vertical',
+          position: panelCenterX,
+          start: Math.min(dragPosition.y, panel.position.y),
+          end: Math.max(
+            dragPosition.y + draggingPanel.height,
+            panel.position.y + panel.height
+          )
+        });
+      }
     }
+  }
 
-    // Check horizontal alignment (Y centers match)
-    const yDiff = Math.abs(dragCenterY - panelCenterY);
-    if (yDiff < SNAP_THRESHOLD) {
-      snappedY = panelCenterY - draggingPanel.height / 2;
-      guides.push({
-        type: 'horizontal',
-        position: panelCenterY,
-        start: Math.min(dragPosition.x, panel.position.x),
-        end: Math.max(
-          dragPosition.x + draggingPanel.width,
-          panel.position.x + panel.width
-        )
-      });
+  // Check Y alignment (horizontal guides) - center-to-center
+  for (let b = centerYBucket - 1; b <= centerYBucket + 1; b++) {
+    const candidates = spatialIndex.yCenters.get(b) || [];
+    for (const panel of candidates) {
+      if (panel.serial === draggingPanel.serial) continue;
+
+      const panelCenterY = panel.position.y + panel.height / 2;
+      const yDiff = Math.abs(dragCenterY - panelCenterY);
+
+      if (yDiff < SNAP_THRESHOLD) {
+        snappedY = panelCenterY - draggingPanel.height / 2;
+        guides.push({
+          type: 'horizontal',
+          position: panelCenterY,
+          start: Math.min(dragPosition.x, panel.position.x),
+          end: Math.max(
+            dragPosition.x + draggingPanel.width,
+            panel.position.x + panel.width
+          )
+        });
+      }
     }
-
-    // Check edge alignments (left, right, top, bottom)
-    // ... similar logic for edges
   }
 
   return {
@@ -479,7 +1032,21 @@ function calculateSnap(
     guides: deduplicateGuides(guides)
   };
 }
+
+// Note: Edge case - if ALL panels are aligned (all in same bucket),
+// this degrades to O(n). Acceptable for typical solar layouts.
+
+// Usage with React memoization
+const spatialIndex = useMemo(
+  () => buildSpatialIndex(panels.filter(p => p.serial !== draggingPanel?.serial)),
+  [panels, draggingPanel?.serial]
+);
 ```
+
+**Performance Notes:**
+- Spatial index is rebuilt only when panel positions change (not on every drag frame)
+- Bucket lookup is O(1), checking ~3 buckets × ~few panels each
+- For 100 panels, worst case is ~10 checks instead of 100
 
 ### Position Percentage Conversion
 
@@ -662,6 +1229,78 @@ function clearDraft() {
     - Layout editor user guide
     - Keyboard shortcuts reference
 
+### Testing Tasks
+
+22. **Unit tests for snap-to-align algorithm**
+    - Test center-to-center alignment detection
+    - Test spatial index building and bucketing
+    - Test bucket boundary conditions (panel near bucket edge)
+    - Test multiple simultaneous alignments (X and Y snapping together)
+    - Test performance with 100+ panels (worst case: all aligned)
+    - Test edge cases: no other panels, single panel
+
+23. **Unit tests for percentage conversion**
+    - Test pixel to percent conversion
+    - Test percent to pixel conversion
+    - Test boundary values (0%, 100%)
+    - Test rounding behavior
+
+24. **Integration tests for image upload**
+    - Test valid image formats (PNG, JPEG, WebP)
+    - Test file size limits (reject >10MB)
+    - Test invalid formats (reject GIF, BMP, etc.)
+    - Test image metadata extraction
+    - Test image hash generation
+
+25. **Integration tests for position persistence**
+    - Test saving panel positions to config
+    - Test loading panel positions from config
+    - Test partial position updates
+    - Test null position handling (unpositioned panels)
+    - Test position clamping (values outside 0-100)
+
+26. **E2E tests with Playwright**
+    - Test full editor workflow: enter edit mode → drag panel → save
+    - Test image upload flow
+    - Test undo/redo functionality
+    - Test keyboard navigation
+    - Test multi-select and group move
+    - Test draft recovery flow (close with unsaved → reopen → verify prompt)
+    - Test single-pointer positioning alternative (WCAG 2.5.7)
+
+27. **Performance tests**
+    - Create 100-panel test fixture
+    - Measure snap calculation time (<16ms target)
+    - Measure drag frame rate (60fps target)
+    - Test snap threshold scaling with zoom
+    - Test on low-powered devices (graceful degradation)
+
+28. **Touch device testing**
+    - Test on real iPad (Safari)
+    - Test on Android tablet (Chrome)
+    - Verify touch drag activation delay (250ms)
+    - Verify no scroll conflicts
+    - Test touch multi-select mode
+
+29. **Unit tests for draft persistence**
+    - Test localStorage save/restore
+    - Test 24-hour draft expiry
+    - Test multi-tab conflict detection via BroadcastChannel
+    - Test server state conflict warning (draft vs server timestamp)
+
+30. **Unit tests for undo/redo**
+    - Test history initialization on edit mode entry
+    - Test history truncation after undo + new action
+    - Test max depth limit (50 states)
+    - Test canUndo/canRedo helpers
+
+31. **Accessibility tests**
+    - Verify ARIA live region announcements trigger correctly
+    - Test with prefers-reduced-motion enabled
+    - Test high contrast mode guide visibility
+    - Test single-pointer positioning alternative (FR-3.6): click-to-select, click-destination, confirm/cancel
+    - Manual screen reader testing checklist (VoiceOver, NVDA)
+
 ## Context / Documentation
 
 ### Files to Reference During Implementation
@@ -673,13 +1312,14 @@ function clearDraft() {
 | `dashboard/frontend/src/App.tsx` | Routing and state management patterns |
 | Phase 1 spec | Panel configuration schema |
 
-### Libraries to Evaluate
+### Libraries to Use
 
 | Library | Purpose | Notes |
 |---------|---------|-------|
 | `@dnd-kit/core` | Drag and drop | Modern, accessible, touch support |
-| `react-draggable` | Alternative DnD | Simpler but less features |
-| `use-gesture` | Touch gestures | Works with any drag solution |
+| `@dnd-kit/sortable` | Sortable lists | For sidebar panel list |
+| `@dnd-kit/modifiers` | Snap modifiers | Grid snap via `createSnapModifier` |
+| `@dnd-kit/utilities` | CSS utilities | Transform handling |
 
 ### External Documentation
 
@@ -689,11 +1329,71 @@ function clearDraft() {
 
 ---
 
-**Specification Version:** 1.0
+**Specification Version:** 1.4
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.4 (January 2026)
+**Summary:** Review fixes - transform calculation, UX clarifications
+
+**Changes:**
+- Fixed handleDragMove to use `initial` rect + delta (not `translated` + delta) to avoid double-counting transform
+- Added implementation note explaining @dnd-kit's `initial` vs `translated` rect semantics
+- Clarified "Reset All Positions" behavior: automatically enters Edit Layout mode
+- Added FR-3.6 single-pointer positioning test to accessibility tests (task 31)
+
+### v1.3 (January 2026)
+**Summary:** Review fixes - position calculation, UX clarifications, edge cases
+
+**Changes:**
+- Fixed handleDragMove callback to add delta for matching position calculation with modifier
+- Added FR-3.6 confirmation mechanism: two-step click-to-position with ghost preview, Enter/Escape, 3s auto-cancel
+- Added draft recovery edge cases: handling deleted panels, new panels
+- Added image change warning UX flow: modal with "Keep Positions" / "Reset All Positions" options
+- Added clarifying note linking conceptual algorithm to FR-4.1 implementation
+
+### v1.2 (January 2026)
+**Summary:** Code review fixes - algorithm correctness, accessibility compliance
+
+**Changes:**
+- Fixed setState inside modifier bug - moved guide state updates to onDragMove callback
+- Aligned function signatures between modifier and calculateSnap
+- Simplified spatial index: removed unused byRow/byCol, kept only xCenters/yCenters
+- Scoped snap algorithm to center-to-center alignment only (edge alignment deferred)
+- Added edge case documentation for all-aligned panels degrading to O(n)
+- Enhanced undo/redo: added initializeHistory(), canUndo/canRedo helpers, scope clarification
+- Added FR-3.6: Single-pointer positioning alternative (WCAG 2.2 SC 2.5.7 compliance)
+- Added position schema with null handling for unpositioned panels
+- Added DELETE endpoint note about preserving panel positions
+- Improved ARIA announcements for free positioning context
+- Added CSS for default and high-contrast guide styling
+- Expanded testing tasks to 31 items (added draft persistence, undo/redo, accessibility tests)
+
+### v1.1 (January 2026)
+**Summary:** Review feedback incorporated - performance, UX, and API details
+
+**Changes:**
+- Added spatial indexing to snap algorithm for O(1) lookups (NFR-1)
+- Added @dnd-kit/modifiers to library list for grid snap
+- Enhanced multi-select UX: selection counter, "Select String" dropdown, lasso mode
+- Added touch multi-select: long-press mode, two-finger tap
+- Specified touch sensor config with 250ms delay and 8px tolerance
+- Clarified auto-save is LOCAL ONLY with visual draft indicator
+- Added draft recovery modal and multi-tab conflict handling
+- Specified snap priority (center > edge > closest distance)
+- Added threshold scaling with zoom level
+- Added image hash and aspect ratio to layout config for change detection
+- Added zoom interaction details and size constraints (min/max rendered size)
+- Enhanced unpositioned panels sidebar: filter by string, "Place All Remaining" button
+- Added performance measurement and graceful degradation
+- Added FR-9.4: Undo/Redo system with Ctrl+Z/Y
+- Removed FR-8.2 (Phase 1 grid import) - merged into FR-8.1 auto-arrange
+- Added percentage of peak to view options
+- Enhanced accessibility: ARIA live regions, high contrast mode, reduced motion
+- Added full API specification for all endpoints
+- Added comprehensive testing tasks (tasks 22-28)
 
 ### v1.0 (January 2026)
 **Summary:** Initial specification for layout editor
