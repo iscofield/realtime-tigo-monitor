@@ -130,7 +130,23 @@ export async function validatePanels(
   topology: SystemConfig,
   discoveredPanels: DiscoveredPanel[]
 ): Promise<ValidationResult> {
-  return apiFetch<ValidationResult>('/api/config/validate', {
+  // Backend returns ValidationResponse format, we transform to ValidationResult
+  const response = await apiFetch<{
+    success: boolean;
+    results: Array<{
+      status: 'matched' | 'unmatched' | 'possible_wiring_issue';
+      tigo_label?: string;
+      reported_cca?: string;
+      expected_cca?: string;
+      panel?: Panel;
+    }>;
+    summary: {
+      total: number;
+      matched: number;
+      unmatched: number;
+      possible_wiring_issues: number;
+    };
+  }>('/api/config/validate', {
     method: 'POST',
     body: JSON.stringify({
       topology,
@@ -143,6 +159,52 @@ export async function validatePanels(
       })),
     }),
   });
+
+  // Transform response to ValidationResult format expected by frontend
+  const matched: Array<{ serial: string; cca: string; tigo_label: string }> = [];
+  const unmatched: Array<{ serial: string; cca: string; tigo_label: string }> = [];
+  const wiring_issues: Array<{ serial: string; tigo_label: string; expected_cca: string; actual_cca: string }> = [];
+
+  for (const result of response.results) {
+    const item = {
+      serial: result.panel?.serial || '',
+      cca: result.reported_cca || '',
+      tigo_label: result.tigo_label || '',
+    };
+
+    if (result.status === 'matched') {
+      matched.push(item);
+    } else if (result.status === 'possible_wiring_issue') {
+      wiring_issues.push({
+        serial: item.serial,
+        tigo_label: item.tigo_label,
+        expected_cca: result.expected_cca || '',
+        actual_cca: result.reported_cca || '',
+      });
+    } else {
+      unmatched.push(item);
+    }
+  }
+
+  // Calculate missing panels by comparing discovered panels against expected topology
+  const expectedLabels = new Set<string>();
+  for (const cca of topology.ccas) {
+    for (const str of cca.strings) {
+      for (let i = 1; i <= str.panel_count; i++) {
+        expectedLabels.add(`${str.name}${i}`);
+      }
+    }
+  }
+
+  const discoveredLabels = new Set(discoveredPanels.map(p => p.tigo_label));
+  const missing = Array.from(expectedLabels).filter(label => !discoveredLabels.has(label));
+
+  return {
+    matched,
+    unmatched,
+    missing,
+    wiring_issues,
+  };
 }
 
 /**
