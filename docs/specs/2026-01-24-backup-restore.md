@@ -39,7 +39,7 @@ The `app_version` field MUST be read dynamically from the backend's `VERSION` co
 
 **FR-1.6:** If the layout image does not exist, the ZIP MUST still be valid — the `assets/` directory is simply omitted and `has_layout_image` is set to `false`.
 
-**FR-1.7:** The endpoint MUST return the ZIP file as a streaming download with `Content-Disposition: attachment; filename="solar-tigo-backup-..."` header.
+**FR-1.7:** The endpoint MUST return the ZIP file as a streaming download with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="solar-tigo-backup-..."` headers.
 
 **FR-1.9:** If any config file cannot be read during export (permissions error, corruption, or I/O failure), the endpoint MUST return 500 with `{"error": "export_failed", "message": "Failed to read configuration: <details>"}`. If the layout image referenced in `layout.yaml` does not exist on disk, it is treated as if no image exists (omit from archive, set `has_layout_image: false`).
 
@@ -47,28 +47,29 @@ The `app_version` field MUST be read dynamically from the backend's `VERSION` co
 
 ### FR-2: Backup Restore (Backend)
 
-**FR-2.1:** The backend MUST provide a `POST /api/backup/restore` endpoint that accepts a ZIP file upload. The request Content-Type MUST be `multipart/form-data` with the file in a form field named `file`. If the upload exceeds 20MB (NFR-1.3), the endpoint MUST return 413 Payload Too Large with body `{"error": "file_too_large", "message": "Upload exceeds 20MB limit"}`.
+**FR-2.1:** The backend MUST provide a `POST /api/backup/restore` endpoint that accepts a ZIP file upload. The request Content-Type MUST be `multipart/form-data` with the file in a form field named `file`. The endpoint SHOULD check the uploaded file's Content-Type (`application/zip` or `application/x-zip-compressed`) as a fast-fail hint, but MUST NOT rely solely on it (browsers may send incorrect types); actual ZIP parsing validation (FR-2.2) is authoritative. If the upload exceeds 20MB (NFR-1.3), the endpoint MUST return 413 Payload Too Large with body `{"error": "file_too_large", "message": "Upload exceeds 20MB limit"}`.
 
 **FR-2.2:** The endpoint MUST validate the ZIP structure:
 - Contains `manifest.json` at the root
 - `manifest.json` is valid JSON with a `backup_version` field
 - `backup_version` is a supported version (currently only `1`)
-- Required config files (`system.yaml`, `panels.yaml`) are present and contain valid YAML that conforms to the `SystemConfig` and `PanelsConfig` Pydantic schemas respectively. If YAML parses but fails Pydantic validation (e.g., missing required field, wrong type), the endpoint MUST return 422 with field-specific errors: `{"field": "system.yaml.<field_path>", "message": "Validation error: <detail>"}`
+- Required config files (`system.yaml`, `panels.yaml`) are present and contain valid YAML that conforms to the `SystemConfig` and `PanelsConfig` Pydantic schemas respectively. If YAML parses but fails Pydantic validation (e.g., missing required field, wrong type), the errors are included in the FR-2.4 response structure: `{"status": "invalid", "errors": [{"field": "system.yaml.mqtt.host", "message": "Field required"}, ...]}`
+- If the uploaded file is not a valid ZIP archive (fails to parse as ZIP or is corrupt), the endpoint MUST return 422 with `{"status": "invalid", "errors": [{"field": "archive", "message": "Invalid or corrupt ZIP archive"}]}`
 - If `layout.yaml` references an image, the image file exists in the archive
 
-**FR-2.3:** On validation success, the endpoint MUST return the parsed configuration data as JSON (not write to disk). The response MUST conform to a `BackupRestoreResponse` Pydantic model:
+**FR-2.3:** On validation success, the endpoint MUST return **200 OK** with the parsed configuration data as JSON (not write to disk). The response MUST conform to a `BackupRestoreResponse` Pydantic model:
 ```json
 {
   "status": "valid",
   "manifest": { "backup_version": 1, "created_at": "...", ... },
   "system": { "version": 1, "mqtt": {...}, "ccas": [...] },
   "panels": { "panels": [...], "translations": {...} },
-  "layout": { "image_width": 1920, "image_height": 1080, "overlay_size": 50, "hash": "sha256-hex-string", ... },
+  "layout": { "image_width": 1920, "image_height": 1080, "overlay_size": 50, "hash": "sha256-hex-string (from backup's layout.yaml)", ... },
   "has_image": true,
   "image_token": "uuid-string-or-null"
 }
 ```
-Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfig.model_dump()`, and `layout` to `Optional[LayoutConfig].model_dump()`. The `layout` field is `null` when `layout.yaml` is not present in the backup (the `BackupRestoreResponse` Pydantic model uses `Optional[LayoutConfig]`). The `image_token` field is a UUID string if the backup contains a layout image (stored temporarily), or `null` if no image is present.
+Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfig.model_dump()`, and `layout` to `Optional[LayoutConfig].model_dump()`. The `layout` field is `null` when `layout.yaml` is not present in the backup (the `BackupRestoreResponse` Pydantic model uses `Optional[LayoutConfig]`). The `hash` field in `layout` is preserved from the backup's `layout.yaml` (not recomputed during validation). During validation, the endpoint MUST verify the image's SHA256 hash matches the `hash` in `layout.yaml`; if mismatched, return 422 with `{"field": "assets/layout.png", "message": "Image hash mismatch: backup may be corrupt"}`. The `image_token` field is a UUID string if the backup contains a layout image (stored temporarily), or `null` if no image is present.
 
 **FR-2.4:** On validation failure, the endpoint MUST return a 422 response with specific error details:
 ```json
@@ -82,7 +83,7 @@ Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfi
 
 **FR-2.5:** The restore endpoint MUST NOT modify any existing configuration files. It only validates and returns parsed data. The actual write happens when the user completes the wizard (via existing `/api/config/system` and `/api/config/panels` PUT endpoints).
 
-**FR-2.6:** If the backup contains a layout image, the endpoint MUST validate it as a valid PNG or JPEG file by checking magic bytes (PNG: `89 50 4E 47`, JPEG: `FF D8 FF`) before storage. Invalid image files MUST be rejected with 422 error: `{"field": "assets/layout.png", "message": "Invalid image file: not a valid PNG or JPEG"}`. After validation, the endpoint MUST temporarily store the image and return a reference token (UUID4). A subsequent `POST /api/backup/restore/image/{token}` endpoint commits the image to the `assets/` directory and updates `layout.yaml` with the image dimensions and SHA256 hash (following the same pattern as `config_service.save_layout_image()`). The commit endpoint MUST return:
+**FR-2.6:** If the backup contains a layout image, the endpoint MUST validate it as a valid PNG or JPEG file by checking magic bytes (PNG: `89 50 4E 47`, JPEG: `FF D8 FF` — covers JFIF, EXIF, and all standard JPEG variants) before storage. Invalid image files MUST be rejected with 422 error: `{"field": "assets/layout.png", "message": "Invalid image file: not a valid PNG or JPEG"}`. After validation, the endpoint MUST temporarily store the image and return a reference token (UUID4). A subsequent `POST /api/backup/restore/image/{token}` endpoint commits the image to the `assets/` directory and updates `layout.yaml` with the image dimensions and SHA256 hash (following the same pattern as `config_service.save_layout_image()`). The commit endpoint MUST return:
 ```json
 {
   "success": true,
@@ -91,9 +92,9 @@ Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfi
 ```
 If the token is invalid or expired, the endpoint MUST return 404 with `{"error": "token_not_found", "message": "Restore image not found or expired."}`.
 
-**FR-2.7:** The restore endpoint MUST protect against ZIP bombs by checking the uncompressed size of each file during extraction (using `ZipInfo.file_size`). Individual config files (YAML/JSON) MUST be rejected if uncompressed size exceeds 1MB. The layout image MUST be rejected if uncompressed size exceeds 20MB. If any file exceeds its limit, the endpoint MUST return 422 with error: `{"field": "archive", "message": "File '<name>' exceeds maximum allowed size."}`.
+**FR-2.7:** The restore endpoint MUST protect against ZIP bombs by checking the uncompressed size of each file during extraction (using `ZipInfo.file_size`). Individual config files (YAML/JSON) MUST be rejected if uncompressed size exceeds 1MB. The layout image MUST be rejected if uncompressed size exceeds 20MB. If any file exceeds its limit, the endpoint MUST return 422 with error: `{"field": "archive", "message": "File '<name>' exceeds maximum allowed size."}`. Note: NFR-1.3's 20MB limit applies to the compressed ZIP upload size (checked before extraction). FR-2.7 limits apply to individual uncompressed file sizes within the archive (checked during extraction).
 
-**FR-2.7.1:** The restore endpoint MUST reject ZIP entries containing path traversal sequences (`..`) or absolute paths (`/`). All extracted paths MUST be validated to resolve within the expected extraction directory. The endpoint MUST also reject ZIP entries that are symlinks. Rejected entries MUST return 422 with error: `{"field": "archive", "message": "Invalid path in archive: '<name>'"}`.
+**FR-2.7.1:** The restore endpoint MUST reject ZIP entries containing path traversal sequences (`..`) or absolute paths (`/`). All extracted paths MUST be validated to resolve within the expected extraction directory. The endpoint MUST also reject ZIP entries that are symlinks (detected via `(info.external_attr >> 16) & 0o170000 == 0o120000`). Rejected entries MUST return 422 with error: `{"field": "archive", "message": "Invalid path in archive: '<name>'"}`.
 
 **FR-2.8:** Temporary restore images MUST be cleaned up after 1 hour if not committed. A background asyncio task started during app lifespan MUST check the temp directory every 10 minutes and delete files with mtime older than 1 hour. The cleanup task is registered in `main.py`'s lifespan handler alongside existing startup tasks. On startup, the cleanup task MUST create the temp directory if it does not exist (using `os.makedirs(exist_ok=True)`). Note: if the app crashes, orphaned temp files from before the crash will remain until they exceed the 1-hour age threshold and are cleaned on the next startup — this is acceptable behavior.
 
@@ -130,7 +131,7 @@ If the token is invalid or expired, the endpoint MUST return 404 with `{"error":
 
 ### FR-5: Setup Wizard — Restore Entry Point
 
-**FR-5.1:** The setup wizard MUST add a new first step ("Welcome") before the current Step 1 (MQTT Config). This step is handled as a **separate pre-navigation screen** outside the `STEP_ORDER` array — it is NOT added to `WizardStep` type or `STEP_ORDER`. The Welcome screen is shown when `!hasPersistedState` and `!restoredFromBackup`; once the user chooses an action, the wizard transitions to `'mqtt-config'` (the first step in `STEP_ORDER`). The `WizardStepIndicator` does not display the Welcome step. This step presents two options:
+**FR-5.1:** The setup wizard MUST add a new first step ("Welcome") before the current Step 1 (MQTT Config). This step is handled as a **separate pre-navigation screen** outside the `STEP_ORDER` array — it is NOT added to `WizardStep` type or `STEP_ORDER`. The Welcome screen is shown when `!hasPersistedState` AND `!initialRestoreData` (i.e., fresh visits without persisted progress or settings-menu restore data). If `initialRestoreData` is provided (settings-menu restore), the wizard skips the Welcome screen and directly calls `populateWizardFromBackup(initialRestoreData)`. Once the user chooses an action on the Welcome screen, the wizard transitions to `'mqtt-config'` (the first step in `STEP_ORDER`). The `WizardStepIndicator` does not display the Welcome step. This step presents two options:
 - "Fresh Setup" — proceeds to Step 1 (`'mqtt-config'`) as normal (existing behavior)
 - "Restore from Backup" — opens a file picker, validates the backup, then pre-fills all subsequent steps and transitions to `'mqtt-config'`
 
@@ -175,7 +176,16 @@ function panelsToDiscoveredMap(panels: Panel[]): Record<string, DiscoveredPanel>
   }]));
 }
 ```
-The `generateAutoMatchResults()` helper produces match results where all panels are pre-matched. Returns `MatchResult[]` matching the `WizardState.validationResults` type:
+The `generateAutoMatchResults()` helper produces match results where all panels are pre-matched. Returns `MatchResult[]` (from `types/validation.ts`) matching the `WizardState.validationResults` type. The `MatchResult` interface is:
+```typescript
+interface MatchResult {
+  status: 'matched' | 'unmatched' | 'ambiguous';
+  confidence: 'high' | 'medium' | 'low';
+  panel: Panel;
+  tigo_label: string;
+}
+```
+Implementation:
 ```typescript
 function generateAutoMatchResults(panels: Panel[]): MatchResult[] {
   return panels.map(p => ({
@@ -192,7 +202,7 @@ function generateAutoMatchResults(panels: Panel[]): MatchResult[] {
 **FR-5.7:** When the user reaches the final review step and confirms, the system writes all configuration in this order:
 1. `PUT /api/config/system` — write system/MQTT config
 2. `PUT /api/config/panels` — write panel definitions and translations
-3. `POST /api/backup/restore/image/{token}` — commit the restored layout image (if present)
+3. `POST /api/backup/restore/image/{token}` — commit the restored layout image (only if `restoreImageToken` is non-null; the frontend MUST skip this step when `restoreImageToken` is `null`)
 
 If step 2 or 3 fails after step 1 succeeds, the system is in a partially-configured state. This is acceptable because: (a) the existing wizard save already has this same sequential behavior without transactions, (b) the user can re-run the wizard or re-restore to recover, and (c) no data is lost (the backup file is still available). On failure, the frontend MUST display an error toast indicating which step failed, and NOT redirect to the dashboard.
 
@@ -257,12 +267,12 @@ interface RestoreData {
 - ZIP without layout image returns `has_image: false`
 - Total upload size exceeding 20MB rejected with 413 (NFR-1.3)
 - Individual file within ZIP exceeding per-file size limit rejected with 422 (FR-2.7 ZIP bomb protection)
-- Non-ZIP file rejected
+- Non-ZIP file rejected with 422 `"Invalid or corrupt ZIP archive"`
 - ZIP with extra/unknown files accepted (forward compatibility)
 - ZIP containing path traversal entries (`../`) rejected with 422 (FR-2.7.1)
 - ZIP containing symlinks rejected with 422 (FR-2.7.1)
 - ZIP with invalid image file (wrong magic bytes) rejected with 422
-- Corrupt ZIP file rejected
+- Corrupt ZIP file rejected with 422 `"Invalid or corrupt ZIP archive"` (same error as non-ZIP)
 
 **FR-8.1.3:** Version migration MUST have unit tests covering:
 - Backup version 1 restores without warnings on current version 1 app
@@ -293,7 +303,7 @@ interface RestoreData {
 
 #### FR-8.3: Round-Trip Tests
 
-**FR-8.3.1:** A round-trip test MUST verify: export backup → restore backup → compare parsed config with original config files. Comparison MUST use semantic equality (compare parsed Python/TypeScript objects, not raw YAML strings) since YAML field order may differ between serializations. All fields MUST match exactly, including sensitive fields (MQTT password must survive the round-trip without modification).
+**FR-8.3.1:** A round-trip test MUST verify: export backup → restore backup → compare parsed config with original config files. Comparison MUST use semantic equality (compare parsed Python/TypeScript objects, not raw YAML strings) since YAML field order may differ between serializations. All fields MUST match exactly, including sensitive fields (MQTT password must survive the round-trip without modification). The manifest metadata MUST also be verified: `panel_count` matches actual panel count, `has_layout_image` matches presence of image, `has_translations` matches presence of translations, `contains_sensitive_data` is `true`, and `backup_version` matches the current version.
 
 **FR-8.3.2:** A round-trip test MUST verify: export backup → restore backup → complete wizard save → verify config files on disk match the original export source.
 
@@ -458,6 +468,7 @@ class BackupService:
             "panel_count": len(panels.panels),
             "has_layout_image": image_path is not None,
             "has_translations": bool(panels.translations),
+            "contains_sensitive_data": True,  # MQTT credentials in plaintext
         }
 
         # Local time for user-facing filename per FR-1.3 (created_at uses UTC above)
@@ -773,11 +784,31 @@ dashboard/
 
 ---
 
-**Specification Version:** 1.3
+**Specification Version:** 1.4
 **Last Updated:** January 2026
 **Authors:** Ian
 
 ## Changelog
+
+### v1.4 (January 2026)
+**Summary:** Addressed 16 review comments — API contract completeness, error response consistency, integrity verification, and type definitions
+
+**Changes:**
+- FR-1.7: Added `Content-Type: application/zip` header to export response
+- FR-2.1: Added Content-Type validation as fast-fail hint (SHOULD check, not authoritative)
+- FR-2.2: Unified all 422 error responses to use FR-2.4 `{"status": "invalid", "errors": [...]}` structure; added non-ZIP/corrupt ZIP error spec
+- FR-2.3: Explicit 200 OK status code for success response
+- FR-2.3: `hash` field clarified as preserved from backup's layout.yaml; added integrity verification (SHA256 hash match check during validation)
+- FR-2.7: Added clarifying note distinguishing compressed upload size (NFR-1.3) vs uncompressed file sizes (FR-2.7)
+- FR-2.7.1: Added symlink detection implementation detail (`external_attr` bit check)
+- FR-5.1: Fixed Welcome screen display condition (`!initialRestoreData` instead of `!restoredFromBackup`)
+- FR-5.7: Step 3 explicitly skipped when `restoreImageToken` is null
+- FR-5.8: Added `MatchResult` interface definition with source reference (`types/validation.ts`)
+- FR-8.3.1: Added manifest metadata verification to round-trip tests
+- FR-8.1.2: Test cases now specify expected error messages for non-ZIP and corrupt ZIP
+- Code samples: Added `contains_sensitive_data: True` to manifest code, JPEG magic bytes clarified as covering all standard variants
+
+**Rationale:** Review identified inconsistencies in error response formats, missing status codes, unclear field provenance (hash), and type definition gaps that would cause implementation ambiguity.
 
 ### v1.3 (January 2026)
 **Summary:** Addressed 27 review comments — security hardening, API contract gaps, testability, and code sample fixes
