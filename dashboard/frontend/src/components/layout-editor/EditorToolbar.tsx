@@ -3,10 +3,9 @@
  */
 
 import type { CSSProperties } from 'react';
-import { Undo2, Redo2, Grid3X3, Save, X, Trash2, Upload, MousePointer2 } from 'lucide-react';
+import { Undo2, Redo2, Grid3X3, Save, X, Trash2, Upload } from 'lucide-react';
 
 interface EditorToolbarProps {
-  isEditMode: boolean;
   hasUnsavedChanges: boolean;
   isSaving: boolean;
   overlaySize: number;
@@ -14,7 +13,6 @@ interface EditorToolbarProps {
   canUndo: boolean;
   canRedo: boolean;
   selectedCount: number;
-  onEnterEditMode: () => void;
   onExitEditMode: (discard: boolean) => void;
   onSave: () => void;
   onOverlaySizeChange: (size: number) => void;
@@ -132,7 +130,6 @@ const selectionBadgeStyle: CSSProperties = {
 };
 
 export function EditorToolbar({
-  isEditMode,
   hasUnsavedChanges,
   isSaving,
   overlaySize,
@@ -140,7 +137,6 @@ export function EditorToolbar({
   canUndo,
   canRedo,
   selectedCount,
-  onEnterEditMode,
   onExitEditMode,
   onSave,
   onOverlaySizeChange,
@@ -150,29 +146,6 @@ export function EditorToolbar({
   onDeselectAll,
   onImageUpload,
 }: EditorToolbarProps) {
-  if (!isEditMode) {
-    return (
-      <div style={toolbarStyle}>
-        <button
-          style={primaryButtonStyle}
-          onClick={onEnterEditMode}
-          title="Edit panel positions"
-        >
-          <MousePointer2 size={16} />
-          Edit Layout
-        </button>
-        <button
-          style={secondaryButtonStyle}
-          onClick={onImageUpload}
-          title="Upload new layout image"
-        >
-          <Upload size={16} />
-          Upload Image
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div style={toolbarStyle}>
       {/* Undo/Redo */}
@@ -256,6 +229,16 @@ export function EditorToolbar({
           <div style={separatorStyle} />
         </>
       )}
+
+      {/* Upload image */}
+      <button
+        style={secondaryButtonStyle}
+        onClick={onImageUpload}
+        title="Upload new layout image"
+      >
+        <Upload size={16} />
+        Upload Image
+      </button>
 
       {/* Spacer */}
       <div style={{ flexGrow: 1 }} />

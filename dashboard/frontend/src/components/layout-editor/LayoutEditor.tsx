@@ -41,9 +41,6 @@ const editorAreaStyle: CSSProperties = {
 
 const canvasContainerStyle: CSSProperties = {
   flexGrow: 1,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
   overflow: 'auto',
   padding: '20px',
 };
@@ -52,7 +49,7 @@ const canvasStyle = (imageWidth: number, imageHeight: number): CSSProperties => 
   position: 'relative',
   width: `${imageWidth}px`,
   height: `${imageHeight}px`,
-  flexShrink: 0,
+  margin: 'auto',
 });
 
 const imageStyle: CSSProperties = {
@@ -147,8 +144,8 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
     const positionedPanels = editor.panels
       .filter(p => editor.positions[p.serial] != null)
       .map(p => ({ ...p, position: editor.positions[p.serial]! }));
-    return buildSpatialIndex(positionedPanels, editor.overlaySize, activeDragId);
-  }, [editor.panels, editor.positions, editor.overlaySize, activeDragId, editor.spatialIndex]);
+    return buildSpatialIndex(positionedPanels, editor.overlaySize, activeDragId, { width: imageWidth, height: imageHeight });
+  }, [editor.panels, editor.positions, editor.overlaySize, activeDragId, editor.spatialIndex, imageWidth, imageHeight]);
 
   // Handle drag start
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -411,7 +408,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       />
 
       {/* Draft recovery banner */}
-      {editor.draftAvailable && !editor.isEditMode && (
+      {editor.draftAvailable && (
         <div style={draftBannerStyle}>
           <span>
             Unsaved layout changes from{' '}
@@ -449,7 +446,6 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       )}
 
       <EditorToolbar
-        isEditMode={editor.isEditMode}
         hasUnsavedChanges={editor.hasUnsavedChanges}
         isSaving={editor.isSaving}
         overlaySize={editor.overlaySize}
@@ -457,7 +453,6 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         canUndo={editor.canUndo}
         canRedo={editor.canRedo}
         selectedCount={editor.selectedPanels.size}
-        onEnterEditMode={editor.enterEditMode}
         onExitEditMode={editor.exitEditMode}
         onSave={editor.save}
         onOverlaySizeChange={editor.setOverlaySize}
