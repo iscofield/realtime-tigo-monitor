@@ -10,7 +10,7 @@ Users need a way to safely migrate their Solar Tigo Viewer installation to a new
 
 ### FR-1: Backup Export
 
-**FR-1.1:** The backend MUST provide a `POST /api/backup/export` endpoint that generates a ZIP archive containing all configuration data.
+**FR-1.1:** The backend MUST provide a `POST /api/backup/export` endpoint that generates a ZIP archive containing all configuration data. The endpoint accepts no request body (empty POST).
 
 **FR-1.2:** The ZIP archive MUST contain the following files:
 - `manifest.json` — backup metadata (version, timestamp, source info)
@@ -29,9 +29,11 @@ Users need a way to safely migrate their Solar Tigo Viewer installation to a new
   "app_version": "1.0.0",
   "panel_count": 69,
   "has_layout_image": true,
-  "has_translations": true
+  "has_translations": true,
+  "contains_sensitive_data": true
 }
 ```
+The `app_version` field MUST be read dynamically from the backend's `VERSION` constant (defined in `app/__init__.py`). The `contains_sensitive_data` field is always `true` (backup includes MQTT credentials in plaintext) to allow automated tools to identify sensitive archives.
 
 **FR-1.5:** The `backup_version` field MUST be an integer starting at `1`. This version is incremented when the backup schema changes in a way that requires migration logic during restore.
 
@@ -39,17 +41,19 @@ Users need a way to safely migrate their Solar Tigo Viewer installation to a new
 
 **FR-1.7:** The endpoint MUST return the ZIP file as a streaming download with `Content-Disposition: attachment; filename="solar-tigo-backup-..."` header.
 
+**FR-1.9:** If any config file cannot be read during export (permissions error, corruption, or I/O failure), the endpoint MUST return 500 with `{"error": "export_failed", "message": "Failed to read configuration: <details>"}`. If the layout image referenced in `layout.yaml` does not exist on disk, it is treated as if no image exists (omit from archive, set `has_layout_image: false`).
+
 **FR-1.8:** If no system configuration exists (fresh install, no `system.yaml` or `panels.yaml`), the export endpoint MUST return a 404 response: `{"error": "no_config", "message": "No configuration to export. Complete the setup wizard first."}`.
 
 ### FR-2: Backup Restore (Backend)
 
-**FR-2.1:** The backend MUST provide a `POST /api/backup/restore` endpoint that accepts a ZIP file upload.
+**FR-2.1:** The backend MUST provide a `POST /api/backup/restore` endpoint that accepts a ZIP file upload. The request Content-Type MUST be `multipart/form-data` with the file in a form field named `file`. If the upload exceeds 20MB (NFR-1.3), the endpoint MUST return 413 Payload Too Large with body `{"error": "file_too_large", "message": "Upload exceeds 20MB limit"}`.
 
 **FR-2.2:** The endpoint MUST validate the ZIP structure:
 - Contains `manifest.json` at the root
 - `manifest.json` is valid JSON with a `backup_version` field
 - `backup_version` is a supported version (currently only `1`)
-- Required config files (`system.yaml`, `panels.yaml`) are present and valid YAML
+- Required config files (`system.yaml`, `panels.yaml`) are present and contain valid YAML that conforms to the `SystemConfig` and `PanelsConfig` Pydantic schemas respectively. If YAML parses but fails Pydantic validation (e.g., missing required field, wrong type), the endpoint MUST return 422 with field-specific errors: `{"field": "system.yaml.<field_path>", "message": "Validation error: <detail>"}`
 - If `layout.yaml` references an image, the image file exists in the archive
 
 **FR-2.3:** On validation success, the endpoint MUST return the parsed configuration data as JSON (not write to disk). The response MUST conform to a `BackupRestoreResponse` Pydantic model:
@@ -59,12 +63,12 @@ Users need a way to safely migrate their Solar Tigo Viewer installation to a new
   "manifest": { "backup_version": 1, "created_at": "...", ... },
   "system": { "version": 1, "mqtt": {...}, "ccas": [...] },
   "panels": { "panels": [...], "translations": {...} },
-  "layout": { "image_width": 1920, "image_height": 1080, "overlay_size": 50, "image_hash": "...", ... },
+  "layout": { "image_width": 1920, "image_height": 1080, "overlay_size": 50, "hash": "sha256-hex-string", ... },
   "has_image": true,
   "image_token": "uuid-string-or-null"
 }
 ```
-Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfig.model_dump()`, and `layout` to `LayoutConfig.model_dump()`. The `image_token` field is a UUID string if the backup contains a layout image (stored temporarily), or `null` if no image is present.
+Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfig.model_dump()`, and `layout` to `Optional[LayoutConfig].model_dump()`. The `layout` field is `null` when `layout.yaml` is not present in the backup (the `BackupRestoreResponse` Pydantic model uses `Optional[LayoutConfig]`). The `image_token` field is a UUID string if the backup contains a layout image (stored temporarily), or `null` if no image is present.
 
 **FR-2.4:** On validation failure, the endpoint MUST return a 422 response with specific error details:
 ```json
@@ -78,7 +82,7 @@ Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfi
 
 **FR-2.5:** The restore endpoint MUST NOT modify any existing configuration files. It only validates and returns parsed data. The actual write happens when the user completes the wizard (via existing `/api/config/system` and `/api/config/panels` PUT endpoints).
 
-**FR-2.6:** If the backup contains a layout image, the endpoint MUST temporarily store the image and return a reference token (UUID4). A subsequent `POST /api/backup/restore/image/{token}` endpoint commits the image to the `assets/` directory and updates `layout.yaml` with the image dimensions and SHA256 hash (following the same pattern as `config_service.save_layout_image()`). The commit endpoint MUST return:
+**FR-2.6:** If the backup contains a layout image, the endpoint MUST validate it as a valid PNG or JPEG file by checking magic bytes (PNG: `89 50 4E 47`, JPEG: `FF D8 FF`) before storage. Invalid image files MUST be rejected with 422 error: `{"field": "assets/layout.png", "message": "Invalid image file: not a valid PNG or JPEG"}`. After validation, the endpoint MUST temporarily store the image and return a reference token (UUID4). A subsequent `POST /api/backup/restore/image/{token}` endpoint commits the image to the `assets/` directory and updates `layout.yaml` with the image dimensions and SHA256 hash (following the same pattern as `config_service.save_layout_image()`). The commit endpoint MUST return:
 ```json
 {
   "success": true,
@@ -89,11 +93,13 @@ If the token is invalid or expired, the endpoint MUST return 404 with `{"error":
 
 **FR-2.7:** The restore endpoint MUST protect against ZIP bombs by checking the uncompressed size of each file during extraction (using `ZipInfo.file_size`). Individual config files (YAML/JSON) MUST be rejected if uncompressed size exceeds 1MB. The layout image MUST be rejected if uncompressed size exceeds 20MB. If any file exceeds its limit, the endpoint MUST return 422 with error: `{"field": "archive", "message": "File '<name>' exceeds maximum allowed size."}`.
 
-**FR-2.8:** Temporary restore images MUST be cleaned up after 1 hour if not committed. A background asyncio task started during app lifespan MUST check the temp directory every 10 minutes and delete files with mtime older than 1 hour. The cleanup task is registered in `main.py`'s lifespan handler alongside existing startup tasks.
+**FR-2.7.1:** The restore endpoint MUST reject ZIP entries containing path traversal sequences (`..`) or absolute paths (`/`). All extracted paths MUST be validated to resolve within the expected extraction directory. The endpoint MUST also reject ZIP entries that are symlinks. Rejected entries MUST return 422 with error: `{"field": "archive", "message": "Invalid path in archive: '<name>'"}`.
+
+**FR-2.8:** Temporary restore images MUST be cleaned up after 1 hour if not committed. A background asyncio task started during app lifespan MUST check the temp directory every 10 minutes and delete files with mtime older than 1 hour. The cleanup task is registered in `main.py`'s lifespan handler alongside existing startup tasks. On startup, the cleanup task MUST create the temp directory if it does not exist (using `os.makedirs(exist_ok=True)`). Note: if the app crashes, orphaned temp files from before the crash will remain until they exceed the 1-hour age threshold and are cleaned on the next startup — this is acceptable behavior.
 
 ### FR-3: Version Compatibility
 
-**FR-3.1:** When `backup_version` is less than the current supported version, the backend MUST attempt automatic migration of the data to the current schema.
+**FR-3.1:** When `backup_version` is less than the current supported version, the backend MUST attempt automatic migration of the data to the current schema. If automatic migration fails (e.g., data transformation error, unexpected null value), the endpoint MUST return 422 with `{"field": "manifest.backup_version", "message": "Migration from version <X> failed: <reason>"}`. Partial migration MUST NOT be returned — migration is all-or-nothing.
 
 **FR-3.2:** If migration adds new fields that require user input (no safe default exists), the response MUST include a `warnings` array:
 ```json
@@ -155,7 +161,7 @@ These restore-related fields are NOT persisted to localStorage (the `PersistedWi
 
 **FR-5.5:** Each pre-filled wizard step MUST display a subtle indicator (e.g., a small banner or badge) showing "Restored from backup" so the user knows the data came from a restore rather than fresh input.
 
-**FR-5.8:** The `panelsToDiscoveredMap()` helper converts backup panels to the `DiscoveredPanel` format required by the wizard. Uses the `Panel` type from `types/config.ts`:
+**FR-5.8:** The `panelsToDiscoveredMap()` helper converts backup panels to the `DiscoveredPanel` format required by the wizard. Uses the `Panel` type from `types/config.ts`. Note: Both `Panel` and `DiscoveredPanel` types share `serial`, `cca`, and `tigo_label` fields with matching names and types, so the mapping is direct:
 ```typescript
 function panelsToDiscoveredMap(panels: Panel[]): Record<string, DiscoveredPanel> {
   return Object.fromEntries(panels.map(p => [p.serial, {
@@ -183,11 +189,16 @@ function generateAutoMatchResults(panels: Panel[]): MatchResult[] {
 
 **FR-5.6:** The generate/download step (Step 3) MUST work normally during restore — the user can regenerate and download tigo-mqtt deployment files based on the restored topology (which may have a different serial device path on the new machine).
 
-**FR-5.7:** When the user reaches the final review step and confirms, the system writes all configuration exactly as in a fresh setup (using existing PUT endpoints), plus commits the restored layout image if present.
+**FR-5.7:** When the user reaches the final review step and confirms, the system writes all configuration in this order:
+1. `PUT /api/config/system` — write system/MQTT config
+2. `PUT /api/config/panels` — write panel definitions and translations
+3. `POST /api/backup/restore/image/{token}` — commit the restored layout image (if present)
+
+If step 2 or 3 fails after step 1 succeeds, the system is in a partially-configured state. This is acceptable because: (a) the existing wizard save already has this same sequential behavior without transactions, (b) the user can re-run the wizard or re-restore to recover, and (c) no data is lost (the backup file is still available). On failure, the frontend MUST display an error toast indicating which step failed, and NOT redirect to the dashboard.
 
 ### FR-6: Restore via Settings Menu
 
-**FR-6.1:** When restoring via the settings menu (FR-4.5), the app MUST show a confirmation dialog: "Restoring will open the setup wizard with your backed-up configuration. Your current configuration will not be changed until you complete the wizard. Continue?"
+**FR-6.1:** When restoring via the settings menu (FR-4.5), the app MUST show a confirmation dialog: "Restoring will open the setup wizard with your backed-up configuration. Your current configuration will not be changed until you complete the wizard. Continue?" The dialog buttons MUST be labeled "Yes, Restore" (primary/confirm) and "Cancel" (secondary/dismiss).
 
 **FR-6.2:** On confirmation, the app transitions to the wizard in restore mode (same behavior as FR-5.2 through FR-5.7). The transition is implemented by adding a `startRestore(data: RestoreData)` callback to `AppRouter` that sets `appState = 'wizard'` and passes the `RestoreData` to `SetupWizard` as an initial state prop. The `RestoreData` type is defined as:
 ```typescript
@@ -248,6 +259,9 @@ interface RestoreData {
 - Individual file within ZIP exceeding per-file size limit rejected with 422 (FR-2.7 ZIP bomb protection)
 - Non-ZIP file rejected
 - ZIP with extra/unknown files accepted (forward compatibility)
+- ZIP containing path traversal entries (`../`) rejected with 422 (FR-2.7.1)
+- ZIP containing symlinks rejected with 422 (FR-2.7.1)
+- ZIP with invalid image file (wrong magic bytes) rejected with 422
 - Corrupt ZIP file rejected
 
 **FR-8.1.3:** Version migration MUST have unit tests covering:
@@ -279,7 +293,7 @@ interface RestoreData {
 
 #### FR-8.3: Round-Trip Tests
 
-**FR-8.3.1:** A round-trip test MUST verify: export backup → restore backup → compare parsed config with original config files. All fields MUST match exactly, including sensitive fields (MQTT password must survive the round-trip without modification).
+**FR-8.3.1:** A round-trip test MUST verify: export backup → restore backup → compare parsed config with original config files. Comparison MUST use semantic equality (compare parsed Python/TypeScript objects, not raw YAML strings) since YAML field order may differ between serializations. All fields MUST match exactly, including sensitive fields (MQTT password must survive the round-trip without modification).
 
 **FR-8.3.2:** A round-trip test MUST verify: export backup → restore backup → complete wizard save → verify config files on disk match the original export source.
 
@@ -313,7 +327,7 @@ interface RestoreData {
 
 #### FR-8.5: E2E Tests (Playwright MCP)
 
-**Test Fixture Strategy:** E2E tests MUST first complete a fresh wizard setup (or call `PUT /api/config/system` and `PUT /api/config/panels` directly) to create a known configuration state. Then call `POST /api/backup/export` to generate a valid backup ZIP programmatically. This ZIP is used as the restore fixture, ensuring round-trip correctness without needing pre-built fixture files.
+**Test Fixture Strategy:** E2E tests MUST use the API directly (not UI automation) to create the test fixture: call `PUT /api/config/system` and `PUT /api/config/panels` to create a known configuration state, then call `POST /api/backup/export` to generate a valid backup ZIP programmatically. This ZIP is used as the restore fixture, ensuring round-trip correctness without needing pre-built fixture files. Layout image testing is optional for E2E (covered by backend integration tests via `POST /api/layout/image`).
 
 **FR-8.5.1:** Full backup flow test:
 1. Start with a fully configured system
@@ -348,7 +362,7 @@ interface RestoreData {
 
 ## Non-Functional Requirements
 
-**NFR-1.1:** Backup export MUST complete within 5 seconds for configurations with up to 200 panels and a 10MB layout image.
+**NFR-1.1:** Backup export MUST complete within 5 seconds for configurations with up to 200 panels and a 10MB layout image, on the reference hardware (Raspberry Pi 4, 4GB RAM, SD card storage) under single-user load.
 
 **NFR-1.2:** The backup ZIP MUST use standard ZIP compression (deflate) to minimize file size.
 
@@ -356,9 +370,9 @@ interface RestoreData {
 
 **NFR-2.1:** The backup format MUST be forward-compatible: older versions of the app that encounter unknown fields in config files MUST ignore them gracefully (YAML/JSON parsers already handle this).
 
-**NFR-2.2:** Sensitive data (MQTT password) is included in the backup as-is (plaintext in YAML). The backup file itself is the user's responsibility to secure. No encryption is applied.
+**NFR-2.2:** **Security Warning:** Sensitive data (MQTT password) is included in the backup as-is (plaintext in YAML). The backup file itself is the user's responsibility to secure. No encryption is applied. This warning MUST be documented in the OpenAPI spec description for the export endpoint. When uploading a backup in the WelcomeStep, a warning banner MUST be displayed: "Backup files contain MQTT credentials in plaintext. Only restore backups from trusted sources."
 
-**NFR-3.1:** The settings menu MUST be accessible on both desktop and mobile viewports.
+**NFR-3.1:** The settings menu MUST be visible and functional on viewport widths from 320px to 1920px. Touch targets (gear icon, menu items) MUST be at least 44x44px for mobile usability.
 
 **NFR-3.2:** The welcome step in the wizard MUST load without network requests (no API calls until the user chooses an action).
 
@@ -415,6 +429,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import VERSION  # App version defined in app/__init__.py
 from .config_service import ConfigService
 
 CURRENT_BACKUP_VERSION = 1
@@ -439,12 +454,13 @@ class BackupService:
         manifest = {
             "backup_version": CURRENT_BACKUP_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "app_version": "1.0.0",
+            "app_version": VERSION,
             "panel_count": len(panels.panels),
             "has_layout_image": image_path is not None,
             "has_translations": bool(panels.translations),
         }
 
+        # Local time for user-facing filename per FR-1.3 (created_at uses UTC above)
         timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
         filename = f"solar-tigo-backup-{timestamp}.zip"
 
@@ -514,6 +530,20 @@ Note: The temp directory uses the app's data directory rather than `/tmp` to ens
 
 ### Frontend Implementation
 
+#### Download Helper (`dashboard/frontend/src/utils/download.ts`)
+
+```typescript
+/** Triggers a browser file download from a Blob. */
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+```
+
 #### Settings Menu Component (`dashboard/frontend/src/components/SettingsMenu.tsx`)
 
 A dropdown menu triggered by a gear icon in the header:
@@ -528,6 +558,11 @@ function SettingsMenu({ onRestoreComplete }: SettingsMenuProps) {
 
   const handleBackup = async () => {
     const response = await fetch('/api/backup/export', { method: 'POST' });
+    if (!response.ok) {
+      const error = await response.json();
+      showToast(error.message || 'Export failed', 'error');
+      return;
+    }
     const blob = await response.blob();
     // Backend MUST use simple `filename="..."` format (not RFC 5987 filename*)
     const disposition = response.headers.get('Content-Disposition') || '';
@@ -738,11 +773,39 @@ dashboard/
 
 ---
 
-**Specification Version:** 1.2
+**Specification Version:** 1.3
 **Last Updated:** January 2026
 **Authors:** Ian
 
 ## Changelog
+
+### v1.3 (January 2026)
+**Summary:** Addressed 27 review comments — security hardening, API contract gaps, testability, and code sample fixes
+
+**Changes:**
+- FR-1.1: Explicitly specified empty POST body for export endpoint
+- FR-1.4: `app_version` now read dynamically from `VERSION` constant; added `contains_sensitive_data: true` to manifest
+- FR-1.9: Added error handling for unreadable config files (500 response) and missing layout images
+- FR-2.1: Explicit Content-Type (`multipart/form-data`), form field name (`file`), and 413 response for oversized uploads
+- FR-2.2: "valid YAML" clarified to require Pydantic schema validation with field-specific 422 errors
+- FR-2.3: `layout` field is `Optional[LayoutConfig]` (null when layout.yaml absent); fixed `image_hash` → `hash` naming consistency
+- FR-2.6: Added image magic bytes validation (PNG/JPEG) before temporary storage
+- FR-2.7.1: Added path traversal and symlink protection with 422 errors
+- FR-2.8: Cleanup task creates temp directory on startup; documented crash/orphan behavior
+- FR-3.1: Added migration failure handling (422 response, all-or-nothing semantics)
+- FR-5.7: Documented write order, partial failure behavior, and error handling
+- FR-5.8: Confirmed Panel↔DiscoveredPanel field compatibility (cca, tigo_label match)
+- FR-6.1: Dialog button labels specified ("Yes, Restore" / "Cancel")
+- FR-8.1.2: Added test cases for path traversal, symlinks, and invalid image magic bytes
+- FR-8.3.1: Specified semantic equality (parsed objects) for round-trip comparison
+- FR-8.5: E2E fixture strategy clarified (API-direct, layout image optional)
+- NFR-1.1: Added reference hardware spec (Raspberry Pi 4, single-user load)
+- NFR-2.2: Made security warning more prominent; added WelcomeStep warning banner; OpenAPI doc requirement
+- NFR-3.1: Replaced "accessible" with concrete viewport range (320-1920px) and 44x44px touch targets
+- Code samples: Added error handling in handleBackup, defined downloadBlob utility, added timestamp comment, dynamic VERSION import
+- Security note on UUID4 tokens acknowledged (sufficient for this use case)
+
+**Rationale:** Review identified API contract gaps (missing Content-Type, body specs, error codes), security vulnerabilities (path traversal, symlinks, image validation), testability issues (vague NFRs), and code sample gaps that would cause implementation friction.
 
 ### v1.2 (January 2026)
 **Summary:** Comprehensive spec review — resolved 32 issues across 3 review iterations
