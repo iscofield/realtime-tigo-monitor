@@ -88,7 +88,40 @@ class PanelService:
         )
         self._config_mtime = self.yaml_path.stat().st_mtime
         self._using_yaml = True
-        logger.info(f"Loaded {len(panels)} panels from YAML config")
+
+        # Build lookup by serial number
+        self.panels_by_sn = {p.sn: p for p in self.panel_mapping.panels}
+
+        # Preserve existing watts/voltage/online state when reloading
+        old_state = {k: v for k, v in self.panel_state.items()}
+
+        # Initialize panel state with no data (or preserve existing values)
+        for panel in self.panel_mapping.panels:
+            old = old_state.get(panel.display_label)
+            self.panel_state[panel.display_label] = PanelData(
+                display_label=panel.display_label,
+                tigo_label=panel.tigo_label,
+                string=panel.string,
+                system=panel.system,
+                sn=panel.sn,
+                node_id=old.node_id if old else None,
+                watts=old.watts if old else None,
+                voltage_in=old.voltage_in if old else None,
+                voltage_out=old.voltage_out if old else None,
+                current_in=old.current_in if old else None,
+                current_out=old.current_out if old else None,
+                temperature=old.temperature if old else None,
+                duty_cycle=old.duty_cycle if old else None,
+                rssi=old.rssi if old else None,
+                energy=old.energy if old else None,
+                online=old.online if old else True,
+                stale=old.stale if old else False,
+                is_temporary=old.is_temporary if old else False,
+                last_update=old.last_update if old else None,
+                position=panel.position,
+            )
+
+        logger.info(f"Loaded {len(self.panel_mapping.panels)} panels from YAML config")
 
     def _load_legacy_json_config(self) -> None:
         """Load configuration from legacy JSON format."""
