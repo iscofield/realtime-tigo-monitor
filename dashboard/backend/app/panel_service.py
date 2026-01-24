@@ -66,7 +66,8 @@ class PanelService:
 
         # Convert YAML format to internal PanelMapping format
         panels = []
-        for p in data.get("panels", []):
+        unpositioned_indices = []
+        for i, p in enumerate(data.get("panels", [])):
             position = None
             if "position" in p and p["position"]:
                 position = Position(
@@ -79,8 +80,36 @@ class PanelService:
                 display_label=p["display_label"],
                 string=p["string"],
                 system=p["cca"],  # YAML uses 'cca', internal uses 'system'
-                position=position if position else Position(x_percent=0, y_percent=0),
+                position=position or Position(x_percent=0, y_percent=0),
             ))
+            if not position:
+                unpositioned_indices.append(i)
+
+        # Auto-assign grid positions for panels without explicit positions
+        if unpositioned_indices:
+            import math
+            count = len(unpositioned_indices)
+            cols = math.ceil(math.sqrt(count))
+            rows = math.ceil(count / cols)
+            # Use 5-95% range with even spacing
+            margin = 5.0
+            usable = 90.0
+            col_step = usable / max(cols, 1)
+            row_step = usable / max(rows, 1)
+            for idx, panel_idx in enumerate(unpositioned_indices):
+                col = idx % cols
+                row = idx // cols
+                panels[panel_idx] = PanelConfig(
+                    sn=panels[panel_idx].sn,
+                    tigo_label=panels[panel_idx].tigo_label,
+                    display_label=panels[panel_idx].display_label,
+                    string=panels[panel_idx].string,
+                    system=panels[panel_idx].system,
+                    position=Position(
+                        x_percent=margin + col * col_step,
+                        y_percent=margin + row * row_step,
+                    ),
+                )
 
         self.panel_mapping = PanelMapping(
             panels=panels,
