@@ -428,6 +428,19 @@ sequenceDiagram
     UI-->>User: Redirect to dashboard
 ```
 
+### Error Response Schemas
+
+The backup/restore API uses two distinct error response formats:
+
+| Status Code | Format | Use Case |
+|-------------|--------|----------|
+| 422 Validation | `{"status": "invalid", "errors": [{"field": "...", "message": "..."}]}` | Schema validation, version mismatch, corrupt archive |
+| 404 Not Found | `{"error": "code", "message": "..."}` | Token expired, no config exists |
+| 413 Too Large | `{"error": "file_too_large", "message": "..."}` | Upload exceeds 20MB limit |
+| 500 Server Error | `{"error": "export_failed", "message": "..."}` | Disk I/O failure, internal errors |
+
+Frontend code must check for `data.error` (HTTP errors) before checking `data.status` (validation errors).
+
 ### Backend Implementation
 
 #### Backup Service (`dashboard/backend/app/backup_service.py`)
@@ -593,6 +606,13 @@ function SettingsMenu({ onRestoreComplete }: SettingsMenuProps) {
       body: formData,
     });
     const data = await response.json();
+
+    // Handle HTTP errors (413, 500) which use {error, message} format
+    if (data.error) {
+      showToast(data.message || 'Restore failed', 'error');
+      return;
+    }
+
     if (data.status === 'valid') {
       onRestoreComplete({
         system: data.system,
@@ -601,7 +621,7 @@ function SettingsMenu({ onRestoreComplete }: SettingsMenuProps) {
         image_token: data.image_token,
       });
     } else {
-      // data.status === 'invalid'
+      // 422 validation errors use {status: 'invalid', errors: [...]}
       const messages = data.errors
         .map((e: { field: string; message: string }) => `${e.field}: ${e.message}`)
         .join('; ');
@@ -634,6 +654,12 @@ function WelcomeStep({ onFreshSetup, onRestore }: WelcomeStepProps) {
         Restore from Backup
         <span>Import a previously exported configuration</span>
       </button>
+
+      {/* Security warning per NFR-2.2 */}
+      <div className="warning-banner">
+        <AlertTriangle size={14} />
+        <span>Backup files contain MQTT credentials in plaintext. Only restore backups from trusted sources.</span>
+      </div>
 
       <input
         ref={fileInputRef}
@@ -799,11 +825,21 @@ dashboard/
 
 ---
 
-**Specification Version:** 1.6
+**Specification Version:** 1.7
 **Last Updated:** January 2026
 **Authors:** Ian
 
 ## Changelog
+
+### v1.7 (January 2026)
+**Summary:** Addressed 3 review comments — error handling robustness, security warning, and documentation structure
+
+**Changes:**
+- Code samples: `handleRestore` now checks for `data.error` before `data.status` to handle 413/500 responses correctly (prevents TypeError on undefined `errors` array)
+- Code samples: `WelcomeStep` now includes the security warning banner per NFR-2.2
+- High Level Design: Added "Error Response Schemas" section documenting the two error formats (422 validation vs HTTP errors)
+
+**Rationale:** Review identified a bug where 413/500 responses would crash the frontend, and that the security warning specified in NFR-2.2 was missing from the code sample.
 
 ### v1.6 (January 2026)
 **Summary:** Addressed 8 review comments — type consistency, test coverage, hash format clarity, and UX improvements
