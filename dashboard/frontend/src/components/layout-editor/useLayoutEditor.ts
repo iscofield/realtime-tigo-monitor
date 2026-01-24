@@ -15,7 +15,6 @@ import {
 } from '../../api/config';
 
 const DRAFT_KEY = 'solar-tigo-layout-draft';
-const AUTO_SAVE_INTERVAL = 30000; // 30 seconds
 const MAX_HISTORY_DEPTH = 50;
 
 interface UseLayoutEditorOptions {
@@ -47,8 +46,6 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
   // Undo/redo history
   const [history, setHistory] = useState<EditHistory>({ states: [], currentIndex: -1 });
 
-  // Draft auto-save interval ref
-  const autoSaveIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Track if there are unsaved changes
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -96,13 +93,18 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
   }, []);
 
   // Build spatial index for snap calculations (memoized)
+  const imageSize = useMemo(() => ({
+    width: layoutConfig?.image_width || 800,
+    height: layoutConfig?.image_height || 600,
+  }), [layoutConfig]);
+
   const spatialIndex = useMemo<SpatialIndex>(() => {
     const positionedPanels = panels.map(p => ({
       ...p,
       position: positions[p.serial] ?? p.position,
     }));
-    return buildSpatialIndex(positionedPanels, overlaySize);
-  }, [panels, positions, overlaySize]);
+    return buildSpatialIndex(positionedPanels, overlaySize, undefined, imageSize);
+  }, [panels, positions, overlaySize, imageSize]);
 
   // Initialize history when entering edit mode
   const enterEditMode = useCallback(() => {
@@ -113,21 +115,10 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     });
     initialPositionsRef.current = { ...positions };
     setHasUnsavedChanges(false);
-
-    // Start auto-save
-    autoSaveIntervalRef.current = setInterval(() => {
-      saveDraft(positions, overlaySize);
-    }, AUTO_SAVE_INTERVAL);
-  }, [positions, overlaySize]);
+  }, [positions]);
 
   // Exit edit mode
   const exitEditMode = useCallback((discardChanges: boolean = false) => {
-    // Stop auto-save
-    if (autoSaveIntervalRef.current) {
-      clearInterval(autoSaveIntervalRef.current);
-      autoSaveIntervalRef.current = null;
-    }
-
     if (discardChanges) {
       setPositions(initialPositionsRef.current);
     }
@@ -138,6 +129,15 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     setHasUnsavedChanges(false);
     clearDraft();
   }, []);
+
+  // Auto-enter edit mode after loading
+  const hasAutoEntered = useRef(false);
+  useEffect(() => {
+    if (!isLoading && !error && !hasAutoEntered.current) {
+      hasAutoEntered.current = true;
+      enterEditMode();
+    }
+  }, [isLoading, error, enterEditMode]);
 
   // Record position change to history
   const recordHistoryState = useCallback((newPositions: Record<string, PanelPosition | null>) => {
@@ -278,6 +278,13 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     }
   }, []);
 
+  // Save draft on every position change while in edit mode
+  useEffect(() => {
+    if (isEditMode && hasUnsavedChanges) {
+      saveDraft(positions, overlaySize);
+    }
+  }, [isEditMode, hasUnsavedChanges, positions, overlaySize, saveDraft]);
+
   const loadDraft = useCallback((): LayoutDraft | null => {
     try {
       const saved = localStorage.getItem(DRAFT_KEY);
@@ -353,14 +360,6 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     return panels.filter(p => positions[p.serial] == null);
   }, [panels, positions]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (autoSaveIntervalRef.current) {
-        clearInterval(autoSaveIntervalRef.current);
-      }
-    };
-  }, []);
 
   return {
     // State
@@ -382,7 +381,6 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     hasUnsavedChanges,
 
     // Actions
-    enterEditMode,
     exitEditMode,
     updatePosition,
     updatePositions,

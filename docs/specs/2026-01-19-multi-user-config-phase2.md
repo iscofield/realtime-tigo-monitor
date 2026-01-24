@@ -74,22 +74,24 @@ layout:
 
 ### FR-2: Layout Editor Mode
 
-**FR-2.1: Editor Mode Toggle**
+**FR-2.1: Auto-Enter Edit Mode**
 
-The dashboard MUST provide an "Edit Layout" mode:
-- Toggle button in header/toolbar
-- When active, panels become draggable
-- Visual indicator that edit mode is active (e.g., border, badge)
-- Exit edit mode via "Done" button or Escape key
+The Layout Editor tab MUST automatically enter edit mode on load:
+- When the "Layout Editor" tab is selected, edit mode is entered immediately after data loads
+- No separate "Edit Layout" button is required (the tab name itself implies editing intent)
+- Panels are immediately draggable upon tab load
+- Exit edit mode via "Discard" button or Escape key (returns to previous tab)
 
 **FR-2.2: Editor Toolbar**
 
-When in edit mode, display a toolbar with:
+The toolbar displays editing controls immediately (no non-edit-mode state):
+- Undo/Redo buttons
+- Snap-to-align toggle (FR-4)
 - Overlay size slider (FR-3)
-- Snap-to-grid toggle (FR-4)
-- Reset positions button (with confirmation)
+- Upload Image button
+- Selection info (when panels are selected)
+- Discard button (exit without saving)
 - Save button
-- Cancel button (discard unsaved changes)
 
 **FR-2.3: Unsaved Changes Warning**
 
@@ -451,20 +453,18 @@ This provides a starting point similar to how panels appear in the Phase 1 grid 
 
 **FR-9.1: Auto-Save Draft (Local Only)**
 
-While editing, periodically auto-save draft positions to localStorage:
-- Save to browser localStorage every 30 seconds
+While editing, auto-save draft positions to localStorage on every change:
+- Save to browser localStorage on every position change (event-driven, not interval-based)
 - Draft is LOCAL ONLY - not saved to server until explicit Save
 - Clear draft when user explicitly saves or discards
 
 **Visual Draft Indicator:**
-- Toolbar shows "Draft saved locally" with timestamp after each auto-save
 - Yellow dot indicator when unsaved changes exist
 - Tooltip clarifies: "Changes saved locally. Click Save to persist."
 
-**Draft Recovery on Page Load:**
-- If draft exists, show modal: "Resume unsaved layout changes from [timestamp]?"
-- Preview showing which panels have draft positions
-- Options: "Resume Draft", "Discard Draft", "View Changes"
+**Draft Recovery on Tab Load:**
+- If draft exists, show banner at top of editor: "Unsaved layout changes from [timestamp]"
+- Options: "Resume Draft", "Discard"
 
 **Multi-Tab Conflict:**
 - Use BroadcastChannel API to detect concurrent editing
@@ -849,10 +849,10 @@ sequenceDiagram
 
     Note over User,FS: Panel Positioning Flow
 
-    User->>UI: Click "Edit Layout"
-    UI->>State: Enter edit mode
+    User->>UI: Open "Layout Editor" tab
+    UI->>State: Auto-enter edit mode (after data loads)
     State-->>UI: Show editor toolbar
-    UI-->>User: Panels become draggable
+    UI-->>User: Panels immediately draggable
 
     User->>UI: Drag panel A1
     UI->>State: Update local position
@@ -1076,23 +1076,27 @@ function percentToPixel(
 
 ```typescript
 const DRAFT_KEY = 'solar-tigo-layout-draft';
-const AUTO_SAVE_INTERVAL = 30000;  // 30 seconds
 
 interface LayoutDraft {
   timestamp: number;
-  positions: Map<string, { x_percent: number; y_percent: number }>;
+  positions: Record<string, { x_percent: number; y_percent: number }>;
   overlaySize: number;
 }
 
-function startAutoSave(editorState: EditorState) {
-  return setInterval(() => {
-    const draft: LayoutDraft = {
-      timestamp: Date.now(),
-      positions: editorState.panelPositions,
-      overlaySize: editorState.overlaySize
-    };
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-  }, AUTO_SAVE_INTERVAL);
+// Event-driven: save draft whenever positions change while in edit mode
+useEffect(() => {
+  if (isEditMode && hasUnsavedChanges) {
+    saveDraft(positions, overlaySize);
+  }
+}, [isEditMode, hasUnsavedChanges, positions, overlaySize]);
+
+function saveDraft(positions: Record<string, PanelPosition | null>, size: number) {
+  const draft: LayoutDraft = {
+    timestamp: Date.now(),
+    positions: positions as Record<string, PanelPosition>,
+    overlaySize: size,
+  };
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
 }
 
 function checkForDraft(): LayoutDraft | null {
@@ -1329,11 +1333,21 @@ function clearDraft() {
 
 ---
 
-**Specification Version:** 1.4
+**Specification Version:** 1.5
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.5 (January 2026)
+**Summary:** UX improvements - auto-enter edit mode, event-driven draft saves, image display fix
+
+**Changes:**
+- FR-2.1: Removed "Edit Layout" button; editor now auto-enters edit mode when the Layout Editor tab is opened
+- FR-2.2: Toolbar always shows editing controls (no non-edit-mode state)
+- FR-9.1: Changed draft auto-save from interval-based (30s) to event-driven (saves on every position change)
+- FR-9.1: Simplified draft recovery UI from modal to inline banner
+- Fixed layout image display: replaced flexbox centering with margin-auto to prevent top cropping on overflow
 
 ### v1.4 (January 2026)
 **Summary:** Review fixes - transform calculation, UX clarifications
