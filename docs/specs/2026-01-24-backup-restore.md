@@ -64,7 +64,7 @@ The `app_version` field MUST be read dynamically from the backend's `VERSION` co
   "manifest": { "backup_version": 1, "created_at": "...", ... },
   "system": { "version": 1, "mqtt": {...}, "ccas": [...] },
   "panels": { "panels": [...], "translations": {...} },
-  "layout": { "image_width": 1920, "image_height": 1080, "overlay_size": 50, "hash": "sha256-hex-string (from backup's layout.yaml)", ... },
+  "layout": { "image_width": 1920, "image_height": 1080, "overlay_size": 50, "hash": "64-char-lowercase-hex-sha256 (from backup's layout.yaml)", ... },
   "has_image": true,
   "image_token": "uuid-string-or-null"
 }
@@ -87,7 +87,7 @@ Where `system` conforms to `SystemConfig.model_dump()`, `panels` to `PanelsConfi
 ```json
 {
   "success": true,
-  "metadata": { "width": 1920, "height": 1080, "hash": "sha256-hex-string" }
+  "metadata": { "width": 1920, "height": 1080, "hash": "64-char-lowercase-hex-sha256" }
 }
 ```
 If the token is invalid or expired, the endpoint MUST return 404 with `{"error": "token_not_found", "message": "Restore image not found or expired."}`.
@@ -96,7 +96,7 @@ If the token is invalid or expired, the endpoint MUST return 404 with `{"error":
 
 **FR-2.7.1:** The restore endpoint MUST reject ZIP entries containing path traversal sequences (`..`) or absolute paths (`/`). All extracted paths MUST be validated to resolve within the expected extraction directory. The endpoint MUST also reject ZIP entries that are symlinks (detected via `(info.external_attr >> 16) & 0o170000 == 0o120000`). Rejected entries MUST return 422 per FR-2.4: `{"status": "invalid", "errors": [{"field": "archive", "message": "Invalid path in archive: '<name>'"}]}`.
 
-**FR-2.8:** Temporary restore images MUST be cleaned up after 1 hour if not committed. A background asyncio task started during app lifespan MUST check the temp directory every 10 minutes and delete files with mtime older than 1 hour. The cleanup task is registered in `main.py`'s lifespan handler alongside existing startup tasks. On startup, the cleanup task MUST create the temp directory if it does not exist (using `os.makedirs(exist_ok=True)`). Note: if the app crashes, orphaned temp files from before the crash will remain until they exceed the 1-hour age threshold and are cleaned on the next startup — this is acceptable behavior.
+**FR-2.8:** Temporary restore images MUST be cleaned up after 1 hour if not committed. Note: The restore image token expires 1 hour after upload; if the wizard is not completed within this time, the user must re-upload the backup. A background asyncio task started during app lifespan MUST check the temp directory every 10 minutes and delete files with mtime older than 1 hour. The cleanup task is registered in `main.py`'s lifespan handler alongside existing startup tasks. On startup, the cleanup task MUST create the temp directory if it does not exist (using `os.makedirs(exist_ok=True)`). Note: if the app crashes, orphaned temp files from before the crash will remain until they exceed the 1-hour age threshold and are cleaned on the next startup — this is acceptable behavior.
 
 ### FR-3: Version Compatibility
 
@@ -112,7 +112,7 @@ If the token is invalid or expired, the endpoint MUST return 404 with `{"error":
 }
 ```
 
-**FR-3.3:** If `backup_version` is greater than the current app version, the endpoint MUST reject with a clear error: "This backup was created with a newer version. Please upgrade the application."
+**FR-3.3:** If `backup_version` is greater than the current app version, the endpoint MUST return 422 per FR-2.4: `{"status": "invalid", "errors": [{"field": "manifest.backup_version", "message": "This backup was created with a newer version (X). Please upgrade the application."}]}`.
 
 ### FR-4: Settings Menu (Frontend)
 
@@ -216,7 +216,7 @@ interface RestoreData {
   system: SystemConfig;
   panels: { panels: Panel[]; translations: Record<string, string> };
   layout?: LayoutConfig;
-  image_token?: string;
+  image_token?: string | null;  // null from backend when no image, matches BackupRestoreResponse
 }
 ```
 `AppRouter` exposes this callback to `Dashboard` via prop drilling (or a shared context if preferred during implementation). The `SetupWizardProps` interface MUST be extended with `initialRestoreData?: RestoreData`. When provided, the wizard MUST skip both the initial `getConfigStatus()` check (which would otherwise redirect to the dashboard for already-configured systems) and the Welcome/resume dialog screens, directly calling `populateWizardFromBackup(initialRestoreData)` on mount.
@@ -260,10 +260,13 @@ interface RestoreData {
 - Valid backup ZIP accepted and parsed correctly
 - Missing `manifest.json` rejected with appropriate error
 - Invalid JSON in manifest rejected
-- Unsupported `backup_version` (future version) rejected with upgrade message
+- Unsupported `backup_version` (future version) rejected with 422 using unified error format, message contains "newer version"
 - Missing required files (`system.yaml`, `panels.yaml`) rejected
 - Invalid YAML content in config files rejected
-- ZIP with layout image correctly stores temp image and returns token
+- ZIP with layout image and matching hash in layout.yaml stores temp image and returns token
+- ZIP with layout image where SHA256 hash doesn't match layout.yaml hash rejected with 422 "Image hash mismatch"
+- ZIP with layout image but missing layout.yaml rejected with 422 "layout.yaml is missing"
+- ZIP with layout image and layout.yaml but no hash field rejected with 422 "has no hash field"
 - ZIP without layout image returns `has_image: false`
 - Total upload size exceeding 20MB rejected with 413 (NFR-1.3)
 - Individual file within ZIP exceeding per-file size limit rejected with 422 (FR-2.7 ZIP bomb protection)
@@ -599,7 +602,9 @@ function SettingsMenu({ onRestoreComplete }: SettingsMenuProps) {
       });
     } else {
       // data.status === 'invalid'
-      const messages = data.errors.map((e: { message: string }) => e.message).join('; ');
+      const messages = data.errors
+        .map((e: { field: string; message: string }) => `${e.field}: ${e.message}`)
+        .join('; ');
       showToast(messages, 'error');
     }
   };
@@ -663,7 +668,7 @@ function populateWizardFromBackup(data: RestoreData): WizardState {
     validationResults: generateAutoMatchResults(data.panels.panels),
     configDownloaded: false, // User should re-download for new machine
     restoredFromBackup: true, // Flag for UI indicators + invalidateDownstream bypass
-    restoreImageToken: data.image_token || null,
+    restoreImageToken: data.image_token ?? null,
   };
 }
 ```
@@ -794,11 +799,25 @@ dashboard/
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** January 2026
 **Authors:** Ian
 
 ## Changelog
+
+### v1.6 (January 2026)
+**Summary:** Addressed 8 review comments — type consistency, test coverage, hash format clarity, and UX improvements
+
+**Changes:**
+- FR-3.3: Added 422 status code and unified error format for future version rejection
+- FR-6.2: `RestoreData.image_token` type changed to `string | null` to match backend response
+- FR-2.8: Documented 1-hour token expiry limitation (user must complete wizard within 1 hour)
+- FR-8.1.2: Added 4 test cases for hash validation edge cases (mismatch, missing layout.yaml, missing hash field)
+- FR-8.1.2: Updated future version test to verify 422 unified error format
+- Code samples: Changed `||` to `??` for nullish coalescing; error toast now includes field names for better UX
+- Hash format clarified as "64-char-lowercase-hex-sha256" throughout (explicit length and format)
+
+**Rationale:** Review identified type mismatches between frontend/backend, missing test coverage for hash validation scenarios, and unclear hash format specification.
 
 ### v1.5 (January 2026)
 **Summary:** Addressed 12 review comments — unified 422 error format, code sample correctness, and edge case handling
