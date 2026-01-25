@@ -674,33 +674,32 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
           onDragMove={handleDragMove}
           onDragEnd={handleDragEnd}
         >
-          {/* Contextual info bar - between toolbar and canvas */}
-          {editor.selectedPanels.size > 0 && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '8px 16px',
-                backgroundColor: '#1e3a5f',
-                color: '#e0e0e0',
-                fontSize: '13px',
-                borderBottom: '1px solid #2a4a6f',
-                minHeight: typeof window !== 'undefined' && window.innerWidth < 768 ? '44px' : '36px',
-              }}
-              role="status"
-              aria-live="polite"
-            >
-              <Info size={16} color="#ffffff" />
-              <span>
-                {editor.selectedPanels.size} panel{editor.selectedPanels.size > 1 ? 's' : ''} selected
-                {typeof window !== 'undefined' && window.innerWidth < 768
-                  ? ' · Hold to drag · Tap to deselect · Tap empty to clear'
-                  : ' · Arrow keys to nudge · Drag to reposition · Click panel to deselect · Click empty space to deselect all'
-                }
-              </span>
-            </div>
-          )}
+          {/* Contextual info bar - always reserves space to prevent layout shift */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 16px',
+              backgroundColor: editor.selectedPanels.size > 0 ? '#1e3a5f' : 'transparent',
+              color: '#e0e0e0',
+              fontSize: '13px',
+              borderBottom: editor.selectedPanels.size > 0 ? '1px solid #2a4a6f' : '1px solid transparent',
+              minHeight: typeof window !== 'undefined' && window.innerWidth < 768 ? '44px' : '36px',
+              visibility: editor.selectedPanels.size > 0 ? 'visible' : 'hidden',
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            <Info size={16} color="#ffffff" />
+            <span>
+              {editor.selectedPanels.size} panel{editor.selectedPanels.size > 1 ? 's' : ''} selected
+              {typeof window !== 'undefined' && window.innerWidth < 768
+                ? ' · Hold to drag · Tap to deselect · Tap empty to clear'
+                : ' · Arrow keys to nudge · Drag to reposition · Click panel to deselect · Click empty space to deselect all'
+              }
+            </span>
+          </div>
 
           <div style={editorAreaStyle}>
             <div style={canvasContainerStyle}>
