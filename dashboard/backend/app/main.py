@@ -14,6 +14,8 @@ from .config import get_settings
 from .panel_service import PanelService
 from .websocket_manager import ConnectionManager
 from .mqtt_client import MQTTClient
+from .backup_router import router as backup_router
+from .backup_service import get_backup_service
 from .config_router import router as config_router
 from .config_service import get_config_service
 from .discovery_router import router as discovery_router
@@ -87,6 +89,25 @@ async def handle_node_mappings(system: str, mappings: dict) -> None:
 
 
 mock_refresh_task: asyncio.Task | None = None
+temp_image_cleanup_task: asyncio.Task | None = None
+
+# Cleanup interval for temp restore images (10 minutes)
+TEMP_IMAGE_CLEANUP_INTERVAL = 600
+
+
+async def temp_image_cleanup_loop():
+    """Periodically clean up expired temporary images from restore workflow."""
+    backup_service = get_backup_service()
+    while True:
+        try:
+            await asyncio.sleep(TEMP_IMAGE_CLEANUP_INTERVAL)
+            cleaned = backup_service.cleanup_expired_images()
+            if cleaned > 0:
+                logger.info(f"Cleaned up {cleaned} expired temp images")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Error in temp image cleanup: {e}")
 
 
 async def mock_refresh_loop():
@@ -106,7 +127,7 @@ async def mock_refresh_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global mqtt_client, mock_refresh_task
+    global mqtt_client, mock_refresh_task, temp_image_cleanup_task
 
     # Load panel configuration (FR-1.5)
     # Allow startup without config for setup wizard
@@ -137,6 +158,10 @@ async def lifespan(app: FastAPI):
         await mqtt_client.start()
         logger.info("MQTT client started")
 
+    # Start temp image cleanup task (runs in all modes)
+    temp_image_cleanup_task = asyncio.create_task(temp_image_cleanup_loop())
+    logger.debug("Temp image cleanup task started")
+
     yield
 
     # Cleanup
@@ -145,6 +170,12 @@ async def lifespan(app: FastAPI):
         mock_refresh_task.cancel()
         try:
             await mock_refresh_task
+        except asyncio.CancelledError:
+            pass
+    if temp_image_cleanup_task:
+        temp_image_cleanup_task.cancel()
+        try:
+            await temp_image_cleanup_task
         except asyncio.CancelledError:
             pass
     if mqtt_client:
@@ -176,6 +207,9 @@ app.include_router(layout_router)
 # Include discovery router for setup wizard
 app.include_router(discovery_router)
 app.include_router(discovery_websocket_router)
+
+# Include backup/restore router
+app.include_router(backup_router)
 
 # Serve static files (layout image)
 app.mount("/static", StaticFiles(directory="static"), name="static")
