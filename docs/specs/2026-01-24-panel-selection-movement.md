@@ -11,6 +11,20 @@ The current Layout Editor supports drag-and-drop positioning but lacks precision
 
 This feature completes FR-3.4 (Keyboard Positioning) and enhances FR-3.5 (Multi-Select) from the Phase 2 spec.
 
+## Scope
+
+### In Scope (v1)
+- Toggle-on-click panel selection
+- Arrow key precision movement (1px/keypress)
+- Group drag with relative position preservation
+- Contextual info bar
+- Basic accessibility (ARIA attributes, keyboard navigation)
+
+### Deferred to Future Spec
+- **Click-to-position mode ([WCAG 2.5.7](https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html)):** A single-pointer alternative to drag positioning where users select a panel, then click a destination to move it. This would provide full WCAG 2.5.7 Level AA compliance. Arrow key movement partially addresses this accessibility need but requires panel selection first. Note: Full Level AA compliance for dragging operations is blocked until this feature is implemented.
+- **Real-time group drag preview:** Showing all selected panels moving during drag (currently they jump on drop)
+- **Haptic feedback preferences:** User setting to disable vibration
+
 ## Functional Requirements
 
 ### FR-1: Panel Selection
@@ -35,6 +49,31 @@ Selected panels MUST display:
 - Blue glow box-shadow (`0 0 0 2px #4a90d9`)
 - Elevated z-index (10) above unselected panels
 
+**FR-1.4: Select All (Ctrl+A/Cmd+A)**
+
+Pressing Ctrl+A (Windows/Linux) or Cmd+A (macOS) MUST select all positioned panels on the canvas. Unpositioned sidebar panels are NOT included in select-all. If focus is in a text input field (not the canvas), normal browser select-all behavior applies.
+
+**Implementation:**
+```typescript
+// In the canvas keydown handler (LayoutEditor.tsx)
+if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
+  // Check if focus is in a text input - let browser handle it
+  const activeElement = document.activeElement;
+  const isTextInput = activeElement instanceof HTMLInputElement ||
+                      activeElement instanceof HTMLTextAreaElement ||
+                      activeElement?.getAttribute('contenteditable') === 'true';
+
+  if (isTextInput) {
+    return; // Let browser handle Ctrl+A in text inputs
+  }
+
+  e.preventDefault();
+  editor.selectAll();
+}
+```
+
+Note: This check is technically redundant if the handler is attached to the canvas element (text inputs would have their own focus), but it's included as a safety guard for edge cases like contenteditable elements within the canvas.
+
 **FR-1.5: Click vs Drag Discrimination**
 
 The click handler MUST NOT fire when a drag operation occurs:
@@ -48,33 +87,12 @@ The click handler MUST NOT fire when a drag operation occurs:
 
 **Rationale:** This leverages the existing `activeDragId` state in LayoutEditor rather than adding redundant tracking. The parent component receives drag events directly from DndContext callbacks, which fire synchronously when the sensor activates. This avoids the race condition where useDraggable's `isDragging` state may not update before the click handler runs.
 
-**FR-1.7: Escape Key Behavior**
-
-Pressing Escape MUST follow a two-tier behavior:
-- If any panels are selected: deselect all (do NOT exit edit mode)
-- If no panels are selected: exit edit mode (existing behavior preserved)
-
-**Implementation:** Update the existing Escape handler in LayoutEditor.tsx:
-
-```typescript
-// In the keydown handler, replace the existing Escape case:
-if (e.key === 'Escape') {
-  e.preventDefault();
-  if (editor.selectedPanels.size > 0) {
-    // First tier: deselect all, stay in edit mode
-    editor.deselectAll();
-  } else {
-    // Second tier: exit edit mode (existing behavior)
-    editor.exitEditMode();
-  }
-}
-```
-
 **FR-1.6: Touch Selection**
 
 On touch devices:
-- Quick tap (< 250ms, < 8px movement) toggles selection
-- Hold (>= 250ms) initiates drag (does not toggle selection)
+- Quick tap (< 250ms AND < 8px movement) toggles selection
+- Hold (>= 250ms) OR movement (>= 8px) initiates drag (does not toggle selection)
+- At exactly 250ms with < 8px movement, the interaction becomes a drag (>= means 250ms is the threshold)
 - This leverages the existing @dnd-kit TouchSensor activation constraint
 
 **FR-1.6.1: Haptic Feedback on Drag Start**
@@ -89,7 +107,85 @@ if (window.navigator.vibrate) {
 
 This provides tactile confirmation that drag mode has started, helping users distinguish between tap-to-select and hold-to-drag interactions.
 
+**Security Note:** Use defensive checks for SSR safety and error handling:
+```typescript
+if (typeof navigator !== 'undefined' && navigator.vibrate) {
+  try {
+    navigator.vibrate(50);
+  } catch (e) {
+    // Some browsers throw in certain contexts (e.g., iframe restrictions)
+    console.debug('Haptic feedback unavailable', e);
+  }
+}
+```
+
+**FR-1.7: Escape Key Behavior**
+
+Pressing Escape MUST follow a two-tier behavior:
+- If any panels are selected: deselect all (do NOT exit edit mode)
+- If no panels are selected: exit edit mode (existing behavior preserved)
+
+**Implementation:** Update the existing Escape handler in LayoutEditor.tsx:
+
+```typescript
+// In the keydown handler, replace the existing Escape case:
+// editor is the return value of useLayoutEditor() hook
+if (e.key === 'Escape') {
+  e.preventDefault();
+  if (editor.selectedPanels.size > 0) {
+    // First tier: deselect all, stay in edit mode
+    editor.deselectAll();
+  } else {
+    // Second tier: exit edit mode (existing behavior)
+    editor.exitEditMode();
+  }
+}
+```
+
+**FR-1.8: Initial Selection State**
+
+When entering edit mode, no panels are selected. Selection state is NOT persisted across:
+- Page refreshes
+- Navigation away from the Layout Editor
+- Switching between configurations
+
+Each edit session starts with a fresh, empty selection.
+
 ### FR-2: Arrow Key Movement
+
+**FR-2.0: Editor Focus Requirement**
+
+Arrow key movement requires keyboard focus on the editor canvas. The keyboard handler is attached to the canvas element's `onKeyDown` prop, making focus implicit when the handler fires. The canvas container MUST:
+- Have `tabIndex={0}` to be focusable
+- Display a visible focus indicator when focused (e.g., 2px blue outline) per WCAG 2.4.7
+- Receive focus automatically when a panel is clicked
+- Not trap focus (Tab should move to next focusable element outside the editor)
+
+```typescript
+// Canvas container focus handling
+<div
+  ref={canvasRef}
+  tabIndex={0}
+  onFocus={() => setCanvasFocused(true)}
+  onBlur={() => setCanvasFocused(false)}
+  style={{
+    outline: canvasFocused ? '2px solid #4a90d9' : 'none',
+    outlineOffset: '-2px',
+  }}
+>
+  {/* Canvas content */}
+</div>
+
+// In LayoutEditor.tsx - this is passed as the onClick prop to DraggablePanel
+// Auto-focus canvas when panel is clicked
+const handlePanelClick = (serial: string) => {
+  canvasRef.current?.focus();
+  editor.selectPanel(serial);
+};
+// Usage in JSX: <DraggablePanel onClick={handlePanelClick} ... />
+```
+
+**Null handling:** The optional chaining (`?.`) silently handles cases where `canvasRef.current` is null (e.g., during initial render or if the ref is not yet attached). This is acceptable degradation - focus will simply not be set, and arrow keys will require the user to manually focus the canvas.
 
 **FR-2.1: Pixel Nudge**
 
@@ -105,9 +201,25 @@ Arrow key movement converts 1 pixel to percentage based on image dimensions:
 - `dx_percent = (1 / image_width) * 100`
 - `dy_percent = (1 / image_height) * 100`
 
+**Image dimensions** are obtained from the LayoutEditor context:
+```typescript
+// Image dimensions from layout configuration
+const { imageWidth, imageHeight } = useLayoutContext();
+
+// Guard against unloaded image or invalid dimensions
+if (!imageWidth || !imageHeight || imageWidth === 0 || imageHeight === 0) {
+  console.warn('Cannot calculate movement: image dimensions unavailable');
+  return; // Skip movement if image not loaded
+}
+```
+
+These are the **natural dimensions** of the layout image (the original image size, not the rendered size). This ensures percentage calculations are consistent regardless of zoom level or viewport size.
+
 **FR-2.3: Group Movement**
 
 When multiple panels are selected, arrow keys move ALL selected panels by the same delta, preserving their relative positions.
+
+**Note:** Arrow key movement only affects **positioned panels** (those on the canvas). Unpositioned panels in the sidebar remain in the selection but are not moved. This allows users to position sidebar panels via drag without unexpected behavior from arrow keys.
 
 **FR-2.4: Group Boundary Clamping**
 
@@ -116,6 +228,38 @@ When moving multiple panels as a group (arrow keys or drag), boundary clamping M
 - Apply this (possibly reduced) delta uniformly to all selected panels
 - This ensures the group moves as a unit and stops together when any panel reaches a boundary
 - For single-panel movement, simple per-panel clamping (0-100%) is sufficient
+
+**Algorithm:**
+```typescript
+function computeClampedDelta(
+  selectedPanels: Panel[],
+  requestedDelta: { dx: number; dy: number }
+): { dx: number; dy: number } {
+  let clampedDx = requestedDelta.dx;
+  let clampedDy = requestedDelta.dy;
+
+  for (const panel of selectedPanels) {
+    // For positive delta, check upper bound (100%)
+    if (requestedDelta.dx > 0) {
+      clampedDx = Math.min(clampedDx, 100 - panel.x_percent);
+    } else if (requestedDelta.dx < 0) {
+      // For negative delta, check lower bound (0%)
+      clampedDx = Math.max(clampedDx, -panel.x_percent);
+    }
+
+    if (requestedDelta.dy > 0) {
+      clampedDy = Math.min(clampedDy, 100 - panel.y_percent);
+    } else if (requestedDelta.dy < 0) {
+      clampedDy = Math.max(clampedDy, -panel.y_percent);
+    }
+  }
+
+  return { dx: clampedDx, dy: clampedDy };
+}
+```
+
+**Acceptance Criteria for Relative Position Preservation:**
+After group movement, the relative distance between any two selected panels MUST remain identical within 0.0001% tolerance (to account for floating-point representation). Relative positions are measured in **percentage space**, not pixel space.
 
 **FR-2.5: Undo/Redo Integration**
 
@@ -126,6 +270,58 @@ Arrow key nudges MUST integrate with undo/redo:
 - This correctly handles simultaneous arrow keys (e.g., holding ArrowRight then pressing ArrowDown): history is recorded only when both are released
 - This prevents overflow of the 50-state history buffer during continuous key holds
 
+**FR-2.5.1: Focus Loss During Arrow Movement**
+
+When the window or editor loses focus while arrow keys are held:
+- The `blur` event handler MUST record history immediately (as if all keys were released)
+- The `heldArrowKeys` set MUST be cleared
+- This prevents lost undo states when users Alt+Tab away
+
+**FR-2.6: Keyboard Shortcut Priority**
+
+Keyboard shortcuts (Ctrl+Z, Delete) take precedence over arrow key movement. If Ctrl+Z is pressed while an arrow key is held:
+1. The in-progress arrow movement is immediately committed to history
+2. The undo operation is then executed
+3. The `heldArrowKeys` set is cleared
+
+This ensures predictable behavior when mixing shortcuts with arrow key holds.
+
+**Implementation:**
+```typescript
+// In the canvas keydown handler (LayoutEditor.tsx)
+// heldArrowKeys ref is accessible in this scope
+
+if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+  e.preventDefault();
+
+  // Flush any in-progress arrow key movement before undoing
+  if (heldArrowKeys.current.size > 0) {
+    heldArrowKeys.current.clear();
+    editor.recordCurrentHistoryState();
+  }
+
+  editor.undo();
+  return;
+}
+
+// Redo (Ctrl+Shift+Z or Ctrl+Y)
+if ((e.key === 'z' && (e.ctrlKey || e.metaKey) && e.shiftKey) ||
+    (e.key === 'y' && (e.ctrlKey || e.metaKey))) {
+  e.preventDefault();
+
+  // Flush any in-progress arrow key movement before redoing
+  if (heldArrowKeys.current.size > 0) {
+    heldArrowKeys.current.clear();
+    editor.recordCurrentHistoryState();
+  }
+
+  editor.redo();
+  return;
+}
+```
+
+This ensures the current arrow key movement is committed to history before the undo/redo operation, preventing the user from undoing into an inconsistent state.
+
 ### FR-3: Group Drag
 
 **FR-3.1: Selected Panel Drag**
@@ -134,15 +330,30 @@ When dragging a panel that IS in the current selection:
 - All selected panels move together
 - Relative positions between selected panels are preserved
 - The drag delta (in percentage) is applied uniformly to all selected panels
-- Snap-to-align operates on the dragged panel only; any snap offset is included in the delta applied to the entire group (this is intentional — snapping the leader panel to a grid line shifts all selected panels by the same amount, maintaining relative positions)
+- Snap-to-align operates on the dragged panel (leader) only; any snap offset is included in the delta applied to the entire group
+- Snap considers ONLY the leader panel's position, not other selected panels
+
+**Implementation Note:** Use `active.rect.current.translated` (not `activeRect.left`) when computing snap offset to avoid visual misalignment between snap guides and actual panel positions. This addresses a known coordinate calculation issue where the modifier may calculate position differently than the callback.
 
 **FR-3.2: Unselected Panel Drag**
 
 When dragging a panel that is NOT in the current selection:
-- All existing selections are cleared before the drag begins
+- All existing selections are cleared in the `onDragStart` callback (after sensor activation threshold is met)
 - Only the dragged panel moves
 - After drop, no panels are selected (the dragged panel does NOT become selected)
 - Standard single-panel drag behavior applies
+
+**Timing clarification:** Selection is cleared in `onDragStart`, not on mousedown/touchstart. This means:
+- If the user clicks and releases without exceeding the 5px/250ms threshold, selection is NOT cleared
+- The clearing happens only after @dnd-kit confirms a drag operation has started
+
+```typescript
+// In onDragStart callback
+const draggedPanel = panels.find(p => p.serial === active.id);
+if (draggedPanel && !selectedPanels.has(draggedPanel.serial)) {
+  deselectAll();
+}
+```
 
 **Rationale for no post-drop selection:** This allows users to quickly reposition multiple individual panels in sequence without accumulating selections. If the dragged panel became selected, users would need to click empty space between each drag to clear selection. The current behavior optimizes for rapid sequential repositioning. Users who want to continue manipulating the same panel can click it after dropping to select it.
 
@@ -151,19 +362,28 @@ When dragging a panel that is NOT in the current selection:
 During group drag:
 - The directly-dragged panel shows the standard drag overlay
 - Other selected panels remain in their original positions until drag ends (they jump to new positions on drop)
-- This is a deliberate v1 simplification that avoids per-frame position recalculation for all selected panels. Real-time preview of group movement during drag may be added as a future enhancement.
+- This is a deliberate v1 simplification that avoids per-frame position recalculation for all selected panels
+
+**Known UX Limitation:** The "jump on drop" behavior may be visually jarring. This is documented as a v1 compromise for performance. Future enhancements MAY include:
+- Ghost outlines showing where other selected panels will land during drag
+- Brief CSS transition (100-200ms) when panels snap to new positions on drop
+- Info bar hint: "Other selected panels will move on drop" during group drag
+
+For v1, the jump behavior is acceptable as the alternative (real-time multi-panel drag preview) adds significant complexity.
 
 ### FR-4: Contextual Info Bar
 
 **FR-4.1: Appearance**
 
 When one or more panels are selected, display an info bar:
-- Position: between the editor toolbar and the canvas area
+- Position: between the editor toolbar and the canvas area (pushes canvas down, not overlay)
 - Background: `#1e3a5f` (dark blue, distinct from toolbar's `#1a1a1a`)
 - Text: `#e0e0e0` (light gray), font size 13px
 - Height: ~36px, horizontally padded 16px
 - Icon: info circle icon (from lucide-react `Info`) on the left, color `#ffffff`
 - Contrast ratio: text #e0e0e0 on #1e3a5f = ~5.5:1 (passes WCAG AA for normal text)
+
+**Layout behavior:** The info bar is inserted in the DOM flow, pushing the canvas down. To minimize visual disruption, the info bar SHOULD use a CSS transition (150ms height or opacity) when appearing/disappearing. This causes panels to shift relative to the viewport, which is acceptable as the shift is predictable and brief.
 
 **FR-4.2: Content**
 
@@ -226,6 +446,8 @@ const offset = (touchTargetSize - overlaySize) / 2;
 
 **Alternative (simpler):** Require `overlaySize >= 44` as a configuration constraint. This avoids the complexity of the wrapper div approach.
 
+**Decision: Use the wrapper div approach** for v1 implementation. This preserves flexibility for users who want smaller visual overlays while maintaining accessibility. The minimum visual size with the wrapper approach is 10px (any smaller becomes impractical to see). If `overlaySize < 10`, clamp to 10px for the visual element.
+
 **Rationale:** Using `minWidth/minHeight` on a single div would shift the panel's visual center away from its coordinate position. The wrapper div approach preserves visual alignment by centering the visible panel within the larger touch target.
 
 **FR-5.2: Info Bar Responsiveness**
@@ -244,9 +466,11 @@ Arrow key movement is a desktop enhancement. Mobile users rely on drag-and-drop 
 **NFR-1: Arrow Key Responsiveness**
 
 - Arrow key movement SHOULD render within a single animation frame (16ms at 60fps)
-- Holding an arrow key for 1 second MUST result in at least 10 position updates (browser key repeat rate varies, but 10/sec is a reasonable floor)
+- The implementation MUST process all `keydown` events generated by browser key repeat without debouncing or throttling
 - No single keydown handler execution SHALL exceed 50ms (verifiable via `performance.now()` in dev mode)
 - The implementation should avoid expensive computations in the render path (percentage addition is O(n) on selected panels, which is acceptable)
+
+**Testing Note:** The exact number of updates during key hold depends on OS-level key repeat rate (not controllable in tests). Tests should mock keyboard events at known intervals rather than relying on real key repeat timing.
 
 **NFR-2: Group Drag Performance**
 
@@ -260,6 +484,104 @@ Arrow key movement is a desktop enhancement. Mobile users rely on drag-and-drop 
 - Arrow key movement prevents browser scroll via `e.preventDefault()` only when panels are selected
 - Trade-off: users must deselect (Escape or click empty space) to restore arrow key scrolling of the canvas
 - Arrow key handlers coexist with existing keyboard shortcuts (Ctrl+Z, Delete, etc.) without conflict since key codes are distinct
+- ArrowLeft/ArrowRight are captured with `e.preventDefault()` in edit mode when panels are selected, preventing browser back/forward navigation in some browser configurations
+
+## Error Handling
+
+### Image Dimension Errors
+If `imageWidth` or `imageHeight` is 0, undefined, or NaN:
+- Arrow key movement is silently skipped (no error toast)
+- Console warning logged for debugging
+- User can still drag panels (drag doesn't depend on these values for percentage calculation)
+
+### Position Save Failures
+Position changes are auto-saved via the existing debounced save mechanism. If a save fails:
+- Existing behavior applies (error toast, retry logic from Phase 2 spec)
+- Selection state is NOT affected by save failures
+- User can continue editing; changes remain in local state
+
+### Conflict Resolution
+If two users edit the same layout simultaneously:
+- This spec does not add new conflict resolution (uses existing Phase 2 behavior)
+- Last write wins at the panel level
+- Future enhancement: optimistic locking or real-time collaboration
+
+### Out-of-Scope Error Scenarios
+The following error scenarios are handled by existing Phase 2 behavior and are not modified by this spec:
+- **Network disconnection during drag**: Local position state is retained; save retry logic from Phase 2 applies
+- **Stale panel data**: If another user deletes a selected panel, selection references become stale (deferred to future real-time collaboration spec)
+- **Version mismatch**: Panel list changes by other users are handled by Phase 2's refresh mechanism
+
+## Data Model
+
+### Position Types
+
+```typescript
+/**
+ * Represents a panel's position as percentages relative to the layout image.
+ * Used as the value type in LayoutEditorState.positions during editing.
+ */
+interface PanelPosition {
+  x_percent: number;
+  y_percent: number;
+}
+```
+
+### Panel Identifiers
+
+**Position Data Relationship:**
+- `Panel` is the **persisted/API model**. Its `x_percent`/`y_percent` fields are nullable because unpositioned panels (in the sidebar) have no coordinates.
+- `LayoutEditorState.positions` is the **runtime editing state**. During editing, this is the authoritative source for panel positions. It uses `Record<string, PanelPosition | null>` where `null` indicates an unpositioned panel.
+- **On save:** Positions from `LayoutEditorState.positions` are written back to `Panel` objects and persisted to the backend.
+- **On load:** `Panel` coordinates from the API are used to initialize `LayoutEditorState.positions`.
+
+```typescript
+interface Panel {
+  serial: string;        // Unique identifier (e.g., "12345678"), used as @dnd-kit draggable id
+  x_percent: number | null;  // null for unpositioned (sidebar) panels
+  y_percent: number | null;
+  // ... other fields
+}
+
+// Selection state
+type SelectedPanels = Set<string>;  // Set of panel serial numbers
+
+// @dnd-kit active.id equals panel.serial (configured via draggable id prop)
+```
+
+### Editor State Interface
+
+```typescript
+interface LayoutEditorState {
+  selectedPanels: Set<string>;       // Currently selected panel serials
+  positions: Record<string, PanelPosition | null>;  // Panel positions by serial
+  deselectAll(): void;
+  selectPanel(serial: string): void; // Toggle selection
+  exitEditMode(): void;
+  updatePositions(updates: Record<string, PanelPosition>): void;
+  // Convenience wrapper: updatePosition(serial, pos) is equivalent to updatePositions({ [serial]: pos })
+  updatePosition(serial: string, position: PanelPosition): void;
+  updatePositionsWithoutHistory(updates: Record<string, PanelPosition>): void;
+  recordCurrentHistoryState(): void;
+}
+
+// The editor state is provided by the useLayoutEditor hook
+const editor = useLayoutEditor();
+```
+
+### Z-Index Hierarchy
+
+```typescript
+const Z_INDEX = {
+  CANVAS_BACKGROUND: 0,
+  UNSELECTED_PANEL: 1,
+  SELECTED_PANEL: 10,
+  DRAG_OVERLAY: 100,   // @dnd-kit DragOverlay
+  // INFO_BAR: N/A - In document flow (position: static), z-index does not apply
+} as const;
+```
+
+When two selected panels overlap, they share the same z-index (10). The stacking order among selected panels is determined by DOM order (source order in the panels array). Selection order does NOT affect stacking.
 
 ## High Level Design
 
@@ -278,12 +600,20 @@ sequenceDiagram
     State-->>Editor: selectedPanels updated
     Editor-->>User: Panel highlighted + Info bar shown
 
-    Note over User,Canvas: Arrow Key Movement
-    User->>Editor: Press Arrow key
-    Editor->>State: updatePositions(deltas)
-    State->>State: Record history state
+    Note over User,Canvas: Arrow Key Movement (keydown)
+    User->>Editor: Press Arrow key (keydown)
+    Editor->>Editor: Add key to heldArrowKeys
+    Editor->>State: updatePositionsWithoutHistory(updates)
     State-->>Editor: positions updated
     Editor-->>User: Panels move 1px
+
+    Note over User,Canvas: Arrow Key Release (keyup)
+    User->>Editor: Release Arrow key (keyup)
+    Editor->>Editor: Remove key from heldArrowKeys
+    alt All arrow keys released
+        Editor->>State: recordCurrentHistoryState()
+        State->>State: Push to history stack
+    end
 
     Note over User,Canvas: Group Drag
     User->>Panel: Drag selected panel
@@ -316,19 +646,35 @@ LayoutEditor.tsx
 ### DraggablePanel Click Handler (DraggablePanel.tsx)
 
 ```typescript
-// Updated prop types - single-argument onClick, plus isBeingDragged for click discrimination
+// Complete prop types for DraggablePanel
 interface DraggablePanelProps {
-  // ... other props unchanged
-  onClick?: (serial: string) => void;  // Was: (serial: string, addToSelection: boolean) => void
-  isBeingDragged: boolean;  // NEW: passed from parent, true when activeDragId === panel.serial
+  panel: Panel;
+  overlaySize: number;
+  isEditMode: boolean;
+  isSelected: boolean;
+  isBeingDragged: boolean;  // true when activeDragId === panel.serial
+  onClick?: (serial: string) => void;
+  // position is derived from parent's positions record
 }
 
 // Updated click handler - checks isBeingDragged prop (set by parent from activeDragId)
 const handleClick = (e: React.MouseEvent) => {
   if (!isEditMode || isBeingDragged) return;
-  e.stopPropagation();
-  onClick?.(panel.serial);  // Always calls toggle
+  e.stopPropagation();  // Prevent canvas deselect-all from firing
+  onClick?.(panel.serial);  // Toggles selection
 };
+
+// Error handling for invalid position data
+const position = positions[panel.serial];
+if (!position ||
+    typeof position.x_percent !== 'number' || isNaN(position.x_percent) ||
+    typeof position.y_percent !== 'number' || isNaN(position.y_percent)) {
+  console.warn(`Invalid position for panel ${panel.serial}`);
+  // Return null to skip rendering. Note: The parent should filter the panels array
+  // before mapping to avoid React key warnings from sparse arrays. Alternatively,
+  // render an invisible placeholder to maintain array structure.
+  return null;
+}
 ```
 
 In LayoutEditor.tsx, pass the prop:
@@ -340,7 +686,24 @@ In LayoutEditor.tsx, pass the prop:
 />
 ```
 
-**BREAKING CHANGE:** The existing `selectPanel(serial, addToSelection)` behavior where `addToSelection=false` replaced the entire selection is removed. All clicks now toggle the clicked panel's selection state. If single-select-replace behavior is needed in the future, a separate function should be added.
+**BREAKING CHANGE:** The existing `selectPanel(serial, addToSelection)` behavior where `addToSelection=false` replaced the entire selection is removed. All clicks now toggle the clicked panel's selection state.
+
+**Known callers of selectPanel:**
+- `DraggablePanel.tsx` - onClick handler for positioned panels
+- `UnpositionedPanel.tsx` - onClick handler for sidebar panels
+- `LayoutEditor.tsx` - handlePanelClick wrapper (adds canvas focus)
+
+**Migration steps:**
+1. Remove the `addToSelection` parameter from all `selectPanel` calls
+2. Update prop type signatures in DraggablePanel, UnpositionedPanel, and UnpositionedPanelsSidebar
+3. If single-select-replace behavior is needed, add a new `replaceSelection(serial: string)` function
+
+**Workaround for single-select-replace (if needed immediately):**
+```typescript
+// Call deselectAll before selectPanel
+editor.deselectAll();
+editor.selectPanel(serial);
+```
 
 The same change applies to `UnpositionedPanel` and `UnpositionedPanelsSidebar`:
 
@@ -389,12 +752,20 @@ const selectPanel = useCallback((serial: string) => {
   });
 }, []);
 
+// Helper to get only positioned panels from selection (unpositioned panels ignored)
+// Use this in arrow key handler, group drag, and selectAll to avoid code duplication
+const getPositionedSelection = useCallback(() => {
+  return [...selectedPanels].filter(s => positions[s] != null);
+}, [selectedPanels, positions]);
+
 // Select all positioned panels only (unpositioned panels can't be nudged/dragged)
 const selectAll = useCallback(() => {
   const positioned = panels.filter(p => positions[p.serial] != null);
   setSelectedPanels(new Set(positioned.map(p => p.serial)));
 }, [panels, positions]);
 ```
+
+Add `getPositionedSelection` to the hook's return object alongside `updatePositionsWithoutHistory` and `recordCurrentHistoryState`.
 
 ### Arrow Key Handler (LayoutEditor.tsx)
 
@@ -410,7 +781,10 @@ const heldArrowKeys = useRef<Set<string>>(new Set());
 **2. Arrow key handling (inside existing handleKeyDown effect):**
 
 ```typescript
+// This handler is attached to the canvas element's onKeyDown, not window.
+// Focus is implicit - if this handler fires, the canvas has focus.
 if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+  // Canvas has focus (implicit from handler attachment), check for selected panels
   if (editor.selectedPanels.size > 0) {
     // Filter to only positioned panels (unpositioned panels have no coordinates to nudge)
     const positionedSelection = [...editor.selectedPanels].filter(
@@ -452,6 +826,12 @@ if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
 **3. Keyup and blur handlers (separate useEffect in LayoutEditor.tsx):**
 
 ```typescript
+/**
+ * Keyup is attached to window (not canvas) intentionally:
+ * - Catches key releases that occur after focus loss (Alt+Tab while holding arrow)
+ * - Safe because heldArrowKeys.delete() is a no-op for keys never added
+ * - Keydown is canvas-scoped (onKeyDown prop), keyup is window-scoped
+ */
 useEffect(() => {
   const flushArrowKeyHistory = () => {
     if (heldArrowKeys.current.size > 0) {
@@ -462,6 +842,9 @@ useEffect(() => {
 
   const handleKeyUp = (e: KeyboardEvent) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      // Safe even if keydown was ignored (no focus): Set.delete returns false for missing keys
+      // We use window-level keyup to catch key releases that happen after focus loss
+      // (e.g., user holds arrow, tabs away, releases key in another window)
       heldArrowKeys.current.delete(e.key);
       // Record history only when ALL arrow keys are released
       if (heldArrowKeys.current.size === 0) {
@@ -582,9 +965,11 @@ editor.updatePosition(panel.serial, percentPos);
 ### Info Bar Component (inline in LayoutEditor.tsx)
 
 ```typescript
-// isMobile is computed on each render. Since selection changes trigger re-renders,
-// this is sufficient for typical use (no resize listener needed).
-const isMobile = window.innerWidth < 768;
+// isMobile is computed on each render. SSR-safe check.
+// Known limitation: users who resize their browser won't see the mobile text switch until
+// a re-render is triggered (e.g., selection change). Acceptable for v1 as resize during
+// active editing is an edge case.
+const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
 {editor.selectedPanels.size > 0 && (
   <div style={{
@@ -673,12 +1058,18 @@ const isMobile = window.innerWidth < 768;
 ### Touch-Specific Tests
 
 10. **Quick tap selects**: On touch emulator, tap panel quickly (< 250ms) → verify selection toggles
-11. **Hold initiates drag**: Touch-hold panel for > 250ms and move → verify drag occurs, selection NOT toggled, haptic feedback triggered
+11. **Hold initiates drag**: Touch-hold panel for > 250ms and move → verify drag occurs, selection NOT toggled
+    - **Unit test (separate):** Mock `navigator.vibrate` and verify it's called with `50` on drag start:
+      ```typescript
+      const vibrateSpy = vi.spyOn(navigator, 'vibrate').mockReturnValue(true);
+      // ... trigger touch hold drag start ...
+      expect(vibrateSpy).toHaveBeenCalledWith(50);
+      ```
 12. **Drag vs tap discrimination**: Tap-and-release in < 250ms with < 8px movement → verify selection toggles (not drag)
 
 ### Keyboard Shortcut Tests
 
-13. **Select all (Ctrl+A)**: Press Ctrl+A → verify all positioned panels are selected, info bar shows correct count
+13. **Select all (Ctrl+A)**: Press Ctrl+A → verify all **positioned** panels are selected (sidebar panels excluded), info bar shows correct count
 14. **Escape deselects**: Select panels, press Escape → verify all deselected, info bar hidden
 15. **Delete unpositions**: Select panel A1, press Delete → verify panel moved to sidebar (unpositioned)
 
@@ -698,8 +1089,14 @@ const isMobile = window.innerWidth < 768;
 21. **Mixed selection with unpositioned panel**: Select a canvas panel and a sidebar panel, press ArrowRight → verify only the canvas panel moves (sidebar panel ignored)
 22. **Arrow key at boundary**: Move panel to x_percent=100%, press ArrowRight → verify no movement occurs (panel stays at boundary), no error thrown
 23. **Snap offset in group drag**: Select 3 panels, drag leader so it snaps to align guide → verify all 3 panels shift by snap amount, relative positions preserved
-24. **Tab away while holding arrow**: Select panel, hold ArrowDown, switch browser tabs → verify Ctrl+Z after returning undoes the movement (blur handler recorded history)
+24. **Focus loss while holding arrow**: Select panel, hold ArrowDown, trigger blur (Alt+Tab, click other window, or switch tabs) → verify Ctrl+Z after returning undoes the movement (blur handler records history). Note: All blur scenarios should behave identically.
 25. **Small movement delta**: On a large image (e.g., 5000px wide), press ArrowRight → verify panel moves by 0.02% (1/5000 * 100), position change is visible after multiple presses
+
+### Canvas Focus Tests
+
+26. **Canvas focus on panel click**: Click a panel → verify canvas element has focus (document.activeElement) and visible 2px blue outline appears
+27. **No arrow movement without focus**: Click panel to select it, press Tab to move focus away from canvas, press ArrowRight → verify panel does NOT move (position unchanged)
+28. **Focus indicator visibility**: Use Tab key to navigate to canvas → verify 2px blue outline visible per WCAG 2.4.7 (outline: 2px solid #4a90d9)
 
 ## Context / Documentation
 
@@ -720,11 +1117,76 @@ const isMobile = window.innerWidth < 768;
 
 ---
 
-**Specification Version:** 1.6
+**Specification Version:** 1.8
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.8 (January 2026)
+**Summary:** ContextLoop review - 18 comments addressed for completeness and consistency
+
+**Additions:**
+- Added `PanelPosition` type definition to Data Model section with relationship documentation
+- Added `getPositionedSelection` helper function to reduce code duplication
+- Added FR-2.6 implementation code for Ctrl+Z interrupt behavior during arrow hold
+- Added FR-1.4 Ctrl+A implementation code with text input exception handling
+- Added canvas focus tests (26-28) for FR-2.0 focus requirement
+- Added Out-of-Scope Error Scenarios section (network disconnect, stale data, version mismatch)
+- Added WCAG 2.5.7 specification link and AA compliance note to Scope section
+
+**Clarifications:**
+- FR-2.0: Documented that keyboard handler is attached to canvas element (focus implicit)
+- Arrow key handler: Added comments explaining canvas-scoped focus handling
+- Keyup handler: Documented window-level attachment rationale and safety
+- Z-index hierarchy: Fixed INFO_BAR entry to note z-index doesn't apply to static positioning
+- Test 24: Clarified blur test covers all blur scenarios (Alt+Tab, window click, tab switch)
+- handlePanelClick: Added integration comment and documented null handling for canvasRef
+
+**Code Improvements:**
+- Added SSR guard to isMobile check (`typeof window !== 'undefined'`)
+- Documented resize handling limitation for mobile text switch
+- Added `updatePosition` (singular) to LayoutEditorState interface for consistency
+- Updated position validation to check both x_percent and y_percent
+- Added React key warning note for null return in mapped components
+- Added migration path for selectPanel breaking change with known callers
+- Updated sequence diagram to show keydown/keyup flow with history recording
+
+### v1.7 (January 2026)
+**Summary:** ContextLoop review - 26 comments addressed, major additions for production readiness
+
+**Additions:**
+- FR-1.4: Added Select All (Ctrl+A) requirement (was only a test assumption)
+- FR-1.8: Added Initial Selection State requirement
+- FR-2.0: Added Editor Focus Requirement with WCAG 2.4.7 visible focus indicator
+- FR-2.5.1: Added Focus Loss During Arrow Movement requirement
+- FR-2.6: Added Keyboard Shortcut Priority requirement
+- New **Scope** section documenting what's in/out and WCAG 2.5.7 deferral
+- New **Data Model** section with Panel interface, SelectedPanels type, and z-index hierarchy
+- New **Error Handling** section for image dimensions, save failures, and conflicts
+
+**Clarifications:**
+- FR-1.6: Clarified 250ms boundary condition (>= means 250ms is a drag)
+- FR-2.2: Added image dimension source (LayoutEditor context) and guard for zero dimensions
+- FR-2.3: Documented that arrow keys only affect positioned panels (sidebar panels ignored)
+- FR-2.4: Added explicit algorithm for group boundary clamping and acceptance criteria
+- FR-3.1: Added snap coordinate implementation note to avoid known bug pattern
+- FR-3.2: Clarified selection clear timing (onDragStart, not mousedown)
+- FR-3.3: Documented UX limitation of jump-on-drop as v1 compromise
+- FR-4.1: Clarified info bar layout behavior (push, not overlay)
+- FR-5.1: Made decision to use wrapper div approach, added minimum visual size (10px)
+- NFR-1: Removed untestable "10 updates per second" metric, added testing note
+- NFR-3: Added note about capturing ArrowLeft/Right to prevent browser navigation
+
+**Code Improvements:**
+- Added complete DraggablePanelProps interface with all fields
+- Added defensive navigator.vibrate check for SSR safety
+- Added error handling for invalid position data
+- Clarified `editor` is from useLayoutEditor() hook
+
+**Test Updates:**
+- Test 11: Split haptic feedback verification into unit test (mock-based)
+- Test 13: Clarified Ctrl+A excludes sidebar panels
 
 ### v1.6 (January 2026)
 **Summary:** Comprehensive review pass - 20 issues resolved across 4 iterations
