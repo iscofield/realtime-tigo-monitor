@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Backup format constants
 BACKUP_VERSION = 1
 MAX_TOTAL_SIZE = 100 * 1024 * 1024  # 100MB total
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB per file
+MAX_FILE_SIZE = 15 * 1024 * 1024  # 15MB per file (matches layout image upload limit)
 TEMP_IMAGE_EXPIRY_SECONDS = 3600  # 1 hour
 
 # Image magic bytes for validation
