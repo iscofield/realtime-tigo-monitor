@@ -107,10 +107,15 @@ const sliderStyle: CSSProperties = {
   cursor: 'pointer',
 };
 
-const sliderValueStyle: CSSProperties = {
-  color: '#fff',
+const sizeInputStyle: CSSProperties = {
+  width: '50px',
+  padding: '2px 4px',
   fontSize: '12px',
-  minWidth: '36px',
+  color: '#fff',
+  backgroundColor: '#333',
+  border: '1px solid #555',
+  borderRadius: '3px',
+  textAlign: 'center',
 };
 
 const toggleStyle = (active: boolean): CSSProperties => ({
@@ -182,15 +187,16 @@ export function EditorToolbar({
       <button
         style={toggleStyle(snapEnabled)}
         onClick={onSnapToggle}
-        title={snapEnabled ? 'Disable snap to align' : 'Enable snap to align'}
+        title={snapEnabled ? 'Snap to Align: ON - Click to disable alignment guides' : 'Snap to Align: OFF - Click to enable alignment guides'}
       >
         <Grid3X3 size={16} />
+        <span style={{ fontSize: '11px', color: snapEnabled ? '#fff' : '#aaa' }}>Snap</span>
       </button>
 
       <div style={separatorStyle} />
 
       {/* Overlay size slider */}
-      <div style={sliderContainerStyle}>
+      <div style={sliderContainerStyle} title="Panel overlay size in pixels">
         <span style={labelStyle}>Size:</span>
         <input
           type="range"
@@ -199,8 +205,30 @@ export function EditorToolbar({
           value={overlaySize}
           onChange={(e) => onOverlaySizeChange(parseInt(e.target.value, 10))}
           style={sliderStyle}
+          title="Drag to adjust panel size"
         />
-        <span style={sliderValueStyle}>{overlaySize}px</span>
+        <input
+          type="text"
+          value={overlaySize}
+          onChange={(e) => {
+            const val = parseInt(e.target.value, 10);
+            if (!isNaN(val) && val >= 20 && val <= 200) {
+              onOverlaySizeChange(val);
+            }
+          }}
+          onBlur={(e) => {
+            // Clamp value on blur if out of range
+            const val = parseInt(e.target.value, 10);
+            if (isNaN(val) || val < 20) {
+              onOverlaySizeChange(20);
+            } else if (val > 200) {
+              onOverlaySizeChange(200);
+            }
+          }}
+          style={sizeInputStyle}
+          title="Type a value between 20-200px"
+        />
+        <span style={{ color: '#888', fontSize: '11px' }}>px</span>
       </div>
 
       <div style={separatorStyle} />

@@ -6,6 +6,7 @@ import type { PanelData } from '../hooks/useWebSocket';
 import { PanelOverlay } from './PanelOverlay';
 import type { DisplayMode } from './PanelOverlay';
 import { useMediaQuery } from '../hooks/useMediaQuery';
+import { getLayoutImageUrl } from '../api/config';
 import {
   LAYOUT_WIDTH,
   LAYOUT_HEIGHT,
@@ -234,7 +235,7 @@ export function SolarLayout({
               <img
                 key={retryCount}
                 ref={imgRef}
-                src="/layout.png"
+                src={getLayoutImageUrl()}
                 alt="Solar panel layout"
                 style={imageStyle}
                 onLoad={() => setImageLoaded(true)}
