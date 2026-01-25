@@ -44,6 +44,29 @@ Clicking or tapping a panel MUST toggle its selection state:
 
 Clicking/tapping empty canvas space (not on a panel) MUST deselect all panels.
 
+**Implementation:**
+```typescript
+// Canvas container click handler (LayoutEditor.tsx)
+const handleCanvasClick = (e: React.MouseEvent) => {
+  // Only deselect if click target is the canvas itself, not a child element
+  // Panel clicks have stopPropagation(), so this only fires on empty space
+  if (e.target === e.currentTarget) {
+    editor.deselectAll();
+  }
+};
+
+// In JSX:
+<div
+  ref={canvasRef}
+  tabIndex={0}
+  onClick={handleCanvasClick}
+  onKeyDown={handleKeyDown}
+  // ... other props
+>
+  {/* Panel overlays */}
+</div>
+```
+
 **FR-1.3: Visual Selection State**
 
 Selected panels MUST display:
@@ -209,7 +232,8 @@ Arrow key movement converts 1 pixel to percentage based on image dimensions:
 const { imageWidth, imageHeight } = useLayoutContext();
 
 // Guard against unloaded image or invalid dimensions
-if (!imageWidth || !imageHeight || imageWidth === 0 || imageHeight === 0) {
+// Using !(x > 0) catches null, undefined, zero, negative, and NaN values defensively
+if (imageWidth == null || imageHeight == null || !(imageWidth > 0) || !(imageHeight > 0)) {
   console.warn('Cannot calculate movement: image dimensions unavailable');
   return; // Skip movement if image not loaded
 }
@@ -559,6 +583,7 @@ interface LayoutEditorState {
   positions: Record<string, PanelPosition | null>;  // Panel positions by serial
   deselectAll(): void;
   selectPanel(serial: string): void; // Toggle selection
+  selectAll(): void;                 // Select all positioned panels
   exitEditMode(): void;
   updatePositions(updates: Record<string, PanelPosition>): void;
   // Convenience wrapper: updatePosition(serial, pos) is equivalent to updatePositions({ [serial]: pos })
@@ -566,6 +591,8 @@ interface LayoutEditorState {
   updatePositionsWithoutHistory(updates: Record<string, PanelPosition | null>): void;
   recordCurrentHistoryState(): void;
   getPositionedSelection(): string[];  // Returns serials of positioned panels in selection
+  undo(): void;                      // Undo last position change
+  redo(): void;                      // Redo last undone change
 }
 
 // The editor state is provided by the useLayoutEditor hook
@@ -652,19 +679,19 @@ LayoutEditor.tsx
 // Complete prop types for DraggablePanel
 interface DraggablePanelProps {
   panel: Panel;
+  position: PanelPosition;  // Position from parent's positions[panel.serial]
   overlaySize: number;
   isEditMode: boolean;
   isSelected: boolean;
   isBeingDragged: boolean;  // true when activeDragId === panel.serial
   onClick?: (serial: string) => void;
-  // position is derived from parent's positions record
 }
 
 // Updated click handler - checks isBeingDragged prop (set by parent from activeDragId)
 const handleClick = (e: React.MouseEvent) => {
   if (!isEditMode || isBeingDragged) return;
   e.stopPropagation();  // Prevent canvas deselect-all from firing
-  onClick?.(panel.serial);  // Toggles selection
+  onClick?.(panel.serial);  // Delegates to handlePanelClick which calls editor.selectPanel (toggles internally)
 };
 
 // Error handling for invalid position data
@@ -685,7 +712,7 @@ In LayoutEditor.tsx, pass the prop:
 <DraggablePanel
   // ... other props
   isBeingDragged={activeDragId === panel.serial}
-  onClick={editor.selectPanel}
+  onClick={handlePanelClick}  // Uses handlePanelClick from FR-2.0 (focuses canvas + selects)
 />
 ```
 
@@ -762,6 +789,7 @@ const getPositionedSelection = useCallback(() => {
 }, [selectedPanels, positions]);
 
 // Select all positioned panels only (unpositioned panels can't be nudged/dragged)
+// `panels` is the full panel list from useLayoutContext() - includes both positioned and unpositioned
 const selectAll = useCallback(() => {
   const positioned = panels.filter(p => positions[p.serial] != null);
   setSelectedPanels(new Set(positioned.map(p => p.serial)));
@@ -951,6 +979,10 @@ if (editor.selectedPanels.has(panel.serial) && positionedSelection.length > 1) {
     }
     editor.updatePositions(updates);
     return; // Skip single-panel update
+  } else {
+    // Defensive: panel in selection but has no position entry (should not happen for canvas-dragged panels)
+    console.warn(`Group drag: panel ${panel.serial} has no position, falling back to single update`);
+    // Falls through to single-panel update below
   }
 } else if (!editor.selectedPanels.has(panel.serial)) {
   // Dragging unselected panel: clear selection
@@ -1091,12 +1123,16 @@ const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 24. **Focus loss while holding arrow**: Select panel, hold ArrowDown, trigger blur (Alt+Tab, click other window, or switch tabs) → verify Ctrl+Z after returning undoes the movement (blur handler records history). Note: All blur scenarios should behave identically.
 25. **Small movement delta**: On a large image (e.g., 5000px wide), press ArrowRight → verify panel moves by 0.02% (1/5000 * 100), position change is visible after multiple presses
 
+### Initial State Tests
+
+26. **Initial selection state (FR-1.8)**: On page load/refresh or entering edit mode → verify `selectedPanels.size === 0` and info bar is not visible
+
 ### Canvas Focus Tests
 
-26. **Canvas focus on panel click**: Click a panel → verify canvas element has focus (document.activeElement) and visible 2px blue outline appears
-27. **No arrow movement without focus**: Click panel to select it, press Tab to move focus away from canvas, press ArrowRight → verify panel does NOT move (position unchanged)
-28. **Focus indicator visibility**: Use Tab key to navigate to canvas → verify 2px blue outline visible per WCAG 2.4.7 (outline: 2px solid #4a90d9)
-29. **No focus trap**: With canvas focused, press Tab → verify focus moves to next focusable element outside the editor (e.g., Save button in toolbar). Shift+Tab → verify focus moves to previous focusable element. Canvas does NOT trap keyboard focus.
+27. **Canvas focus on panel click**: Click a panel → verify canvas element has focus (document.activeElement) and visible 2px blue outline appears
+28. **No arrow movement without focus**: Click panel to select it, press Tab to move focus away from canvas, press ArrowRight → verify panel does NOT move (position unchanged)
+29. **Focus indicator visibility**: Use Tab key to navigate to canvas → verify 2px blue outline visible per WCAG 2.4.7 (outline: 2px solid #4a90d9)
+30. **No focus trap**: With canvas focused, press Tab → verify focus moves to next focusable element outside the editor (e.g., Save button in toolbar). Shift+Tab → verify focus moves to previous focusable element. Canvas does NOT trap keyboard focus.
 
 ## Context / Documentation
 
@@ -1118,11 +1154,34 @@ const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
 ---
 
-**Specification Version:** 1.9
+**Specification Version:** 2.1
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v2.1 (January 2026)
+**Summary:** Final polish - addressed 3 optional improvement suggestions from ContextLoop review
+
+**Changes:**
+- Improved onClick comment clarity: Now explicitly states delegation to handlePanelClick
+- Enhanced NaN safety: Changed dimension check from `<= 0` to `!(x > 0)` pattern to catch NaN values
+- Added Test 26 for FR-1.8 initial selection state verification
+- Renumbered Canvas Focus Tests to 27-30 (was 26-29)
+
+### v2.0 (January 2026)
+**Summary:** ContextLoop review round 2 - 7 comments addressed for interface and code completeness
+
+**Interface Completeness:**
+- Added `selectAll()`, `undo()`, `redo()` methods to `LayoutEditorState` interface
+- Added `position: PanelPosition` to `DraggablePanelProps` interface (was mentioned in comment but not in interface)
+
+**Code Sample Improvements:**
+- Fixed onClick handler inconsistency: now uses `handlePanelClick` (from FR-2.0) instead of `editor.selectPanel`
+- Added FR-1.2 implementation code for canvas click handler (deselect all)
+- Simplified redundant dimension check (`!x || x === 0` → `x == null || x <= 0`)
+- Added explicit else branch with logging in group drag for defensive handling
+- Documented `panels` array source in selectAll implementation (comes from useLayoutContext)
 
 ### v1.9 (January 2026)
 **Summary:** ContextLoop review - 12 comments addressed for consistency and completeness
