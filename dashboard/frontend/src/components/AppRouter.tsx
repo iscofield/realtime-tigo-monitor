@@ -3,10 +3,12 @@
  * and routes between Setup Wizard and Dashboard.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { CSSProperties, ComponentType } from 'react';
 import { getConfigStatus } from '../api/config';
 import { SetupWizard } from './wizard/SetupWizard';
+import type { RestoreData } from '../types/config';
+import type { DashboardProps } from './Dashboard';
 
 const loadingStyle: CSSProperties = {
   display: 'flex',
@@ -22,7 +24,8 @@ type AppState = 'loading' | 'wizard' | 'dashboard';
 
 export function AppRouter() {
   const [appState, setAppState] = useState<AppState>('loading');
-  const [DashboardComponent, setDashboardComponent] = useState<ComponentType | null>(null);
+  const [DashboardComponent, setDashboardComponent] = useState<ComponentType<DashboardProps> | null>(null);
+  const [restoreData, setRestoreData] = useState<RestoreData | null>(null);
 
   useEffect(() => {
     const checkConfig = async () => {
@@ -55,8 +58,21 @@ export function AppRouter() {
     // Wizard completed, reload dashboard
     const module = await import('./Dashboard');
     setDashboardComponent(() => module.Dashboard);
+    setRestoreData(null);
     setAppState('dashboard');
   };
+
+  // Handle restore from dashboard settings menu
+  const handleRestore = useCallback((data: RestoreData) => {
+    setRestoreData(data);
+    setAppState('wizard');
+  }, []);
+
+  // Handle re-run wizard from dashboard settings menu
+  const handleRerunWizard = useCallback(() => {
+    setRestoreData(null);
+    setAppState('wizard');
+  }, []);
 
   if (appState === 'loading') {
     return (
@@ -67,11 +83,21 @@ export function AppRouter() {
   }
 
   if (appState === 'wizard') {
-    return <SetupWizard onComplete={handleWizardComplete} />;
+    return (
+      <SetupWizard
+        onComplete={handleWizardComplete}
+        initialRestoreData={restoreData || undefined}
+      />
+    );
   }
 
   if (DashboardComponent) {
-    return <DashboardComponent />;
+    return (
+      <DashboardComponent
+        onRestore={handleRestore}
+        onRerunWizard={handleRerunWizard}
+      />
+    );
   }
 
   return null;
