@@ -133,7 +133,34 @@ export function Dashboard() {
     []
   );
 
-  const [fitZooms, setFitZooms] = useState({ fitViewportZoom: 1, fitWidthZoom: 1 });
+  // Calculate initial fit zoom synchronously to avoid flash of zoomed-in content
+  const getInitialFitZooms = () => {
+    if (typeof window === 'undefined') {
+      return { fitViewportZoom: 1, fitWidthZoom: 1 };
+    }
+    // Use desktop tab height for initial calculation since isMobile hasn't been determined yet
+    const viewportWidth = window.innerWidth;
+    const isMobileInitial = viewportWidth <= MOBILE_BREAKPOINT;
+    const tabHeight = isMobileInitial ? TAB_HEIGHT_MOBILE : TAB_HEIGHT_DESKTOP;
+    const viewportHeight = window.innerHeight - HEADER_HEIGHT - tabHeight;
+
+    const contentWidth = LAYOUT_WIDTH + CONTENT_PADDING * 2;
+    const contentHeight = LAYOUT_HEIGHT + CONTENT_PADDING * 2;
+
+    const fitViewportZoom = Math.min(
+      viewportWidth / contentWidth,
+      viewportHeight / contentHeight
+    );
+
+    const fitWidthZoom = viewportWidth / contentWidth;
+
+    return {
+      fitViewportZoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitViewportZoom)),
+      fitWidthZoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitWidthZoom)),
+    };
+  };
+
+  const [fitZooms, setFitZooms] = useState(getInitialFitZooms);
 
   useLayoutEffect(() => {
     setFitZooms(calculateFitZooms(isMobile));
