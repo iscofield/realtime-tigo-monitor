@@ -3,18 +3,19 @@
  * Multi-step wizard for initial configuration of Solar Tigo Viewer.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { useWizardState } from '../../hooks/useWizardState';
 import { getConfigStatus } from '../../api/config';
 import { WizardStepIndicator } from './WizardStepIndicator';
+import { WelcomeStep } from './steps/WelcomeStep';
 import { MqttConfigStep } from './steps/MqttConfigStep';
 import { TopologyStep } from './steps/TopologyStep';
 import { GenerateDownloadStep } from './steps/GenerateDownloadStep';
 import { DiscoveryStep } from './steps/DiscoveryStep';
 import { ValidationStep } from './steps/ValidationStep';
 import { ReviewSaveStep } from './steps/ReviewSaveStep';
-import type { WizardStep } from '../../types/config';
+import type { WizardStep, RestoreData } from '../../types/config';
 
 const containerStyle: CSSProperties = {
   minHeight: '100vh',
@@ -84,18 +85,53 @@ const secondaryButtonStyle: CSSProperties = {
   border: '1px solid #ccc',
 };
 
+const restoreBannerStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '8px',
+  padding: '10px 20px',
+  backgroundColor: '#e3f2fd',
+  color: '#1565c0',
+  fontSize: '13px',
+  borderBottom: '1px solid #bbdefb',
+};
+
+const restoreBannerIconStyle: CSSProperties = {
+  flexShrink: 0,
+};
+
+// Steps to skip in restore mode (panel data already in backup)
+const RESTORE_SKIP_STEPS: WizardStep[] = ['discovery', 'validation'];
+
 interface SetupWizardProps {
   onComplete: () => void;
+  initialRestoreData?: RestoreData;
 }
 
-export function SetupWizard({ onComplete }: SetupWizardProps) {
+export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps) {
   const wizardState = useWizardState();
   const [isLoading, setIsLoading] = useState(true);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(true);
 
   // Check config status on mount
   useEffect(() => {
     const checkStatus = async () => {
+      // If we have initial restore data, populate and skip welcome
+      if (initialRestoreData) {
+        wizardState.populateFromBackup(initialRestoreData);
+        setShowWelcome(false);
+        setIsLoading(false);
+        return;
+      }
+
+      // Skip config check if restoring from backup (already populated)
+      if (wizardState.state.restoredFromBackup) {
+        setShowWelcome(false);
+        setIsLoading(false);
+        return;
+      }
+
       try {
         const status = await getConfigStatus();
         if (status.configured && status.has_panels) {
@@ -110,13 +146,15 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
       // Check for persisted wizard state
       if (wizardState.hasPersistedState) {
         setShowResumeDialog(true);
+        setShowWelcome(false);
       }
 
       setIsLoading(false);
     };
 
     checkStatus();
-  }, [onComplete, wizardState.hasPersistedState]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onComplete, initialRestoreData]);
 
   const handleResume = () => {
     wizardState.restoreState();
@@ -127,6 +165,44 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     wizardState.clearState();
     setShowResumeDialog(false);
   };
+
+  // Welcome screen handlers
+  const handleFreshSetup = useCallback(() => {
+    setShowWelcome(false);
+  }, []);
+
+  const handleRestoreFromWelcome = useCallback((data: RestoreData) => {
+    wizardState.populateFromBackup(data);
+    setShowWelcome(false);
+  }, [wizardState]);
+
+  // Step navigation with restore mode skipping
+  const handleGoNext = useCallback(() => {
+    if (wizardState.state.restoredFromBackup) {
+      // Find next non-skipped step
+      const STEP_ORDER: WizardStep[] = [
+        'mqtt-config',
+        'system-topology',
+        'generate-download',
+        'discovery',
+        'validation',
+        'review-save',
+      ];
+      const currentIndex = STEP_ORDER.indexOf(wizardState.state.currentStep);
+      let nextIndex = currentIndex + 1;
+
+      while (nextIndex < STEP_ORDER.length && RESTORE_SKIP_STEPS.includes(STEP_ORDER[nextIndex])) {
+        nextIndex++;
+      }
+
+      if (nextIndex < STEP_ORDER.length) {
+        wizardState.goToStep(STEP_ORDER[nextIndex]);
+      }
+    } else {
+      wizardState.goNext();
+    }
+    wizardState.saveState();
+  }, [wizardState]);
 
   const handleStepClick = (step: WizardStep) => {
     if (wizardState.canGoToStep(step)) {
@@ -164,6 +240,25 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
                 Start Over
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show welcome screen for initial entry
+  if (showWelcome) {
+    return (
+      <div style={containerStyle}>
+        <div style={cardStyle}>
+          <div style={headerStyle}>
+            <h1 style={titleStyle}>Solar Tigo Viewer Setup</h1>
+          </div>
+          <div style={contentStyle}>
+            <WelcomeStep
+              onFreshSetup={handleFreshSetup}
+              onRestore={handleRestoreFromWelcome}
+            />
           </div>
         </div>
       </div>
@@ -208,10 +303,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
               wizardState.setConfigDownloaded(true);
               wizardState.saveState();
             }}
-            onNext={() => {
-              wizardState.saveState();
-              wizardState.goNext();
-            }}
+            onNext={handleGoNext}
             onBack={wizardState.goBack}
           />
         );
@@ -257,6 +349,7 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
             topology={wizardState.state.systemTopology!}
             discoveredPanels={wizardState.state.discoveredPanels}
             translations={wizardState.state.translations}
+            restoreImageToken={wizardState.state.restoreImageToken}
             onComplete={() => {
               wizardState.clearState();
               onComplete();
@@ -270,6 +363,18 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
     }
   };
 
+  // Restore banner component
+  const RestoreBanner = () => (
+    <div style={restoreBannerStyle}>
+      <span style={restoreBannerIconStyle}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" strokeWidth="2" fill="none" />
+        </svg>
+      </span>
+      <span>Restored from backup - review settings before saving</span>
+    </div>
+  );
+
   return (
     <div style={containerStyle}>
       <div style={cardStyle}>
@@ -278,10 +383,13 @@ export function SetupWizard({ onComplete }: SetupWizardProps) {
           <p style={subtitleStyle}>Configure your Tigo solar monitoring system</p>
         </div>
 
+        {wizardState.state.restoredFromBackup && <RestoreBanner />}
+
         <WizardStepIndicator
           currentStep={wizardState.state.currentStep}
           furthestStep={wizardState.state.furthestStep}
           onStepClick={handleStepClick}
+          restoredFromBackup={wizardState.state.restoredFromBackup}
         />
 
         <div style={contentStyle}>

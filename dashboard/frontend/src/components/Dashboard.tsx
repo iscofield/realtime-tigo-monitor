@@ -16,7 +16,9 @@ import { SystemWarningBanner } from './SystemWarningBanner';
 import { TabNavigation, type TabType } from './TabNavigation';
 import { TableView } from './TableView';
 import { ZoomControls } from './ZoomControls';
+import { SettingsMenu } from './SettingsMenu';
 import type { DisplayMode } from './PanelOverlay';
+import type { RestoreData } from '../types/config';
 
 // Lazy load the Layout Editor for code splitting
 const LayoutEditor = lazy(() => import('./layout-editor/LayoutEditor'));
@@ -55,10 +57,21 @@ const mainStyle: CSSProperties = {
 const modeToggleContainerStyle: CSSProperties = {
   display: 'flex',
   justifyContent: 'center',
+  alignItems: 'center',
   padding: '10px',
   backgroundColor: '#fff',
   borderBottom: '1px solid #e0e0e0',
   flexShrink: 0,
+  position: 'relative',
+  overflow: 'visible',
+};
+
+const settingsContainerStyle: CSSProperties = {
+  position: 'absolute',
+  right: '10px',
+  top: '50%',
+  transform: 'translateY(-50%)',
+  zIndex: 1001,
 };
 
 const modeToggleMobileStyle: CSSProperties = {
@@ -92,7 +105,12 @@ const editorLoadingStyle: CSSProperties = {
   fontSize: '14px',
 };
 
-export function Dashboard() {
+export interface DashboardProps {
+  onRestore?: (data: RestoreData) => void;
+  onRerunWizard?: () => void;
+}
+
+export function Dashboard({ onRestore, onRerunWizard }: DashboardProps = {}) {
   const [mode, setMode] = useState<DisplayMode>(initialState.mode);
   const [activeTab, setActiveTab] = useState<TabType>(initialState.view);
   const { panels, status, error, retry } = useWebSocket();
@@ -196,6 +214,11 @@ export function Dashboard() {
           <>
             <div style={isMobile ? modeToggleMobileStyle : modeToggleContainerStyle}>
               <ModeToggle mode={mode} setMode={setMode} />
+              {onRestore && onRerunWizard && !isMobile && (
+                <div style={settingsContainerStyle}>
+                  <SettingsMenu onRestore={onRestore} onRerunWizard={onRerunWizard} />
+                </div>
+              )}
             </div>
             {isMobile && <div style={modeToggleSpacerStyle} />}
           </>
