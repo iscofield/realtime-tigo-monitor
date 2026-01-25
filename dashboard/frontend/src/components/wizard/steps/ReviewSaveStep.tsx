@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import { saveSystemConfig, savePanelsConfig } from '../../../api/config';
+import { commitRestoreImage } from '../../../api/backup';
 import type { MQTTConfig, SystemConfig, DiscoveredPanel } from '../../../types/config';
 import { UNASSIGNED_MARKER } from './mapping';
 
@@ -126,6 +127,7 @@ interface ReviewSaveStepProps {
   topology: SystemConfig;
   discoveredPanels: Record<string, DiscoveredPanel>;
   translations: Record<string, string>;
+  restoreImageToken?: string;
   onComplete: () => void;
   onBack: () => void;
 }
@@ -135,6 +137,7 @@ export function ReviewSaveStep({
   topology,
   discoveredPanels,
   translations,
+  restoreImageToken,
   onComplete,
   onBack,
 }: ReviewSaveStepProps) {
@@ -187,6 +190,16 @@ export function ReviewSaveStep({
         display_label: p.label,  // Map frontend 'label' to backend 'display_label'
       })) as any[];
       await savePanelsConfig({ version: 1, panels: backendPanels });
+
+      // Commit restore image if present (from backup restore flow)
+      if (restoreImageToken) {
+        try {
+          await commitRestoreImage(restoreImageToken);
+        } catch (imageError) {
+          console.warn('Failed to commit restore image:', imageError);
+          // Don't fail the whole save - config is already saved
+        }
+      }
 
       setSaved(true);
     } catch (e) {
