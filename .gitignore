@@ -47,7 +47,11 @@ config/.layout-history/
 # User-uploaded layout images are git-ignored
 dashboard/backend/assets/layout.png
 dashboard/backend/assets/layout.backup.png
+dashboard/backend/assets/layout.reset-backup.png
 dashboard/backend/assets/.layout.*
+
+# Factory reset backups (created during reset operation)
+config/*.reset-backup
 
 # Legacy config backup (created during migration)
 config/panel_mapping.json.backup
