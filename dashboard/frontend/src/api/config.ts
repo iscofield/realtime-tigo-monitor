@@ -363,3 +363,30 @@ export async function updatePanelPositions(
     body: JSON.stringify({ panels: updatedPanels }),
   });
 }
+
+/**
+ * Reset configuration to factory defaults.
+ * Deletes all config files and optionally the layout image.
+ */
+export async function resetConfig(deleteImage: boolean = true): Promise<{
+  success: boolean;
+  message: string;
+  deleted: {
+    system_yaml: boolean;
+    panels_yaml: boolean;
+    layout_yaml: boolean;
+    layout_image: boolean;
+  };
+}> {
+  const url = `${API_BASE}/api/config/reset?delete_image=${deleteImage}`;
+  const response = await fetch(url, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `Reset failed: ${response.status}`);
+  }
+
+  return response.json();
+}

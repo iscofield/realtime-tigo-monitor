@@ -351,6 +351,73 @@ class ConfigService:
                 error_code="delete_error"
             )
 
+    def reset_config(self, delete_image: bool = True) -> dict:
+        """Reset all configuration to factory defaults.
+
+        Deletes system.yaml, panels.yaml, layout.yaml, and optionally layout.png.
+        Creates backups before deletion.
+
+        Args:
+            delete_image: Whether to also delete the layout image
+
+        Returns:
+            Dict with deleted file information
+
+        Raises:
+            ConfigServiceError: If reset fails
+        """
+        deleted = {
+            "system_yaml": False,
+            "panels_yaml": False,
+            "layout_yaml": False,
+            "layout_image": False,
+        }
+
+        # Delete each config file with backup
+        for path, key in [
+            (self.system_yaml_path, "system_yaml"),
+            (self.panels_yaml_path, "panels_yaml"),
+            (self.layout_yaml_path, "layout_yaml"),
+        ]:
+            if path.exists():
+                try:
+                    # Create backup
+                    backup_path = path.with_suffix(path.suffix + ".reset-backup")
+                    import shutil
+                    shutil.copy2(path, backup_path)
+                    logger.debug(f"Created reset backup: {backup_path}")
+
+                    # Delete original
+                    path.unlink()
+                    deleted[key] = True
+                    logger.info(f"Deleted config file: {path}")
+                except OSError as e:
+                    raise ConfigServiceError(
+                        f"Failed to delete {path}: {e}",
+                        error_code="delete_error"
+                    )
+
+        # Optionally delete layout image
+        if delete_image and self.layout_image_path.exists():
+            try:
+                # Backup
+                backup_path = self.assets_dir / "layout.reset-backup.png"
+                import shutil
+                shutil.copy2(self.layout_image_path, backup_path)
+                logger.debug(f"Created image reset backup: {backup_path}")
+
+                # Delete
+                self.layout_image_path.unlink()
+                deleted["layout_image"] = True
+                logger.info(f"Deleted layout image: {self.layout_image_path}")
+            except OSError as e:
+                raise ConfigServiceError(
+                    f"Failed to delete layout image: {e}",
+                    error_code="delete_error"
+                )
+
+        return deleted
+
     def load_legacy_json(self) -> Optional[PanelsConfig]:
         """Load legacy panel_mapping.json and convert to PanelsConfig.
 
