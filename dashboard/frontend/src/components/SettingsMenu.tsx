@@ -4,8 +4,10 @@
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ChangeEvent } from 'react';
 import { exportBackup, restoreBackup } from '../api/backup';
+import { resetConfig } from '../api/config';
 import { downloadBlob } from '../utils/download';
 import type { RestoreData } from '../types/config';
 
@@ -183,6 +185,17 @@ const dialogConfirmStyle: CSSProperties = {
   cursor: 'pointer',
 };
 
+const dialogDestructiveStyle: CSSProperties = {
+  ...dialogConfirmStyle,
+  backgroundColor: '#c53030',
+};
+
+const dialogDestructiveDisabledStyle: CSSProperties = {
+  ...dialogDestructiveStyle,
+  backgroundColor: '#9ca3af',
+  cursor: 'not-allowed',
+};
+
 interface MenuItem {
   id: string;
   label: string;
@@ -197,6 +210,8 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [pendingRestoreData, setPendingRestoreData] = useState<RestoreData | null>(null);
+  const [showResetConfirmDialog, setShowResetConfirmDialog] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
@@ -222,6 +237,7 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
       if (event.key === 'Escape') {
         setIsOpen(false);
         setShowConfirmDialog(false);
+        setShowResetConfirmDialog(false);
       }
     };
 
@@ -280,20 +296,40 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
     setPendingRestoreData(null);
   }, []);
 
-  const handleRerunWizard = useCallback(() => {
+  const handleRerunWizardClick = useCallback(() => {
     setIsOpen(false);
-    onRerunWizard();
+    setShowResetConfirmDialog(true);
+  }, []);
+
+  const handleConfirmReset = useCallback(async () => {
+    setIsResetting(true);
+    setError(null);
+
+    try {
+      // Reset all configuration files
+      await resetConfig(true);
+      // Close dialog and navigate to wizard
+      setShowResetConfirmDialog(false);
+      onRerunWizard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
+      setIsResetting(false);
+    }
   }, [onRerunWizard]);
+
+  const handleCancelReset = useCallback(() => {
+    setShowResetConfirmDialog(false);
+  }, []);
 
   const menuItems: MenuItem[] = [
     { id: 'backup', label: 'Backup Configuration', onClick: handleBackup },
     { id: 'restore', label: 'Restore Configuration', onClick: handleRestoreClick },
     { id: 'divider', label: '', onClick: () => {} },
-    { id: 'wizard', label: 'Re-run Setup Wizard', onClick: handleRerunWizard, variant: 'warning' },
+    { id: 'wizard', label: 'Re-run Setup Wizard', onClick: handleRerunWizardClick, variant: 'warning' },
   ];
 
   return (
-    <div ref={menuRef} style={containerStyle}>
+    <div ref={menuRef} style={containerStyle} data-testid="settings-menu">
       <button
         style={isHovered || isOpen ? buttonHoverStyle : buttonStyle}
         onMouseEnter={() => setIsHovered(true)}
@@ -304,6 +340,7 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
         aria-label="Settings menu"
         aria-haspopup="true"
         aria-expanded={isOpen}
+        data-testid="settings-menu-button"
       >
         <GearIcon />
       </button>
@@ -314,10 +351,11 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
         accept=".zip"
         style={hiddenInputStyle}
         onChange={handleFileSelected}
+        data-testid="restore-file-input"
       />
 
       {isOpen && (
-        <div style={menuStyle} role="menu">
+        <div style={menuStyle} role="menu" data-testid="settings-dropdown">
           {menuItems.map((item) => {
             if (item.id === 'divider') {
               return <div key={item.id} style={dividerStyle} />;
@@ -335,6 +373,7 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
                 onMouseLeave={() => setHoveredItem(null)}
                 onClick={item.onClick}
                 role="menuitem"
+                data-testid={`settings-menu-${item.id}`}
               >
                 {item.label}
               </button>
@@ -343,7 +382,8 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
         </div>
       )}
 
-      {error && (
+      {/* Portal-rendered elements to escape transform-affected parent */}
+      {error && createPortal(
         <div
           style={{
             position: 'fixed',
@@ -373,22 +413,23 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
           >
             Dismiss
           </button>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {showConfirmDialog && pendingRestoreData && (
-        <div style={overlayStyle} onClick={handleCancelRestore}>
-          <div style={dialogStyle} onClick={(e) => e.stopPropagation()}>
+      {showConfirmDialog && pendingRestoreData && createPortal(
+        <div style={overlayStyle} onClick={handleCancelRestore} data-testid="restore-confirm-overlay">
+          <div style={dialogStyle} onClick={(e) => e.stopPropagation()} data-testid="restore-confirm-dialog">
             <div style={dialogTitleStyle}>Restore Configuration?</div>
             <div style={dialogTextStyle}>
               This backup contains:
             </div>
             <ul style={{ ...dialogTextStyle, paddingLeft: '20px', margin: '8px 0' }}>
-              <li>{pendingRestoreData.manifest.panel_count} panels</li>
+              <li data-testid="restore-panel-count">{pendingRestoreData.manifest.panel_count} panels</li>
               <li>Created: {new Date(pendingRestoreData.manifest.created_at).toLocaleString()}</li>
-              {pendingRestoreData.has_image && <li>Layout image included</li>}
+              {pendingRestoreData.has_image && <li data-testid="restore-has-image">Layout image included</li>}
               {pendingRestoreData.manifest.contains_sensitive_data && (
-                <li style={{ color: '#c53030' }}>Contains MQTT credentials</li>
+                <li style={{ color: '#c53030' }} data-testid="restore-has-credentials">Contains MQTT credentials</li>
               )}
             </ul>
             <div style={dialogWarningStyle}>
@@ -396,15 +437,56 @@ export function SettingsMenu({ onRestore, onRerunWizard }: SettingsMenuProps) {
               setup wizard to review and apply the configuration.
             </div>
             <div style={dialogButtonsStyle}>
-              <button style={dialogCancelStyle} onClick={handleCancelRestore}>
+              <button style={dialogCancelStyle} onClick={handleCancelRestore} data-testid="restore-cancel-button">
                 Cancel
               </button>
-              <button style={dialogConfirmStyle} onClick={handleConfirmRestore}>
+              <button style={dialogConfirmStyle} onClick={handleConfirmRestore} data-testid="restore-confirm-button">
                 Continue to Wizard
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+
+      {showResetConfirmDialog && createPortal(
+        <div style={overlayStyle} onClick={isResetting ? undefined : handleCancelReset} data-testid="reset-confirm-overlay">
+          <div style={dialogStyle} onClick={(e) => e.stopPropagation()} data-testid="reset-confirm-dialog">
+            <div style={dialogTitleStyle}>Factory Reset?</div>
+            <div style={dialogTextStyle}>
+              This will erase all settings and restart the setup wizard from scratch:
+            </div>
+            <ul style={{ ...dialogTextStyle, paddingLeft: '20px', margin: '8px 0' }}>
+              <li>All MQTT connection settings</li>
+              <li>CCA/system topology configuration</li>
+              <li>Panel positions and mappings</li>
+              <li>Layout image</li>
+            </ul>
+            <div style={dialogWarningStyle}>
+              <strong>Recommendation:</strong> Take a backup first using "Backup Configuration"
+              so you can restore your settings if needed.
+            </div>
+            <div style={dialogButtonsStyle}>
+              <button
+                style={dialogCancelStyle}
+                onClick={handleCancelReset}
+                disabled={isResetting}
+                data-testid="reset-cancel-button"
+              >
+                Cancel
+              </button>
+              <button
+                style={isResetting ? dialogDestructiveDisabledStyle : dialogDestructiveStyle}
+                onClick={handleConfirmReset}
+                disabled={isResetting}
+                data-testid="reset-confirm-button"
+              >
+                {isResetting ? 'Resetting...' : 'Erase All Settings'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

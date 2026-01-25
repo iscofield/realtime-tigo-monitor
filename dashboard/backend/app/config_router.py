@@ -342,3 +342,28 @@ async def migrate_from_legacy(mqtt_config: dict):
         }
     except ConfigServiceError as e:
         raise error_response(400 if e.error_code == "no_config" else 500, e.error_code, e.message)
+
+
+@router.delete("/reset")
+async def reset_config(delete_image: bool = True):
+    """Reset all configuration to factory defaults.
+
+    Deletes all YAML config files and optionally the layout image.
+    Backups are created before deletion.
+
+    Query params:
+        delete_image: Whether to also delete the layout image (default: true)
+
+    Returns:
+        Information about what was deleted
+    """
+    service = get_config_service()
+    try:
+        deleted = service.reset_config(delete_image=delete_image)
+        return {
+            "success": True,
+            "message": "Configuration reset to factory defaults",
+            "deleted": deleted
+        }
+    except ConfigServiceError as e:
+        raise error_response(500, e.error_code, e.message)
