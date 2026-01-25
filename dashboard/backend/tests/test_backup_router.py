@@ -381,3 +381,174 @@ class TestEndpointSecurity:
             assert response.status_code == 400
             data = response.json()
             assert data["detail"]["error"] == "path_traversal_detected"
+
+
+class TestPanelPositionPreservation:
+    """Tests for panel position preservation during backup/restore."""
+
+    @pytest.fixture
+    def test_backup_fixture_path(self):
+        """Path to the test backup fixture with positions."""
+        return Path(__file__).parent / "fixtures" / "test-backup-69-panels.zip"
+
+    def test_fixture_has_positions(self, test_backup_fixture_path):
+        """Verify the test fixture has panel positions."""
+        assert test_backup_fixture_path.exists(), f"Fixture not found: {test_backup_fixture_path}"
+
+        with zipfile.ZipFile(test_backup_fixture_path, 'r') as zf:
+            assert "panels.yaml" in zf.namelist()
+            panels_data = yaml.safe_load(zf.read("panels.yaml"))
+
+            # Verify we have panels
+            assert "panels" in panels_data
+            assert len(panels_data["panels"]) == 69
+
+            # Verify panels have positions
+            panels_with_positions = sum(
+                1 for p in panels_data["panels"] if p.get("position") is not None
+            )
+            assert panels_with_positions == 69, (
+                f"Expected 69 panels with positions, got {panels_with_positions}"
+            )
+
+            # Verify position structure
+            first_panel = panels_data["panels"][0]
+            assert "position" in first_panel
+            assert first_panel["position"] is not None
+            assert "x_percent" in first_panel["position"]
+            assert "y_percent" in first_panel["position"]
+
+    def test_restore_parses_positions(self, client, test_backup_fixture_path):
+        """Test that restore endpoint correctly parses panel positions."""
+        if not test_backup_fixture_path.exists():
+            pytest.skip("Test fixture not found")
+
+        backup_data = test_backup_fixture_path.read_bytes()
+
+        response = client.post(
+            "/api/backup/restore",
+            files={"file": ("backup.zip", backup_data, "application/zip")}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+        # Verify panels are returned with positions
+        panels = data["panels"]
+        assert len(panels) == 69
+
+        # Check that positions are included in the response
+        panels_with_positions = sum(
+            1 for p in panels if p.get("position") is not None
+        )
+        assert panels_with_positions == 69, (
+            f"Expected 69 panels with positions in response, got {panels_with_positions}"
+        )
+
+        # Verify position data structure
+        first_panel = panels[0]
+        assert first_panel["position"] is not None
+        assert "x_percent" in first_panel["position"]
+        assert "y_percent" in first_panel["position"]
+
+        # Verify specific known values from the fixture
+        # Panel 4-C3F23CR should be at x=35.5, y=11.75
+        panel_a1 = next((p for p in panels if p["serial"] == "4-C3F23CR"), None)
+        assert panel_a1 is not None, "Panel 4-C3F23CR not found"
+        assert panel_a1["position"]["x_percent"] == 35.5
+        assert panel_a1["position"]["y_percent"] == 11.75
+
+    def test_backup_zip_with_positions_fixture(self):
+        """Create a backup ZIP fixture with positions for other tests."""
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zf:
+            manifest = {
+                "backup_version": BACKUP_VERSION,
+                "app_version": "1.0.0",
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "panel_count": 2,
+                "has_layout_image": False,
+            }
+            zf.writestr("manifest.json", json.dumps(manifest))
+
+            panels = {
+                "panels": [
+                    {
+                        "serial": "TEST-001",
+                        "cca": "primary",
+                        "string": "A",
+                        "tigo_label": "A1",
+                        "display_label": "A1",
+                        "position": {
+                            "x_percent": 25.5,
+                            "y_percent": 10.0
+                        }
+                    },
+                    {
+                        "serial": "TEST-002",
+                        "cca": "primary",
+                        "string": "A",
+                        "tigo_label": "A2",
+                        "display_label": "A2",
+                        "position": {
+                            "x_percent": 25.5,
+                            "y_percent": 15.0
+                        }
+                    }
+                ],
+                "translations": {},
+            }
+            zf.writestr("panels.yaml", yaml.dump(panels))
+
+        return zip_buffer.getvalue()
+
+    def test_restore_preserves_position_values(self, client):
+        """Test that specific position values are preserved through restore."""
+        # Create backup with known position values
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zf:
+            manifest = {
+                "backup_version": BACKUP_VERSION,
+                "app_version": "1.0.0",
+                "created_at": "2024-01-01T00:00:00+00:00",
+                "panel_count": 1,
+                "has_layout_image": False,
+            }
+            zf.writestr("manifest.json", json.dumps(manifest))
+
+            panels = {
+                "panels": [
+                    {
+                        "serial": "TEST-POS",
+                        "cca": "primary",
+                        "string": "A",
+                        "tigo_label": "A1",
+                        "display_label": "A1",
+                        "position": {
+                            "x_percent": 42.5,
+                            "y_percent": 73.25
+                        }
+                    }
+                ],
+                "translations": {},
+            }
+            zf.writestr("panels.yaml", yaml.dump(panels))
+
+        backup_data = zip_buffer.getvalue()
+
+        response = client.post(
+            "/api/backup/restore",
+            files={"file": ("backup.zip", backup_data, "application/zip")}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        panels = data["panels"]
+        assert len(panels) == 1
+
+        panel = panels[0]
+        assert panel["position"] is not None
+        assert panel["position"]["x_percent"] == 42.5
+        assert panel["position"]["y_percent"] == 73.25
