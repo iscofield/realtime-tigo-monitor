@@ -9,6 +9,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import VERSION
 from .config import get_settings
 from .panel_service import PanelService
 from .websocket_manager import ConnectionManager
@@ -153,7 +154,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Solar Tigo Viewer",
     description="Real-time solar panel monitoring visualization",
-    version="0.1.0",
+    version=VERSION,
     lifespan=lifespan,
 )
 
