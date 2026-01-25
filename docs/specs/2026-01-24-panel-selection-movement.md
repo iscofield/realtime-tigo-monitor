@@ -24,6 +24,8 @@ This feature completes FR-3.4 (Keyboard Positioning) and enhances FR-3.5 (Multi-
 - **Click-to-position mode ([WCAG 2.5.7](https://www.w3.org/WAI/WCAG22/Understanding/dragging-movements.html)):** A single-pointer alternative to drag positioning where users select a panel, then click a destination to move it. This would provide full WCAG 2.5.7 Level AA compliance. Arrow key movement partially addresses this accessibility need but requires panel selection first. Note: Full Level AA compliance for dragging operations is blocked until this feature is implemented.
 - **Real-time group drag preview:** Showing all selected panels moving during drag (currently they jump on drop)
 - **Haptic feedback preferences:** User setting to disable vibration
+- **Shift + Arrow keys (10px movement):** Phase 2 FR-3.4 specifies Shift+Arrow for larger movement increments. Deferred to avoid keyboard modifier conflicts with browser shortcuts and to keep v1 implementation simple.
+- **Tab/Shift+Tab panel cycling:** Phase 2 FR-3.4 specifies Tab/Shift+Tab for cycling selection between panels. This conflicts with FR-2.0's "Not trap focus" requirement (Tab must move focus out of the editor for accessibility). Deferred pending alternative key design (e.g., `]`/`[` or `J`/`K` for panel cycling).
 
 ## Functional Requirements
 
@@ -496,7 +498,7 @@ If `imageWidth` or `imageHeight` is 0, undefined, or NaN:
 
 ### Position Save Failures
 Position changes are auto-saved via the existing debounced save mechanism. If a save fails:
-- Existing behavior applies (error toast, retry logic from Phase 2 spec)
+- Existing behavior applies (error toast shown, user can retry manually)
 - Selection state is NOT affected by save failures
 - User can continue editing; changes remain in local state
 
@@ -508,7 +510,7 @@ If two users edit the same layout simultaneously:
 
 ### Out-of-Scope Error Scenarios
 The following error scenarios are handled by existing Phase 2 behavior and are not modified by this spec:
-- **Network disconnection during drag**: Local position state is retained; save retry logic from Phase 2 applies
+- **Network disconnection during drag**: Local position state is retained in React state and auto-saved to localStorage via the existing draft mechanism. Explicit save to server follows standard HTTP error handling (user sees error toast, can retry manually)
 - **Stale panel data**: If another user deletes a selected panel, selection references become stale (deferred to future real-time collaboration spec)
 - **Version mismatch**: Panel list changes by other users are handled by Phase 2's refresh mechanism
 
@@ -561,8 +563,9 @@ interface LayoutEditorState {
   updatePositions(updates: Record<string, PanelPosition>): void;
   // Convenience wrapper: updatePosition(serial, pos) is equivalent to updatePositions({ [serial]: pos })
   updatePosition(serial: string, position: PanelPosition): void;
-  updatePositionsWithoutHistory(updates: Record<string, PanelPosition>): void;
+  updatePositionsWithoutHistory(updates: Record<string, PanelPosition | null>): void;
   recordCurrentHistoryState(): void;
+  getPositionedSelection(): string[];  // Returns serials of positioned panels in selection
 }
 
 // The editor state is provided by the useLayoutEditor hook
@@ -787,9 +790,7 @@ if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
   // Canvas has focus (implicit from handler attachment), check for selected panels
   if (editor.selectedPanels.size > 0) {
     // Filter to only positioned panels (unpositioned panels have no coordinates to nudge)
-    const positionedSelection = [...editor.selectedPanels].filter(
-      s => editor.positions[s] != null
-    );
+    const positionedSelection = editor.getPositionedSelection();
     if (positionedSelection.length === 0) return;
 
     heldArrowKeys.current.add(e.key);  // Track for keyup coalescing
@@ -918,9 +919,7 @@ This block replaces the existing `editor.updatePosition(panel.serial, percentPos
 const percentPos = pixelToPercent(newPosition, { width: imageWidth, height: imageHeight });
 
 // Filter to only positioned panels (unpositioned sidebar panels have no coordinates)
-const positionedSelection = [...editor.selectedPanels].filter(
-  s => editor.positions[s] != null
-);
+const positionedSelection = editor.getPositionedSelection();
 
 if (editor.selectedPanels.has(panel.serial) && positionedSelection.length > 1) {
   // Group drag: apply same delta to all selected positioned panels
@@ -1086,7 +1085,7 @@ const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
 ### Edge Case Tests
 
-21. **Mixed selection with unpositioned panel**: Select a canvas panel and a sidebar panel, press ArrowRight → verify only the canvas panel moves (sidebar panel ignored)
+21. **Mixed selection with unpositioned panel**: Select a canvas panel and a sidebar panel, press ArrowRight → verify only the canvas panel moves (sidebar panel position unchanged), sidebar panel remains in selection set, info bar still shows "2 panels selected"
 22. **Arrow key at boundary**: Move panel to x_percent=100%, press ArrowRight → verify no movement occurs (panel stays at boundary), no error thrown
 23. **Snap offset in group drag**: Select 3 panels, drag leader so it snaps to align guide → verify all 3 panels shift by snap amount, relative positions preserved
 24. **Focus loss while holding arrow**: Select panel, hold ArrowDown, trigger blur (Alt+Tab, click other window, or switch tabs) → verify Ctrl+Z after returning undoes the movement (blur handler records history). Note: All blur scenarios should behave identically.
@@ -1097,6 +1096,7 @@ const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 26. **Canvas focus on panel click**: Click a panel → verify canvas element has focus (document.activeElement) and visible 2px blue outline appears
 27. **No arrow movement without focus**: Click panel to select it, press Tab to move focus away from canvas, press ArrowRight → verify panel does NOT move (position unchanged)
 28. **Focus indicator visibility**: Use Tab key to navigate to canvas → verify 2px blue outline visible per WCAG 2.4.7 (outline: 2px solid #4a90d9)
+29. **No focus trap**: With canvas focused, press Tab → verify focus moves to next focusable element outside the editor (e.g., Save button in toolbar). Shift+Tab → verify focus moves to previous focusable element. Canvas does NOT trap keyboard focus.
 
 ## Context / Documentation
 
@@ -1106,6 +1106,7 @@ const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 | `dashboard/frontend/src/components/layout-editor/LayoutEditor.tsx` | Keyboard handler, drag end logic, layout |
 | `dashboard/frontend/src/components/layout-editor/useLayoutEditor.ts` | selectPanel, updatePositions, selection state |
 | `dashboard/frontend/src/components/layout-editor/types.ts` | PanelPosition, snap types |
+| `dashboard/frontend/src/components/layout-editor/LayoutContext.tsx` | useLayoutContext hook (provides imageWidth, imageHeight) - existing from Phase 2 |
 | `docs/specs/2026-01-19-multi-user-config-phase2.md` | Parent spec (FR-3.4, FR-3.5) |
 
 ### Libraries Used
@@ -1117,11 +1118,34 @@ const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
 ---
 
-**Specification Version:** 1.8
+**Specification Version:** 1.9
 **Last Updated:** January 2026
 **Authors:** Claude (AI Assistant)
 
 ## Changelog
+
+### v1.9 (January 2026)
+**Summary:** ContextLoop review - 12 comments addressed for consistency and completeness
+
+**Interface/Implementation Fixes:**
+- Fixed `updatePositionsWithoutHistory` signature to accept `| null` matching implementation
+- Added `getPositionedSelection(): string[]` to `LayoutEditorState` interface
+
+**Code Consistency:**
+- Updated arrow key handler, group drag, and selection logic to use `editor.getPositionedSelection()` helper instead of inline filtering
+
+**Clarifications:**
+- Error Handling: Replaced "save retry logic from Phase 2" with accurate description of localStorage draft + manual retry behavior
+- Test 21: Expanded to verify sidebar panel remains in selection and info bar shows correct count
+- Added Test 29 for focus trap verification (FR-2.0 compliance)
+- Added `useLayoutContext` hook to Context/Documentation table
+
+**Scope Updates:**
+- Added Shift+Arrow (10px movement) to Deferred section with rationale
+- Added Tab/Shift+Tab panel cycling to Deferred section with conflict explanation
+
+**Known Limitations:**
+- Documented minor edge case: Ctrl+Z immediately after arrow keydown may create duplicate history state (functionally correct, low priority optimization)
 
 ### v1.8 (January 2026)
 **Summary:** ContextLoop review - 18 comments addressed for completeness and consistency
