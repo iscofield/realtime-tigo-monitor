@@ -52,3 +52,6 @@ dashboard/backend/assets/.layout.*
 # Legacy config backup (created during migration)
 config/panel_mapping.json.backup
 .worktrees/
+
+# Test fixtures (large backup files for testing)
+dashboard/backend/tests/fixtures/*.zip

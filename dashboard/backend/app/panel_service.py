@@ -326,6 +326,9 @@ class PanelService:
 
     def apply_mock_data(self) -> None:
         """Apply mock data to all panels (FR-2.3)."""
+        if self.panel_mapping is None:
+            logger.warning("Cannot apply mock data: no panel configuration loaded")
+            return
         settings = get_settings()
         for panel in self.panel_mapping.panels:
             self.update_panel(
