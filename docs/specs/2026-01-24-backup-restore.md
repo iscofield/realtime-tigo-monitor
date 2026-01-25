@@ -337,6 +337,8 @@ interface RestoreData {
 - "Restore Configuration" opens file picker
 - Confirmation dialog shown before restore proceeds
 - "Re-run Setup Wizard" navigates to wizard
+- 413 Payload Too Large response shows appropriate error toast
+- 500 Server Error response shows appropriate error toast
 
 #### FR-8.5: E2E Tests (Playwright MCP)
 
@@ -372,6 +374,7 @@ interface RestoreData {
 1. Upload a non-ZIP file → verify error message shown
 2. Upload a ZIP without manifest → verify specific error message
 3. Upload a ZIP with future backup_version → verify upgrade message shown
+4. Upload a file exceeding 20MB → verify 413 error message shown
 
 ## Non-Functional Requirements
 
@@ -825,11 +828,20 @@ dashboard/
 
 ---
 
-**Specification Version:** 1.7
+**Specification Version:** 1.8
 **Last Updated:** January 2026
 **Authors:** Ian
 
 ## Changelog
+
+### v1.8 (January 2026)
+**Summary:** Addressed 6 review comments (5 verifications, 1 test coverage gap)
+
+**Changes:**
+- FR-8.4.3: Added unit test cases for 413 and 500 HTTP error responses showing appropriate error toasts
+- FR-8.5.4: Added E2E test case for uploading files exceeding 20MB (413 error)
+
+**Rationale:** Review verified all previous changes were correct and identified missing test coverage for HTTP error handling that was added in v1.7.
 
 ### v1.7 (January 2026)
 **Summary:** Addressed 3 review comments — error handling robustness, security warning, and documentation structure
