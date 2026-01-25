@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/layout", tags=["layout"])
 
-# Maximum upload size: 10MB
-MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+# Maximum upload size: 15MB
+MAX_UPLOAD_SIZE = 15 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 
@@ -98,7 +98,7 @@ async def update_layout_config(request: LayoutUpdateRequest):
 async def upload_layout_image(file: UploadFile = File(...)):
     """Upload a new layout image (FR-1.1).
 
-    Accepts PNG, JPEG, or WebP images up to 10MB.
+    Accepts PNG, JPEG, or WebP images up to 15MB.
     Previous image is backed up before overwrite.
     """
     service = get_config_service()
@@ -123,7 +123,7 @@ async def upload_layout_image(file: UploadFile = File(...)):
         raise error_response(
             400,
             "file_too_large",
-            f"File exceeds 10MB limit. Size: {len(content) / (1024*1024):.1f}MB"
+            f"File exceeds 15MB limit. Size: {len(content) / (1024*1024):.1f}MB"
         )
 
     # Save image and get metadata
