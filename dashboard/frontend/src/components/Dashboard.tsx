@@ -63,6 +63,7 @@ const modeToggleContainerStyle: CSSProperties = {
   borderBottom: '1px solid #e0e0e0',
   flexShrink: 0,
   position: 'relative',
+  overflow: 'visible',
 };
 
 const settingsContainerStyle: CSSProperties = {
@@ -70,6 +71,7 @@ const settingsContainerStyle: CSSProperties = {
   right: '10px',
   top: '50%',
   transform: 'translateY(-50%)',
+  zIndex: 1001,
 };
 
 const modeToggleMobileStyle: CSSProperties = {
