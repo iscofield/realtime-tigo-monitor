@@ -96,6 +96,13 @@ const layoutContainerStyle: CSSProperties = {
   overflow: 'hidden',
 };
 
+const tableContainerStyle: CSSProperties = {
+  flexGrow: 1,
+  minHeight: 0,
+  overflowY: 'auto',
+  overflowX: 'hidden',
+};
+
 const editorLoadingStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -263,7 +270,9 @@ export function Dashboard({ onRestore, onRerunWizard }: DashboardProps = {}) {
             />
           </div>
         ) : activeTab === 'table' ? (
-          <TableView panels={panels} />
+          <div style={tableContainerStyle}>
+            <TableView panels={panels} />
+          </div>
         ) : (
           <Suspense fallback={<div style={editorLoadingStyle}>Loading editor...</div>}>
             <LayoutEditor onClose={() => setActiveTab('layout')} />
