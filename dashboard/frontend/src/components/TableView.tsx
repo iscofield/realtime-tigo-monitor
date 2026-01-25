@@ -91,7 +91,7 @@ const COLUMN_DEFINITIONS: ColumnDef[] = [
   { key: 'tigo_label', label: 'Tigo ID', shortLabel: 'Tigo' },
   { key: 'node_id', label: 'Node ID', shortLabel: 'Node' },
   { key: 'sn', label: 'Serial', shortLabel: 'SN' },
-  { key: 'actual_system', label: 'CCA', shortLabel: 'CCA', format: (v) => v === 'primary' ? 'P' : v === 'secondary' ? 'S' : '—' },
+  { key: 'actual_system', label: 'CCA', shortLabel: 'CCA', format: (v) => v ? String(v).charAt(0).toUpperCase() + String(v).slice(1) : '—' },
   { key: 'voltage_in', label: 'V In', shortLabel: 'Vin', format: (v) => v != null ? `${(v as number).toFixed(1)}` : '—' },
   { key: 'voltage_out', label: 'V Out', shortLabel: 'Vout', format: (v) => v != null ? `${(v as number).toFixed(1)}` : '—' },
   { key: 'current_in', label: 'A In', shortLabel: 'Ain', format: (v) => v != null ? `${(v as number).toFixed(2)}` : '—' },
