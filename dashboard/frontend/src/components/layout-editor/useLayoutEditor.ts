@@ -388,6 +388,15 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     return panels.filter(p => positions[p.serial] == null);
   }, [panels, positions]);
 
+  // Refresh layout config (e.g., after image upload)
+  const refreshLayoutConfig = useCallback(async () => {
+    try {
+      const config = await getLayoutConfig();
+      setLayoutConfig(config);
+    } catch (err) {
+      console.error('Failed to refresh layout config:', err);
+    }
+  }, []);
 
   return {
     // State
@@ -419,6 +428,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     deselectAll,
     getPositionedSelection,
     save,
+    refreshLayoutConfig,
 
     // Undo/Redo
     canUndo,
