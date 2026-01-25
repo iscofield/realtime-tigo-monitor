@@ -296,6 +296,27 @@ git push
 - After completing and testing a feature, proactively offer to commit and push
 - Example: "The collapsible table feature is complete and tested. Would you like me to commit and push these changes?"
 
+### Parallel Development with Worktrees
+
+For spec implementations or parallel Claude sessions, use git worktrees to prevent conflicts:
+
+```bash
+# Create isolated worktree for a spec implementation
+git worktree add -b implement/feature-name .worktrees/implement-feature-name main
+
+# Work in the worktree
+cd .worktrees/implement-feature-name
+docker compose -f dashboard/docker-compose.yml up --build -d
+
+# After completion, merge and clean up
+cd ../..
+git merge implement/feature-name
+git worktree remove .worktrees/implement-feature-name
+git branch -d implement/feature-name
+```
+
+See `docs/worktree-support.md` for project-specific worktree configuration.
+
 ## Restricted Files
 
 - **`docs/TODOs.md`** - Do NOT modify this file. Only the user should edit it. You may commit it when the user has made changes, but never add, remove, or change its contents.
