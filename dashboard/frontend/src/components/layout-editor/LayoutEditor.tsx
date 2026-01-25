@@ -115,6 +115,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
   const [activeGuides, setActiveGuides] = useState<AlignmentGuide[]>([]);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [canvasFocused, setCanvasFocused] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -334,20 +335,23 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
     if (!file) return;
 
     setIsUploading(true);
+    setUploadError(null);
 
     try {
       await uploadLayoutImage(file);
-      // Force reload to get new image dimensions
-      window.location.reload();
-    } catch {
-      // Error handled by reload or user can retry
+      // Refresh layout config to get new image hash (for cache busting)
+      await editor.refreshLayoutConfig();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      setUploadError(message);
+      console.error('Image upload failed:', err);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
     }
-  }, []);
+  }, [editor]);
 
   // Canvas panel click handler - focuses canvas and toggles selection
   const handlePanelClick = useCallback((serial: string) => {
@@ -701,6 +705,37 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
             </span>
           </div>
 
+          {/* Upload error banner */}
+          {uploadError && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 16px',
+                backgroundColor: '#5c2020',
+                color: '#ffaaaa',
+                fontSize: '13px',
+                borderBottom: '1px solid #7a3030',
+              }}
+              role="alert"
+            >
+              <span>Upload failed: {uploadError}</span>
+              <button
+                onClick={() => setUploadError(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#ffaaaa',
+                  cursor: 'pointer',
+                  padding: '4px',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           <div style={editorAreaStyle}>
             <div style={canvasContainerStyle}>
               <div
@@ -717,7 +752,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
                 onBlur={() => setCanvasFocused(false)}
               >
                 <img
-                  src={getLayoutImageUrl()}
+                  src={`${getLayoutImageUrl()}${editor.layoutConfig?.image_hash ? `?v=${editor.layoutConfig.image_hash}` : ''}`}
                   alt="Layout"
                   style={imageStyle}
                 />
