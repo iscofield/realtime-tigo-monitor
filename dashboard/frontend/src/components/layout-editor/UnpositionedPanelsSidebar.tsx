@@ -11,7 +11,8 @@ import { UnpositionedPanel } from './DraggablePanel';
 interface UnpositionedPanelsSidebarProps {
   panels: EditorPanel[];
   selectedPanels: Set<string>;
-  onPanelClick: (serial: string, addToSelection: boolean) => void;
+  onPanelClick: (serial: string) => void;
+  activeDragId: string | null;  // for click vs drag discrimination
   onAutoArrange: () => void;
 }
 
@@ -125,6 +126,7 @@ export function UnpositionedPanelsSidebar({
   panels,
   selectedPanels,
   onPanelClick,
+  activeDragId,
   onAutoArrange,
 }: UnpositionedPanelsSidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -219,6 +221,7 @@ export function UnpositionedPanelsSidebar({
               key={panel.serial}
               panel={panel}
               isSelected={selectedPanels.has(panel.serial)}
+              isBeingDragged={activeDragId === panel.serial}
               onClick={onPanelClick}
             />
           ))
