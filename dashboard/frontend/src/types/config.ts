@@ -142,6 +142,9 @@ export interface WizardState {
   translations: Record<string, string>;  // tigo_label -> display_label
   validationResults: MatchResult[] | null;
   configDownloaded: boolean;
+  // Restore-related fields
+  restoredFromBackup: boolean;
+  restoreImageToken?: string;
 }
 
 // Persisted state wrapper with versioning
@@ -272,4 +275,36 @@ export interface LayoutDraft {
 export interface EditHistory {
   states: Record<string, PanelPosition | null>[];
   currentIndex: number;
+}
+
+// Backup/Restore types
+
+// Manifest stored in backup ZIP
+export interface BackupManifest {
+  backup_version: number;
+  app_version: string;
+  created_at: string;  // ISO timestamp
+  panel_count: number;
+  has_layout_image: boolean;
+  contains_sensitive_data: boolean;
+  layout_image_hash?: string;
+}
+
+// Data returned from backup restore endpoint
+export interface RestoreData {
+  success: boolean;
+  manifest: BackupManifest;
+  system: SystemConfig | null;
+  panels: Panel[];
+  layout: LayoutConfig | null;
+  has_image: boolean;
+  image_token?: string;
+}
+
+// Image commit response
+export interface RestoreImageCommitResponse {
+  success: boolean;
+  width: number;
+  height: number;
+  hash: string;
 }

@@ -16,6 +16,7 @@ import {
 import type { DragEndEvent, DragMoveEvent, DragStartEvent } from '@dnd-kit/core';
 import type { AlignmentGuide, PanelPosition } from '../../types/config';
 import type { EditorPanel } from './types';
+import { Info } from 'lucide-react';
 import { calculateSnap, pixelToPercent, buildSpatialIndex, getStringColor } from './types';
 import { useLayoutEditor } from './useLayoutEditor';
 import { EditorToolbar } from './EditorToolbar';
@@ -114,8 +115,13 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
   const [activeGuides, setActiveGuides] = useState<AlignmentGuide[]>([]);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [canvasFocused, setCanvasFocused] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+
+  // Ref to track held arrow keys for undo coalescing (persists across renders)
+  const heldArrowKeys = useRef<Set<string>>(new Set());
 
   // Touch sensor with delay to prevent scroll conflicts
   const mouseSensor = useSensor(MouseSensor, {
@@ -149,9 +155,25 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
 
   // Handle drag start
   const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveDragId(event.active.id as string);
+    const draggedSerial = event.active.id as string;
+    setActiveDragId(draggedSerial);
     setActiveGuides([]);
-  }, []);
+
+    // Clear selection if dragging an unselected panel
+    if (!editor.selectedPanels.has(draggedSerial)) {
+      editor.deselectAll();
+    }
+
+    // Haptic feedback on touch drag start (FR-1.6.1)
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try {
+        navigator.vibrate(50);
+      } catch (e) {
+        // Some browsers throw in certain contexts (e.g., iframe restrictions)
+        console.debug('Haptic feedback unavailable', e);
+      }
+    }
+  }, [editor]);
 
   // Handle drag move - calculate snap and guides
   const handleDragMove = useCallback(
@@ -245,6 +267,48 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
 
       // Convert to percentage and clamp
       const percentPos = pixelToPercent(newPosition, { width: imageWidth, height: imageHeight });
+
+      // Filter to only positioned panels (unpositioned sidebar panels have no coordinates)
+      const positionedSelection = editor.getPositionedSelection();
+
+      if (editor.selectedPanels.has(panel.serial) && positionedSelection.length > 1) {
+        // Group drag: apply same delta to all selected positioned panels
+        const oldPos = editor.positions[panel.serial];
+        if (oldPos) {
+          const deltaX = percentPos.x_percent - oldPos.x_percent;
+          const deltaY = percentPos.y_percent - oldPos.y_percent;
+
+          // Compute max allowable delta so no panel exceeds bounds
+          let clampedDeltaX = deltaX;
+          let clampedDeltaY = deltaY;
+          for (const serial of positionedSelection) {
+            const pos = editor.positions[serial]!;  // Safe: filtered above
+            const newX = pos.x_percent + deltaX;
+            const newY = pos.y_percent + deltaY;
+            if (newX < 0) clampedDeltaX = Math.max(clampedDeltaX, -pos.x_percent);
+            if (newX > 100) clampedDeltaX = Math.min(clampedDeltaX, 100 - pos.x_percent);
+            if (newY < 0) clampedDeltaY = Math.max(clampedDeltaY, -pos.y_percent);
+            if (newY > 100) clampedDeltaY = Math.min(clampedDeltaY, 100 - pos.y_percent);
+          }
+
+          const updates: Record<string, PanelPosition> = {};
+          for (const serial of positionedSelection) {
+            const pos = editor.positions[serial]!;  // Safe: filtered above
+            updates[serial] = {
+              x_percent: pos.x_percent + clampedDeltaX,
+              y_percent: pos.y_percent + clampedDeltaY,
+            };
+          }
+          editor.updatePositions(updates);
+          return; // Skip single-panel update
+        } else {
+          // Defensive: panel in selection but has no position entry (should not happen for canvas-dragged panels)
+          console.warn(`Group drag: panel ${panel.serial} has no position, falling back to single update`);
+          // Falls through to single-panel update below
+        }
+      }
+
+      // Single panel update (existing behavior)
       editor.updatePosition(panel.serial, percentPos);
     },
     [
@@ -252,6 +316,9 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       editor.positions,
       editor.snapEnabled,
       editor.updatePosition,
+      editor.updatePositions,
+      editor.selectedPanels,
+      editor.getPositionedSelection,
       activeSpatialIndex,
       imageWidth,
       imageHeight,
@@ -268,68 +335,190 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
     if (!file) return;
 
     setIsUploading(true);
+    setUploadError(null);
 
     try {
       await uploadLayoutImage(file);
-      // Force reload to get new image dimensions
-      window.location.reload();
-    } catch {
-      // Error handled by reload or user can retry
+      // Refresh layout config to get new image hash (for cache busting)
+      await editor.refreshLayoutConfig();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      setUploadError(message);
+      console.error('Image upload failed:', err);
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
     }
-  }, []);
+  }, [editor]);
 
-  // Keyboard shortcuts
-  useEffect(() => {
+  // Canvas panel click handler - focuses canvas and toggles selection
+  const handlePanelClick = useCallback((serial: string) => {
+    canvasRef.current?.focus();
+    editor.selectPanel(serial);
+  }, [editor]);
+
+  // Canvas click handler - deselects all when clicking empty space
+  const handleCanvasClick = useCallback((e: React.MouseEvent) => {
+    // Only deselect if click target is the canvas itself, not a child element
+    if (e.target === e.currentTarget) {
+      editor.deselectAll();
+    }
+  }, [editor]);
+
+  // Keyboard shortcuts - now as a regular function for canvas onKeyDown
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!editor.isEditMode) return;
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Undo: Ctrl/Cmd + Z
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        editor.undo();
+    // Undo: Ctrl/Cmd + Z
+    if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      // Flush any in-progress arrow key movement before undoing
+      if (heldArrowKeys.current.size > 0) {
+        heldArrowKeys.current.clear();
+        editor.recordCurrentHistoryState();
       }
-      // Redo: Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
-        e.preventDefault();
-        editor.redo();
+      editor.undo();
+      return;
+    }
+    // Redo: Ctrl/Cmd + Y or Ctrl/Cmd + Shift + Z
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      // Flush any in-progress arrow key movement before redoing
+      if (heldArrowKeys.current.size > 0) {
+        heldArrowKeys.current.clear();
+        editor.recordCurrentHistoryState();
       }
-      // Escape: Exit edit mode
-      if (e.key === 'Escape') {
-        e.preventDefault();
+      editor.redo();
+      return;
+    }
+    // Escape: Two-tier behavior (FR-1.7)
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (editor.selectedPanels.size > 0) {
+        // First tier: deselect all, stay in edit mode
+        editor.deselectAll();
+      } else {
+        // Second tier: exit edit mode (existing behavior)
         if (editor.hasUnsavedChanges) {
-          // Show confirmation?
           editor.exitEditMode(true);
         } else {
           editor.exitEditMode(false);
         }
       }
-      // Delete: Remove position from selected panels
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (editor.selectedPanels.size > 0) {
-          e.preventDefault();
-          const updates: Record<string, PanelPosition | null> = {};
-          for (const serial of editor.selectedPanels) {
-            updates[serial] = null;
-          }
-          editor.updatePositions(updates);
-          editor.deselectAll();
-        }
-      }
-      // Select all: Ctrl/Cmd + A
-      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      return;
+    }
+    // Delete: Remove position from selected panels
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      if (editor.selectedPanels.size > 0) {
         e.preventDefault();
-        editor.selectAll();
+        const updates: Record<string, PanelPosition | null> = {};
+        for (const serial of editor.selectedPanels) {
+          updates[serial] = null;
+        }
+        editor.updatePositions(updates);
+        editor.deselectAll();
+      }
+      return;
+    }
+    // Select all: Ctrl/Cmd + A (only selects positioned panels)
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+      // Check if focus is in a text input - let browser handle it
+      const activeElement = document.activeElement;
+      const isTextInput = activeElement instanceof HTMLInputElement ||
+                          activeElement instanceof HTMLTextAreaElement ||
+                          activeElement?.getAttribute('contenteditable') === 'true';
+
+      if (isTextInput) {
+        return; // Let browser handle Ctrl+A in text inputs
+      }
+
+      e.preventDefault();
+      editor.selectAll();
+      return;
+    }
+
+    // Arrow key movement
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      // Canvas has focus (implicit from handler attachment), check for selected panels
+      if (editor.selectedPanels.size > 0) {
+        // Filter to only positioned panels (unpositioned panels have no coordinates to nudge)
+        const positionedSelection = editor.getPositionedSelection();
+        if (positionedSelection.length === 0) return;
+
+        // Guard against unloaded image or invalid dimensions
+        if (imageWidth == null || imageHeight == null || !(imageWidth > 0) || !(imageHeight > 0)) {
+          console.warn('Cannot calculate movement: image dimensions unavailable');
+          return;
+        }
+
+        heldArrowKeys.current.add(e.key);  // Track for keyup coalescing
+        e.preventDefault();
+        const dx = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+        const dy = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+        let dxPercent = (dx / imageWidth) * 100;
+        let dyPercent = (dy / imageHeight) * 100;
+
+        // Group-aware clamping: reduce delta if any panel would exceed bounds
+        for (const serial of positionedSelection) {
+          const pos = editor.positions[serial]!;  // Safe: filtered above
+          const newX = pos.x_percent + dxPercent;
+          const newY = pos.y_percent + dyPercent;
+          if (newX < 0) dxPercent = Math.max(dxPercent, -pos.x_percent);
+          if (newX > 100) dxPercent = Math.min(dxPercent, 100 - pos.x_percent);
+          if (newY < 0) dyPercent = Math.max(dyPercent, -pos.y_percent);
+          if (newY > 100) dyPercent = Math.min(dyPercent, 100 - pos.y_percent);
+        }
+
+        const updates: Record<string, PanelPosition> = {};
+        for (const serial of positionedSelection) {
+          const pos = editor.positions[serial]!;  // Safe: filtered above
+          updates[serial] = {
+            x_percent: pos.x_percent + dxPercent,
+            y_percent: pos.y_percent + dyPercent,
+          };
+        }
+        editor.updatePositionsWithoutHistory(updates);
+      }
+    }
+  }, [editor, imageWidth, imageHeight]);
+
+  // Keyup and blur handlers for arrow key undo coalescing
+  useEffect(() => {
+    if (!editor.isEditMode) return;
+
+    const flushArrowKeyHistory = () => {
+      if (heldArrowKeys.current.size > 0) {
+        heldArrowKeys.current.clear();
+        editor.recordCurrentHistoryState();
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [editor]);
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        heldArrowKeys.current.delete(e.key);
+        // Record history only when ALL arrow keys are released
+        if (heldArrowKeys.current.size === 0) {
+          editor.recordCurrentHistoryState();
+        }
+      }
+    };
+
+    // Flush pending history if user tabs away while holding arrow keys
+    const handleBlur = () => {
+      flushArrowKeyHistory();
+    };
+
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
+    return () => {
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
+      // Flush on unmount (e.g., edit mode exit while holding keys)
+      flushArrowKeyHistory();
+    };
+  }, [editor.isEditMode, editor.recordCurrentHistoryState]);
 
   // Auto-arrange unpositioned panels
   const handleAutoArrange = useCallback(() => {
@@ -489,15 +678,81 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
           onDragMove={handleDragMove}
           onDragEnd={handleDragEnd}
         >
+          {/* Contextual info bar - always reserves space to prevent layout shift */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 16px',
+              backgroundColor: editor.selectedPanels.size > 0 ? '#1e3a5f' : 'transparent',
+              color: '#e0e0e0',
+              fontSize: '13px',
+              borderBottom: editor.selectedPanels.size > 0 ? '1px solid #2a4a6f' : '1px solid transparent',
+              minHeight: typeof window !== 'undefined' && window.innerWidth < 768 ? '44px' : '36px',
+              visibility: editor.selectedPanels.size > 0 ? 'visible' : 'hidden',
+            }}
+            role="status"
+            aria-live="polite"
+          >
+            <Info size={16} color="#ffffff" />
+            <span>
+              {editor.selectedPanels.size} panel{editor.selectedPanels.size > 1 ? 's' : ''} selected
+              {typeof window !== 'undefined' && window.innerWidth < 768
+                ? ' · Hold to drag · Tap to deselect · Tap empty to clear'
+                : ' · Arrow keys to nudge · Drag to reposition · Click panel to deselect · Click empty space to deselect all'
+              }
+            </span>
+          </div>
+
+          {/* Upload error banner */}
+          {uploadError && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '8px 16px',
+                backgroundColor: '#5c2020',
+                color: '#ffaaaa',
+                fontSize: '13px',
+                borderBottom: '1px solid #7a3030',
+              }}
+              role="alert"
+            >
+              <span>Upload failed: {uploadError}</span>
+              <button
+                onClick={() => setUploadError(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#ffaaaa',
+                  cursor: 'pointer',
+                  padding: '4px',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           <div style={editorAreaStyle}>
             <div style={canvasContainerStyle}>
               <div
                 ref={canvasRef}
-                style={canvasStyle(imageWidth, imageHeight)}
-                onClick={() => editor.deselectAll()}
+                tabIndex={0}
+                style={{
+                  ...canvasStyle(imageWidth, imageHeight),
+                  outline: canvasFocused ? '2px solid #4a90d9' : 'none',
+                  outlineOffset: '-2px',
+                }}
+                onClick={handleCanvasClick}
+                onKeyDown={handleKeyDown}
+                onFocus={() => setCanvasFocused(true)}
+                onBlur={() => setCanvasFocused(false)}
               >
                 <img
-                  src={getLayoutImageUrl()}
+                  src={`${getLayoutImageUrl()}${editor.layoutConfig?.image_hash ? `?v=${editor.layoutConfig.image_hash}` : ''}`}
                   alt="Layout"
                   style={imageStyle}
                 />
@@ -508,11 +763,13 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
                   .map(panel => (
                     <DraggablePanel
                       key={panel.serial}
-                      panel={{ ...panel, position: editor.positions[panel.serial]! }}
+                      panel={panel}
+                      position={editor.positions[panel.serial]!}
                       overlaySize={editor.overlaySize}
                       isSelected={editor.selectedPanels.has(panel.serial)}
                       isEditMode={editor.isEditMode}
-                      onClick={editor.selectPanel}
+                      isBeingDragged={activeDragId === panel.serial}
+                      onClick={handlePanelClick}
                     />
                   ))}
 
@@ -528,7 +785,8 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
               <UnpositionedPanelsSidebar
                 panels={editor.unpositionedPanels}
                 selectedPanels={editor.selectedPanels}
-                onPanelClick={editor.selectPanel}
+                onPanelClick={handlePanelClick}
+                activeDragId={activeDragId}
                 onAutoArrange={handleAutoArrange}
               />
             )}
