@@ -12,6 +12,8 @@ import type {
   DiscoveredPanel,
   MatchResult,
   PersistedWizardState,
+  RestoreData,
+  Panel,
 } from '../types/config';
 
 const STORAGE_KEY = 'solar-tigo-wizard-state';
@@ -39,6 +41,8 @@ const createInitialState = (): WizardState => ({
   translations: {},
   validationResults: null,
   configDownloaded: false,
+  restoredFromBackup: false,
+  restoreImageToken: undefined,
 });
 
 // Check if persisted state is expired (older than 7 days)
@@ -79,11 +83,20 @@ const loadPersistedState = (): WizardState | null => {
 };
 
 // Save state to localStorage
+// Note: Strips restore-specific fields before persisting
 const savePersistedState = (state: WizardState): void => {
   try {
+    // Strip restore-related fields - they should not be persisted
+    const { restoredFromBackup, restoreImageToken, ...persistableState } = state;
+    const cleanState: WizardState = {
+      ...persistableState,
+      restoredFromBackup: false,
+      restoreImageToken: undefined,
+    };
+
     const persisted: PersistedWizardState = {
       version: 1,
-      state,
+      state: cleanState,
       savedAt: new Date().toISOString(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
@@ -127,6 +140,9 @@ export interface UseWizardStateReturn {
   saveState: () => void;
   clearState: () => void;
   restoreState: () => void;
+
+  // Restore from backup
+  populateFromBackup: (data: RestoreData) => void;
 }
 
 export function useWizardState(): UseWizardStateReturn {
@@ -183,9 +199,13 @@ export function useWizardState(): UseWizardStateReturn {
 
   // Invalidate downstream state when editing previous steps
   const invalidateDownstream = useCallback((changedStep: WizardStep) => {
-    const changedIndex = getStepIndex(changedStep);
-
     setState(prev => {
+      // Don't invalidate if restoring from backup - data is already complete
+      if (prev.restoredFromBackup) {
+        return prev;
+      }
+
+      const changedIndex = getStepIndex(changedStep);
       const newState = { ...prev };
 
       // MQTT config changes affect everything downstream
@@ -322,6 +342,61 @@ export function useWizardState(): UseWizardStateReturn {
     }
   }, []);
 
+  // Populate wizard state from backup restore data
+  const populateFromBackup = useCallback((data: RestoreData) => {
+    // Convert panels array to discoveredPanels map
+    const discoveredPanels: Record<string, DiscoveredPanel> = {};
+    const now = new Date().toISOString();
+
+    for (const panel of data.panels) {
+      discoveredPanels[panel.serial] = {
+        serial: panel.serial,
+        cca: panel.cca,
+        tigo_label: panel.tigo_label,
+        watts: 0, // No live data in backup
+        voltage: 0,
+        discovered_at: now,
+        last_seen_at: now,
+      };
+    }
+
+    // Build translations map from panels
+    const translations: Record<string, string> = {};
+    for (const panel of data.panels) {
+      if (panel.tigo_label !== panel.display_label) {
+        translations[panel.tigo_label] = panel.display_label;
+      }
+    }
+
+    // Generate auto-match results for all panels (they're already matched since from backup)
+    const validationResults: MatchResult[] = data.panels.map((panel) => ({
+      status: 'matched' as const,
+      panel,
+      confidence: 'high' as const,
+      tigo_label: panel.tigo_label,
+    }));
+
+    // Build topology from panels if system config not available
+    let systemTopology: SystemConfig | null = data.system;
+
+    // Set up new state with all data from backup
+    const newState: WizardState = {
+      currentStep: 'review-save',
+      furthestStep: 'review-save',
+      mqttConfig: data.system?.mqtt || null,
+      systemTopology,
+      discoveredPanels,
+      translations,
+      validationResults,
+      configDownloaded: false, // User needs to re-download tigo-mqtt config
+      restoredFromBackup: true,
+      restoreImageToken: data.image_token,
+    };
+
+    setState(newState);
+    setHasPersistedState(false);
+  }, []);
+
   return {
     state,
     hasPersistedState,
@@ -342,5 +417,6 @@ export function useWizardState(): UseWizardStateReturn {
     saveState,
     clearState,
     restoreState,
+    populateFromBackup,
   };
 }
