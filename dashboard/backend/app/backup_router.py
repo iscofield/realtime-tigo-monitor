@@ -125,14 +125,14 @@ async def restore_backup(file: UploadFile = File(...)):
         logger.error(f"Unexpected error during validation: {e}")
         raise error_response(500, "validation_error", str(e))
 
-    # Store temp image if present
+    # Store temp image if present (atomic: fail entire restore if image can't be stored)
     image_token = None
     if result["has_image"] and result["image_data"]:
         try:
             image_token = service.store_temp_image(result["image_data"])
         except BackupServiceError as e:
-            logger.warning(f"Could not store temp image: {e}")
-            # Don't fail the whole restore, just skip the image
+            logger.error(f"Failed to store temp image: {e}")
+            raise error_response(500, e.error_code, f"Failed to process backup image: {e.message}")
 
     # Build response
     response = {
