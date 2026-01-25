@@ -13,7 +13,6 @@ import type {
   MatchResult,
   PersistedWizardState,
   RestoreData,
-  Panel,
 } from '../types/config';
 
 const STORAGE_KEY = 'solar-tigo-wizard-state';
