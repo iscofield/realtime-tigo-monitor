@@ -11,17 +11,21 @@ import { getStringColor } from './types';
 
 interface DraggablePanelProps {
   panel: EditorPanel;
+  position: { x_percent: number; y_percent: number };  // Position from parent's positions[panel.serial]
   overlaySize: number;
   isSelected: boolean;
   isEditMode: boolean;
-  onClick?: (serial: string, addToSelection: boolean) => void;
+  isBeingDragged: boolean;  // true when activeDragId === panel.serial
+  onClick?: (serial: string) => void;
 }
 
 export function DraggablePanel({
   panel,
+  position,
   overlaySize,
   isSelected,
   isEditMode,
+  isBeingDragged,
   onClick,
 }: DraggablePanelProps) {
   const {
@@ -41,19 +45,37 @@ export function DraggablePanel({
 
   const stringColor = useMemo(() => getStringColor(panel.string), [panel.string]);
 
-  if (!panel.position) {
-    return null; // Unpositioned panels go in sidebar
-  }
+  // Touch target sizing (min 44px for accessibility)
+  const touchTargetSize = Math.max(44, overlaySize);
+  const offset = (touchTargetSize - overlaySize) / 2;
 
-  const style: CSSProperties = {
+  // Click handler - checks isBeingDragged prop (set by parent from activeDragId)
+  const handleClick = (e: React.MouseEvent) => {
+    if (!isEditMode || isBeingDragged) return;
+    e.stopPropagation();  // Prevent canvas deselect-all from firing
+    onClick?.(panel.serial);  // Delegates to handlePanelClick which calls editor.selectPanel (toggles internally)
+  };
+
+  // Outer wrapper handles drag/click events with extended hit area
+  const wrapperStyle: CSSProperties = {
     position: 'absolute',
-    left: `${panel.position.x_percent}%`,
-    top: `${panel.position.y_percent}%`,
-    transform: transform
-      ? `translate(-50%, -50%) ${CSS.Translate.toString(transform)}`
-      : 'translate(-50%, -50%)',
-    width: `${overlaySize}px`,
-    height: `${overlaySize}px`,
+    width: touchTargetSize,
+    height: touchTargetSize,
+    left: `calc(${position.x_percent}% - ${touchTargetSize / 2}px)`,
+    top: `calc(${position.y_percent}% - ${touchTargetSize / 2}px)`,
+    cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
+    transform: transform ? CSS.Translate.toString(transform) : undefined,
+    zIndex: isDragging ? 1000 : isSelected ? 10 : 1,
+    transition: isDragging ? 'none' : 'z-index 0s',
+  };
+
+  // Inner div is the visible panel, centered within touch target
+  const panelStyle: CSSProperties = {
+    position: 'absolute',
+    width: overlaySize,
+    height: overlaySize,
+    top: offset,
+    left: offset,
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -63,7 +85,6 @@ export function DraggablePanel({
     fontWeight: 'bold',
     color: 'white',
     textShadow: '1px 1px 2px rgba(0,0,0,0.8)',
-    cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
     userSelect: 'none',
     touchAction: 'none',
     backgroundColor: stringColor,
@@ -74,21 +95,13 @@ export function DraggablePanel({
       ? '0 0 0 2px #4a90d9'
       : 'none',
     opacity: isDragging ? 0.8 : 1,
-    zIndex: isDragging ? 1000 : isSelected ? 10 : 1,
     transition: isDragging ? 'none' : 'box-shadow 0.15s, border 0.15s',
-  };
-
-  const handleClick = (e: React.MouseEvent) => {
-    if (!isEditMode || isDragging) return;
-    e.stopPropagation();
-    const addToSelection = e.ctrlKey || e.metaKey;
-    onClick?.(panel.serial, addToSelection);
   };
 
   return (
     <div
       ref={setNodeRef}
-      style={style}
+      style={wrapperStyle}
       onClick={handleClick}
       {...(isEditMode ? { ...listeners, ...attributes } : {})}
       data-testid={`editor-panel-${panel.display_label}`}
@@ -96,12 +109,14 @@ export function DraggablePanel({
       tabIndex={isEditMode ? 0 : undefined}
       aria-label={`Panel ${panel.display_label}${isSelected ? ', selected' : ''}`}
     >
-      <div>{panel.display_label}</div>
-      {overlaySize >= 50 && (
-        <div style={{ fontSize: `${Math.max(8, overlaySize / 5)}px`, opacity: 0.8 }}>
-          {panel.serial.slice(-4)}
-        </div>
-      )}
+      <div style={panelStyle}>
+        <div>{panel.display_label}</div>
+        {overlaySize >= 50 && (
+          <div style={{ fontSize: `${Math.max(8, overlaySize / 5)}px`, opacity: 0.8 }}>
+            {panel.serial.slice(-4)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -110,12 +125,14 @@ export function DraggablePanel({
 interface UnpositionedPanelProps {
   panel: EditorPanel;
   isSelected: boolean;
-  onClick?: (serial: string, addToSelection: boolean) => void;
+  isBeingDragged: boolean;  // passed from sidebar, true when activeDragId === panel.serial
+  onClick?: (serial: string) => void;
 }
 
 export function UnpositionedPanel({
   panel,
   isSelected,
+  isBeingDragged,
   onClick,
 }: UnpositionedPanelProps) {
   const {
@@ -152,11 +169,11 @@ export function UnpositionedPanel({
     transition: isDragging ? 'none' : 'background-color 0.15s',
   };
 
+  // Click handler - same race condition guard as DraggablePanel
   const handleClick = (e: React.MouseEvent) => {
-    if (isDragging) return;
+    if (isBeingDragged) return;
     e.stopPropagation();
-    const addToSelection = e.ctrlKey || e.metaKey;
-    onClick?.(panel.serial, addToSelection);
+    onClick?.(panel.serial);
   };
 
   return (

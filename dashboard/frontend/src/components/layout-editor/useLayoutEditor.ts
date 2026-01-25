@@ -51,6 +51,10 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const initialPositionsRef = useRef<Record<string, PanelPosition | null>>({});
 
+  // Ref to track latest positions (avoids stale closure in keyup handler)
+  const positionsRef = useRef<Record<string, PanelPosition | null>>(positions);
+  useEffect(() => { positionsRef.current = positions; }, [positions]);
+
   // Load initial data
   useEffect(() => {
     async function loadData() {
@@ -187,6 +191,26 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     [recordHistoryState]
   );
 
+  // Update positions without recording to history (for arrow key movement)
+  const updatePositionsWithoutHistory = useCallback(
+    (updates: Record<string, PanelPosition | null>) => {
+      setPositions(prev => {
+        const next = { ...prev, ...updates };
+        // Ref update in updater is safe: useEffect also syncs positionsRef,
+        // and keyup handler reads only after state flushes
+        positionsRef.current = next;
+        return next;
+      });
+      setHasUnsavedChanges(true);
+    },
+    []
+  );
+
+  // Expose for keyup handler in LayoutEditor.tsx (reads from positionsRef)
+  const recordCurrentHistoryState = useCallback(() => {
+    recordHistoryState(positionsRef.current);
+  }, [recordHistoryState]);
+
   // Undo
   const canUndo = history.currentIndex > 0;
   const undo = useCallback(() => {
@@ -209,25 +233,29 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     });
   }, [canRedo]);
 
-  // Selection management
-  const selectPanel = useCallback((serial: string, addToSelection: boolean = false) => {
+  // Selection management - always toggle (no addToSelection parameter needed)
+  const selectPanel = useCallback((serial: string) => {
     setSelectedPanels(prev => {
-      if (addToSelection) {
-        const next = new Set(prev);
-        if (next.has(serial)) {
-          next.delete(serial);
-        } else {
-          next.add(serial);
-        }
-        return next;
+      const next = new Set(prev);
+      if (next.has(serial)) {
+        next.delete(serial);
+      } else {
+        next.add(serial);
       }
-      return new Set([serial]);
+      return next;
     });
   }, []);
 
+  // Helper to get only positioned panels from selection (unpositioned panels ignored)
+  const getPositionedSelection = useCallback(() => {
+    return [...selectedPanels].filter(s => positions[s] != null);
+  }, [selectedPanels, positions]);
+
+  // Select all positioned panels only (unpositioned panels can't be nudged/dragged)
   const selectAll = useCallback(() => {
-    setSelectedPanels(new Set(panels.map(p => p.serial)));
-  }, [panels]);
+    const positioned = panels.filter(p => positions[p.serial] != null);
+    setSelectedPanels(new Set(positioned.map(p => p.serial)));
+  }, [panels, positions]);
 
   const deselectAll = useCallback(() => {
     setSelectedPanels(new Set());
@@ -384,9 +412,12 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     exitEditMode,
     updatePosition,
     updatePositions,
+    updatePositionsWithoutHistory,
+    recordCurrentHistoryState,
     selectPanel,
     selectAll,
     deselectAll,
+    getPositionedSelection,
     save,
 
     // Undo/Redo
