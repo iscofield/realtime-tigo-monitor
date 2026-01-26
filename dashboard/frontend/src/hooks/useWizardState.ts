@@ -43,6 +43,7 @@ const createInitialState = (): WizardState => ({
   restoredFromBackup: false,
   restoreImageToken: undefined,
   restoreOverlaySize: undefined,
+  restoreImageScale: undefined,
 });
 
 // Check if persisted state is expired (older than 7 days)
@@ -87,12 +88,13 @@ const loadPersistedState = (): WizardState | null => {
 const savePersistedState = (state: WizardState): void => {
   try {
     // Strip restore-related fields - they should not be persisted
-    const { restoredFromBackup, restoreImageToken, restoreOverlaySize, ...persistableState } = state;
+    const { restoredFromBackup, restoreImageToken, restoreOverlaySize, restoreImageScale, ...persistableState } = state;
     const cleanState: WizardState = {
       ...persistableState,
       restoredFromBackup: false,
       restoreImageToken: undefined,
       restoreOverlaySize: undefined,
+      restoreImageScale: undefined,
     };
 
     const persisted: PersistedWizardState = {
@@ -396,6 +398,8 @@ export function useWizardState(): UseWizardStateReturn {
       restoreImageToken: data.image_token,
       // Preserve overlay_size from backup layout config
       restoreOverlaySize: data.layout?.overlay_size,
+      // Preserve image_scale from backup (undefined for legacy backups = default to 100)
+      restoreImageScale: data.layout?.image_scale,
     };
 
     setState(newState);
