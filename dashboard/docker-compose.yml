@@ -20,7 +20,6 @@ services:
       - ../config:/app/config
       # Assets directory for layout images (writable for layout editor uploads)
       - ./backend/assets:/app/assets
-      - ../assets/layout.png:/app/static/layout.png:ro
       # Mount taptap state files for status checking (read-only)
       - ../tigo-mqtt/data/primary:/app/state/primary:ro
       - ../tigo-mqtt/data/secondary:/app/state/secondary:ro

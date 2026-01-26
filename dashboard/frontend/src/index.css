@@ -19,3 +19,27 @@ body {
 #root {
   width: 100%;
 }
+
+/* Table View touch target extension for compact density (NFR-2.3) */
+/* On touch devices (coarse pointer), extend row tap targets to 44px */
+@media (any-pointer: coarse) {
+  [data-testid="panel-table"] table tbody tr {
+    position: relative;
+  }
+
+  [data-testid="panel-table"] table tbody tr::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    height: 44px;
+    pointer-events: none;
+  }
+
+  /* Ensure tile touch targets on mobile */
+  [data-testid^="panel-tile-"] {
+    min-height: 44px;
+  }
+}
