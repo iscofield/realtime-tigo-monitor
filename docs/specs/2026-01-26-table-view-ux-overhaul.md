@@ -117,9 +117,13 @@ The current TableView has several UX issues:
 
 **FR-3.10**: Sort state changes MUST be announced to screen readers via an `aria-live="polite"` region with message format: "Table sorted by {column}, {direction}" (e.g., "Table sorted by Power, descending"). When sort is cleared, announce "Table sort cleared".
 
+**Implementation note:** If users rapidly click through sort states, announcements may overlap. Implementers MAY debounce announcements (e.g., 150ms delay) to prevent jarring rapid-fire announcements. This is an optional enhancement.
+
 ### FR-4: Mobile Tile Layout
 
 **FR-4.1**: On mobile viewports (≤768px), panels MUST be displayed as tiles/cards instead of table rows.
+
+**FR-4.1.1**: When a string section has no panels (e.g., all panels offline or filtered out), the string header MUST still be displayed with a "No panels available" message. The empty state message MUST be visually distinct (e.g., muted text color, centered) to differentiate from loading states.
 
 **FR-4.2**: Each tile MUST have a two-row compact structure:
 - **Row 1 (Identity)**: Panel ID (left), CCA Source (right), Age (far right)
@@ -180,14 +184,20 @@ The current TableView has several UX issues:
 Only the highest-priority style is applied. The following implementation pattern ensures correct priority:
 
 ```typescript
-const getTileStyle = (panel: PanelData, hasMismatch: boolean): React.CSSProperties => {
+// Note: isWrongCca is computed by the parent component using panel mapping data
+// that cross-references expected vs actual CCA assignments
+const getTileStyle = (
+  panel: PanelData,
+  hasMismatch: boolean,
+  isWrongCca: boolean
+): React.CSSProperties => {
   let style = { ...tileStyles.base };
 
   // Apply in reverse priority order (lowest first, highest overwrites)
-  if (panel.isTemporary) {
+  if (panel.is_temporary) {
     style = { ...style, ...tileStyles.temporary };
   }
-  if (panel.expectedCcaId && panel.actualCcaId !== panel.expectedCcaId) {
+  if (isWrongCca) {
     style = { ...style, ...tileStyles.wrongCca };
   }
   if (hasMismatch) {
@@ -360,6 +370,10 @@ interface PanelData {
   age: number | null; // seconds since last data update; null displayed as "—"
 }
 
+// Props use explicit boolean flags (isMismatched, isWrongCca, isTemporary) rather than
+// relying solely on PanelData fields. This allows the parent component to compute these
+// values from multiple data sources (panel mapping, mismatch detection, etc.) and keeps
+// the tile component simple and testable with explicit inputs.
 interface PanelTileProps {
   panel: PanelData;
   visibleColumns: Set<string>;
@@ -735,6 +749,11 @@ const STORAGE_KEYS = {
     - Existing user with only old keys → verify new keys get defaults
     - Corrupted/malformed localStorage → verify graceful fallback without errors
     - Invalid column keys in tableColumns → verify invalid keys filtered silently
+
+22. **Touch target sizing**
+    - Compact row on touch device → verify tap target is 44px despite 36px visual height
+    - Method: Use Playwright's element bounds check or click position testing
+    - Note: May require manual testing verification for accessibility compliance
 
 **Note:** Key rename migrations are out of scope for v1. The version key (`tablePrefsVersion`) enables future migrations when key renames are needed.
 
