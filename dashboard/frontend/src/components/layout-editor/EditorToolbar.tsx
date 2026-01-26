@@ -9,6 +9,7 @@ interface EditorToolbarProps {
   hasUnsavedChanges: boolean;
   isSaving: boolean;
   overlaySize: number;
+  imageScale: number;
   snapEnabled: boolean;
   canUndo: boolean;
   canRedo: boolean;
@@ -16,6 +17,8 @@ interface EditorToolbarProps {
   onExitEditMode: (discard: boolean) => void;
   onSave: () => void;
   onOverlaySizeChange: (size: number) => void;
+  onImageScaleChange: (scale: number) => void;
+  onImageScaleCommit: () => void;  // Called on release to record history
   onSnapToggle: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -42,8 +45,8 @@ const groupStyle: CSSProperties = {
 const separatorStyle: CSSProperties = {
   width: '1px',
   height: '24px',
-  backgroundColor: '#444',
-  margin: '0 4px',
+  backgroundColor: '#ddd',
+  margin: '0 8px',
 };
 
 const buttonStyle: CSSProperties = {
@@ -138,6 +141,7 @@ export function EditorToolbar({
   hasUnsavedChanges,
   isSaving,
   overlaySize,
+  imageScale,
   snapEnabled,
   canUndo,
   canRedo,
@@ -145,6 +149,8 @@ export function EditorToolbar({
   onExitEditMode,
   onSave,
   onOverlaySizeChange,
+  onImageScaleChange,
+  onImageScaleCommit,
   onSnapToggle,
   onUndo,
   onRedo,
@@ -153,7 +159,7 @@ export function EditorToolbar({
 }: EditorToolbarProps) {
   return (
     <div style={toolbarStyle}>
-      {/* Undo/Redo */}
+      {/* 1. Undo/Redo */}
       <div style={groupStyle}>
         <button
           style={{
@@ -181,9 +187,10 @@ export function EditorToolbar({
         </button>
       </div>
 
-      <div style={separatorStyle} />
+      {/* 2. Separator */}
+      <div role="separator" aria-orientation="vertical" style={separatorStyle} />
 
-      {/* Snap toggle */}
+      {/* 3. Snap toggle */}
       <button
         style={toggleStyle(snapEnabled)}
         onClick={onSnapToggle}
@@ -193,47 +200,113 @@ export function EditorToolbar({
         <span style={{ fontSize: '11px', color: snapEnabled ? '#fff' : '#aaa' }}>Snap</span>
       </button>
 
-      <div style={separatorStyle} />
+      {/* 4. Separator */}
+      <div role="separator" aria-orientation="vertical" style={separatorStyle} />
 
-      {/* Overlay size slider */}
-      <div style={sliderContainerStyle} title="Panel overlay size in pixels">
-        <span style={labelStyle}>Size:</span>
+      {/* 5. Image Scale slider */}
+      <div style={sliderContainerStyle} title="Background image display scale (25%-200%) - editor only">
+        <label id="image-scale-label" htmlFor="image-scale-slider" style={labelStyle}>
+          Image Scale:
+        </label>
         <input
           type="range"
+          id="image-scale-slider"
+          aria-labelledby="image-scale-label"
+          aria-valuemin={25}
+          aria-valuemax={200}
+          aria-valuenow={imageScale}
+          min={25}
+          max={200}
+          step={5}
+          value={imageScale}
+          onChange={(e) => onImageScaleChange(parseInt(e.target.value, 10))}
+          onMouseUp={onImageScaleCommit}
+          onTouchEnd={onImageScaleCommit}
+          onTouchCancel={onImageScaleCommit}
+          onBlur={onImageScaleCommit}
+          style={sliderStyle}
+        />
+        <input
+          type="number"
+          inputMode="numeric"
+          min={25}
+          max={200}
+          step={1}
+          value={imageScale}
+          onChange={(e) => {
+            // Skip non-numeric input including empty string; onBlur handles reset to default
+            const value = parseInt(e.target.value, 10);
+            if (!isNaN(value)) onImageScaleChange(value);
+          }}
+          onBlur={(e) => {
+            // Validate on blur: clamp to valid range or reset to default
+            const value = parseInt(e.target.value, 10);
+            if (isNaN(value)) {
+              onImageScaleChange(100);  // Reset to default
+            } else {
+              onImageScaleChange(Math.min(200, Math.max(25, value)));
+            }
+            onImageScaleCommit();  // Record history on blur
+          }}
+          style={sizeInputStyle}
+        />
+        <span style={{ color: '#888', fontSize: '11px' }}>%</span>
+      </div>
+
+      {/* 6. Separator */}
+      <div role="separator" aria-orientation="vertical" style={separatorStyle} />
+
+      {/* 7. Panel Size slider (renamed from "Size:") */}
+      <div style={sliderContainerStyle} title="Panel overlay size in pixels (20-200)">
+        <label id="panel-size-label" htmlFor="panel-size-slider" style={labelStyle}>
+          Panel Size:
+        </label>
+        <input
+          type="range"
+          id="panel-size-slider"
+          aria-labelledby="panel-size-label"
+          aria-valuemin={20}
+          aria-valuemax={200}
+          aria-valuenow={overlaySize}
           min={20}
           max={200}
           value={overlaySize}
           onChange={(e) => onOverlaySizeChange(parseInt(e.target.value, 10))}
           style={sliderStyle}
-          title="Drag to adjust panel size"
         />
         <input
-          type="text"
+          type="number"
+          inputMode="numeric"
+          min={20}
+          max={200}
+          step={1}
           value={overlaySize}
           onChange={(e) => {
             const val = parseInt(e.target.value, 10);
-            if (!isNaN(val) && val >= 20 && val <= 200) {
+            if (!isNaN(val)) {
               onOverlaySizeChange(val);
             }
           }}
           onBlur={(e) => {
-            // Clamp value on blur if out of range
+            // Clamp value on blur if out of range, reset to default if invalid
             const val = parseInt(e.target.value, 10);
-            if (isNaN(val) || val < 20) {
+            if (isNaN(val)) {
+              onOverlaySizeChange(50);  // Reset to default
+            } else if (val < 20) {
               onOverlaySizeChange(20);
             } else if (val > 200) {
               onOverlaySizeChange(200);
             }
           }}
           style={sizeInputStyle}
-          title="Type a value between 20-200px"
         />
         <span style={{ color: '#888', fontSize: '11px' }}>px</span>
       </div>
 
-      <div style={separatorStyle} />
+      {/* 8. Separator */}
+      <div role="separator" aria-orientation="vertical" style={separatorStyle} />
 
-      {/* Selection info */}
+      {/* 9. Selection info (when applicable) */}
       {selectedCount > 0 && (
         <>
           <div style={selectionBadgeStyle}>
@@ -254,11 +327,10 @@ export function EditorToolbar({
               <X size={14} />
             </button>
           </div>
-          <div style={separatorStyle} />
         </>
       )}
 
-      {/* Upload image */}
+      {/* 10. Upload image */}
       <button
         style={secondaryButtonStyle}
         onClick={onImageUpload}
@@ -268,10 +340,10 @@ export function EditorToolbar({
         Upload Image
       </button>
 
-      {/* Spacer */}
+      {/* 11. Spacer */}
       <div style={{ flexGrow: 1 }} />
 
-      {/* Save/Cancel */}
+      {/* 12. Discard/Save buttons */}
       <div style={groupStyle}>
         <button
           style={dangerButtonStyle}
