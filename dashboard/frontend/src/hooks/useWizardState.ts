@@ -42,6 +42,7 @@ const createInitialState = (): WizardState => ({
   configDownloaded: false,
   restoredFromBackup: false,
   restoreImageToken: undefined,
+  restoreOverlaySize: undefined,
 });
 
 // Check if persisted state is expired (older than 7 days)
@@ -86,11 +87,12 @@ const loadPersistedState = (): WizardState | null => {
 const savePersistedState = (state: WizardState): void => {
   try {
     // Strip restore-related fields - they should not be persisted
-    const { restoredFromBackup, restoreImageToken, ...persistableState } = state;
+    const { restoredFromBackup, restoreImageToken, restoreOverlaySize, ...persistableState } = state;
     const cleanState: WizardState = {
       ...persistableState,
       restoredFromBackup: false,
       restoreImageToken: undefined,
+      restoreOverlaySize: undefined,
     };
 
     const persisted: PersistedWizardState = {
@@ -392,6 +394,8 @@ export function useWizardState(): UseWizardStateReturn {
       configDownloaded: false, // User needs to re-download tigo-mqtt config
       restoredFromBackup: true,
       restoreImageToken: data.image_token,
+      // Preserve overlay_size from backup layout config
+      restoreOverlaySize: data.layout?.overlay_size,
     };
 
     setState(newState);

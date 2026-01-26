@@ -350,6 +350,7 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
             discoveredPanels={wizardState.state.discoveredPanels}
             translations={wizardState.state.translations}
             restoreImageToken={wizardState.state.restoreImageToken}
+            restoreOverlaySize={wizardState.state.restoreOverlaySize}
             onComplete={() => {
               wizardState.clearState();
               onComplete();

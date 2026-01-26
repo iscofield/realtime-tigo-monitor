@@ -147,6 +147,7 @@ export interface WizardState {
   // Restore-related fields
   restoredFromBackup: boolean;
   restoreImageToken?: string;
+  restoreOverlaySize?: number;  // Overlay size from backup to restore
 }
 
 // Persisted state wrapper with versioning

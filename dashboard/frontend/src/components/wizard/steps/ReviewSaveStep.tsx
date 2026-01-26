@@ -128,6 +128,7 @@ interface ReviewSaveStepProps {
   discoveredPanels: Record<string, DiscoveredPanel>;
   translations: Record<string, string>;
   restoreImageToken?: string;
+  restoreOverlaySize?: number;
   onComplete: () => void;
   onBack: () => void;
 }
@@ -138,6 +139,7 @@ export function ReviewSaveStep({
   discoveredPanels,
   translations,
   restoreImageToken,
+  restoreOverlaySize,
   onComplete,
   onBack,
 }: ReviewSaveStepProps) {
@@ -200,7 +202,7 @@ export function ReviewSaveStep({
       // Commit restore image if present (from backup restore flow)
       if (restoreImageToken) {
         try {
-          await commitRestoreImage(restoreImageToken);
+          await commitRestoreImage(restoreImageToken, restoreOverlaySize);
         } catch (imageError) {
           console.warn('Failed to commit restore image:', imageError);
           // Don't fail the whole save - config is already saved
