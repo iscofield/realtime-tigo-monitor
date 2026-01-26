@@ -21,7 +21,8 @@ export interface SpatialIndex {
 }
 
 // Snap configuration
-export const SNAP_THRESHOLD = 10; // pixels
+export const SNAP_THRESHOLD = 10; // pixels - how close coordinates must be to trigger snap
+export const SNAP_PROXIMITY = 100; // pixels - max distance on perpendicular axis to allow snap
 
 // Build spatial index from positioned panels (buckets in pixel space)
 export function buildSpatialIndex(
@@ -80,18 +81,21 @@ export function calculateSnap(
   const centerYBucket = Math.round(dragY / SNAP_THRESHOLD);
 
   // Check X alignment (vertical guides) - center-to-center in pixels
+  // Only snap to panels that are also within SNAP_PROXIMITY on the Y axis
   for (let b = centerXBucket - 1; b <= centerXBucket + 1; b++) {
     const candidates = spatialIndex.xCenters.get(b) || [];
     for (const panel of candidates) {
       if (panel.serial === draggingPanel.serial || !panel.position) continue;
 
       const panelX = (panel.position.x_percent / 100) * imageSize.width;
+      const panelY = (panel.position.y_percent / 100) * imageSize.height;
       const xDiff = Math.abs(dragX - panelX);
+      const yDiff = Math.abs(dragY - panelY);
 
-      if (xDiff < SNAP_THRESHOLD) {
+      // Only snap if X is close AND Y is within proximity limit
+      if (xDiff < SNAP_THRESHOLD && yDiff < SNAP_PROXIMITY) {
         snappedX = panelX;
         wasSnapped = true;
-        const panelY = (panel.position.y_percent / 100) * imageSize.height;
         guides.push({
           type: 'vertical',
           position: panelX,
@@ -104,18 +108,21 @@ export function calculateSnap(
   }
 
   // Check Y alignment (horizontal guides) - center-to-center in pixels
+  // Only snap to panels that are also within SNAP_PROXIMITY on the X axis
   for (let b = centerYBucket - 1; b <= centerYBucket + 1; b++) {
     const candidates = spatialIndex.yCenters.get(b) || [];
     for (const panel of candidates) {
       if (panel.serial === draggingPanel.serial || !panel.position) continue;
 
       const panelY = (panel.position.y_percent / 100) * imageSize.height;
+      const panelX = (panel.position.x_percent / 100) * imageSize.width;
       const yDiff = Math.abs(dragY - panelY);
+      const xDiff = Math.abs(dragX - panelX);
 
-      if (yDiff < SNAP_THRESHOLD) {
+      // Only snap if Y is close AND X is within proximity limit
+      if (yDiff < SNAP_THRESHOLD && xDiff < SNAP_PROXIMITY) {
         snappedY = panelY;
         wasSnapped = true;
-        const panelX = (panel.position.x_percent / 100) * imageSize.width;
         guides.push({
           type: 'horizontal',
           position: panelY,
