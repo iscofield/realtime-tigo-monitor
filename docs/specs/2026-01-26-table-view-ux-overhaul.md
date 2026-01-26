@@ -83,10 +83,10 @@ The current TableView has several UX issues:
 **FR-3.3**: Only one column MAY be sorted at a time.
 
 **FR-3.4**: Sort state MUST persist to localStorage with the following edge case handling:
-- When a sorted column is hidden: Sort MUST be preserved invisibly (data remains sorted, but no visual indicator is shown since the column is hidden)
+- When a sorted column is hidden: Sort MUST be cleared and reset to unsorted state. This provides consistent behavior across desktop and mobile viewports.
 - When the persisted sort column no longer exists (removed in an update): Reset to unsorted without throwing an error
 - When localStorage contains malformed sort data: Reset to unsorted without throwing an error
-- When a hidden sorted column is shown again: The sort indicator MUST reappear and sorting MUST continue to apply (no data re-sort needed since it was preserved)
+- When a previously sorted column is shown again after being hidden: No automatic re-sorting occurs (user must click to sort again)
 
 **FR-3.5**: Sorting MUST apply within each string section independently (not globally across all panels).
 
@@ -106,7 +106,7 @@ The current TableView has several UX issues:
 - "Unsorted" appears at the top of the dropdown list
 - When "Unsorted" is selected, the dropdown button displays "Sort by" with no indicator
 - Only visible columns appear in the sort dropdown (hidden columns cannot be sorted on mobile)
-- If the currently sorted column is hidden via column selector, sort automatically resets to default (Panel ID ascending)
+- If the currently sorted column is hidden via column selector, sort is cleared (reset to unsorted), consistent with desktop behavior (FR-3.4)
 
 **FR-3.9**: The mobile sort dropdown MUST follow the same keyboard accessibility requirements as the column dropdown (FR-1.7), including:
 - `aria-expanded`, `aria-haspopup="listbox"`, `aria-controls` attributes
@@ -115,7 +115,7 @@ The current TableView has several UX issues:
 
 **Note:** `aria-haspopup="listbox"` is used for the sort dropdown (simple selection list) vs `"dialog"` for the column dropdown (complex control panel).
 
-**FR-3.10**: Sort state changes MUST be announced to screen readers via an `aria-live="polite"` region with message format: "Table sorted by {column}, {direction}" (e.g., "Table sorted by Power, descending").
+**FR-3.10**: Sort state changes MUST be announced to screen readers via an `aria-live="polite"` region with message format: "Table sorted by {column}, {direction}" (e.g., "Table sorted by Power, descending"). When sort is cleared, announce "Table sort cleared".
 
 ### FR-4: Mobile Tile Layout
 
@@ -218,6 +218,7 @@ const getTileStyle = (panel: PanelData, hasMismatch: boolean): React.CSSProperti
              `│ String 1  │ 2.4 kW │ 45V │ 12 panels │ ▼ │`
              `└──────────────────────────────────────┘`
 - The summary header is tappable to collapse/expand the string section
+- The summary header MUST have a minimum height of 44px to meet touch target requirements (NFR-2.1)
 
 ## Non-Functional Requirements
 
@@ -229,7 +230,7 @@ const getTileStyle = (panel: PanelData, hasMismatch: boolean): React.CSSProperti
 
 **NFR-2.2**: The controls bar (threshold + columns + expand/collapse) SHOULD target 56-64px height on mobile to accommodate comfortable touch targets. Touch targets MUST be at least 44x44px with a minimum horizontal gap of 12px between adjacent touch targets to prevent accidental taps. If the combined width of controls exceeds the viewport, the bar MAY wrap to multiple rows.
 
-**NFR-2.3**: On touch devices, compact density row height increases to 44px to meet touch target requirements. The 36px compact height only applies to pointer devices with fine precision (detected via `@media (pointer: fine)`). Implementation approach: use padding to extend tap target beyond visual bounds rather than increasing visual height.
+**NFR-2.3**: On touch devices, compact density row height increases to 44px to meet touch target requirements. The 36px compact height only applies to pointer devices with fine precision (detected via `@media (pointer: fine)`). Implementation approach: The visual row height remains at 36px for compact density, but the tap target extends to 44px using transparent padding or pseudo-elements that extend beyond the visual bounds. This maintains visual density while meeting accessibility requirements. Note: Hybrid devices (laptop with touchscreen) typically report `pointer: fine` for primary input; they can use mouse/trackpad for precise interaction.
 
 **NFR-3.1**: All user preferences (columns, density, sort, collapsed strings) MUST persist across page reloads via localStorage.
 
@@ -356,7 +357,7 @@ interface PanelData {
   rssi?: number;
   energy?: number;
   is_temporary?: boolean;
-  age: number; // seconds since last data update (required; display "—" if unavailable)
+  age: number | null; // seconds since last data update; null displayed as "—"
 }
 
 interface PanelTileProps {
@@ -599,8 +600,9 @@ const STORAGE_KEYS = {
 // - tableSort: { column: null, direction: null } if missing or malformed
 // - collapsedStrings: [] if missing or malformed
 
-// Version key for future migrations (optional but recommended):
-// tablePrefsVersion: '1' - allows detecting schema changes in future updates
+// Version key for forward compatibility (required):
+// tablePrefsVersion: '1' - current schema version
+// Migration: If tablePrefsVersion is missing, assume version '0' (pre-versioned) and apply all migrations
 
 // localStorage availability handling:
 // If localStorage is unavailable (private browsing, storage quota exceeded),
@@ -721,8 +723,8 @@ const STORAGE_KEYS = {
     - 8+ fields selected → verify 3-row layout renders correctly
 
 19. **Sort + column visibility interaction**
-    - Hide currently sorted column → verify data remains sorted (no indicator)
-    - Show hidden column that was previously sorted → verify indicator reappears
+    - Hide currently sorted column → verify sort is cleared (reset to unsorted)
+    - Show previously sorted column → verify no automatic re-sorting (user must click to sort again)
 
 20. **Mismatch style priority**
     - Panel with mismatch AND wrong CCA → verify red (mismatch) style applies
@@ -733,6 +735,8 @@ const STORAGE_KEYS = {
     - Existing user with only old keys → verify new keys get defaults
     - Corrupted/malformed localStorage → verify graceful fallback without errors
     - Invalid column keys in tableColumns → verify invalid keys filtered silently
+
+**Note:** Key rename migrations are out of scope for v1. The version key (`tablePrefsVersion`) enables future migrations when key renames are needed.
 
 ## Related Specifications
 
