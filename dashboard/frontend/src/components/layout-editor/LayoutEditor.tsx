@@ -144,14 +144,20 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
   const imageHeight = editor.layoutConfig?.image_height || 600;
   const hasImage = !!editor.layoutConfig?.image_path;
 
+  // Calculate scaled dimensions for canvas display
+  // Image scale affects editor canvas only - panel positions are stored as percentages
+  const scaledWidth = (imageWidth * editor.imageScale) / 100;
+  const scaledHeight = (imageHeight * editor.imageScale) / 100;
+
   // Build spatial index excluding the dragging panel
+  // Uses scaled dimensions so snap calculations work correctly at any scale
   const activeSpatialIndex = useMemo(() => {
     if (!activeDragId) return editor.spatialIndex;
     const positionedPanels = editor.panels
       .filter(p => editor.positions[p.serial] != null)
       .map(p => ({ ...p, position: editor.positions[p.serial]! }));
-    return buildSpatialIndex(positionedPanels, editor.overlaySize, activeDragId, { width: imageWidth, height: imageHeight });
-  }, [editor.panels, editor.positions, editor.overlaySize, activeDragId, editor.spatialIndex, imageWidth, imageHeight]);
+    return buildSpatialIndex(positionedPanels, editor.overlaySize, activeDragId, { width: scaledWidth, height: scaledHeight });
+  }, [editor.panels, editor.positions, editor.overlaySize, activeDragId, editor.spatialIndex, scaledWidth, scaledHeight]);
 
   // Handle drag start
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -203,13 +209,13 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         dragPosition,
         activeSpatialIndex,
         true,
-        { width: imageWidth, height: imageHeight },
+        { width: scaledWidth, height: scaledHeight },
         editor.overlaySize
       );
 
       setActiveGuides(guides);
     },
-    [editor.snapEnabled, editor.overlaySize, activeSpatialIndex, imageWidth, imageHeight]
+    [editor.snapEnabled, editor.overlaySize, activeSpatialIndex, scaledWidth, scaledHeight]
   );
 
   // Handle drag end
@@ -238,12 +244,13 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         };
       } else {
         // Panel already on canvas - calculate from current position + delta
+        // Position is stored as percentage, convert to scaled pixels for calculation
         const currentPos = editor.positions[panel.serial];
         if (!currentPos) return;
 
         const currentPixel = {
-          x: (currentPos.x_percent / 100) * imageWidth,
-          y: (currentPos.y_percent / 100) * imageHeight,
+          x: (currentPos.x_percent / 100) * scaledWidth,
+          y: (currentPos.y_percent / 100) * scaledHeight,
         };
 
         newPosition = {
@@ -252,21 +259,22 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         };
       }
 
-      // Apply snap if enabled
+      // Apply snap if enabled (uses scaled dimensions)
       if (editor.snapEnabled) {
         const { position: snappedPos } = calculateSnap(
           { width: editor.overlaySize, height: editor.overlaySize, serial: panel.serial },
           newPosition,
           activeSpatialIndex,
           true,
-          { width: imageWidth, height: imageHeight },
+          { width: scaledWidth, height: scaledHeight },
           editor.overlaySize
         );
         newPosition = snappedPos;
       }
 
-      // Convert to percentage and clamp
-      const percentPos = pixelToPercent(newPosition, { width: imageWidth, height: imageHeight });
+      // Convert to percentage and clamp (uses scaled dimensions)
+      // Percentages are relative to scaled canvas, which equals original image percentages
+      const percentPos = pixelToPercent(newPosition, { width: scaledWidth, height: scaledHeight });
 
       // Filter to only positioned panels (unpositioned sidebar panels have no coordinates)
       const positionedSelection = editor.getPositionedSelection();
@@ -320,8 +328,8 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       editor.selectedPanels,
       editor.getPositionedSelection,
       activeSpatialIndex,
-      imageWidth,
-      imageHeight,
+      scaledWidth,
+      scaledHeight,
     ]
   );
 
@@ -521,6 +529,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
   }, [editor.isEditMode, editor.recordCurrentHistoryState]);
 
   // Auto-arrange unpositioned panels
+  // Uses original image dimensions for percentage calculations (scale-independent)
   const handleAutoArrange = useCallback(() => {
     if (editor.unpositionedPanels.length === 0) return;
 
@@ -545,6 +554,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       let col = 0;
 
       for (const panel of panels) {
+        // Use original image dimensions for percentage calculation (scale-independent)
         updates[panel.serial] = {
           x_percent: startX + (col * gridGap / imageWidth) * 100,
           y_percent: startY + (row * gridGap / imageHeight) * 100,
@@ -638,6 +648,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         hasUnsavedChanges={editor.hasUnsavedChanges}
         isSaving={editor.isSaving}
         overlaySize={editor.overlaySize}
+        imageScale={editor.imageScale}
         snapEnabled={editor.snapEnabled}
         canUndo={editor.canUndo}
         canRedo={editor.canRedo}
@@ -645,6 +656,8 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         onExitEditMode={editor.exitEditMode}
         onSave={editor.save}
         onOverlaySizeChange={editor.setOverlaySize}
+        onImageScaleChange={editor.setImageScale}
+        onImageScaleCommit={editor.onImageScaleCommit}
         onSnapToggle={() => editor.setSnapEnabled(!editor.snapEnabled)}
         onUndo={editor.undo}
         onRedo={editor.redo}
@@ -742,7 +755,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
                 ref={canvasRef}
                 tabIndex={0}
                 style={{
-                  ...canvasStyle(imageWidth, imageHeight),
+                  ...canvasStyle(scaledWidth, scaledHeight),
                   outline: canvasFocused ? '2px solid #4a90d9' : 'none',
                   outlineOffset: '-2px',
                 }}

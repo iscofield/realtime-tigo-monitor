@@ -295,13 +295,46 @@ export async function getLayoutConfig(): Promise<LayoutConfig> {
 }
 
 /**
- * Update layout configuration (overlay size).
+ * Payload for updating layout configuration.
  */
-export async function updateLayoutConfig(overlaySize: number): Promise<void> {
-  await apiFetch('/api/layout', {
-    method: 'PUT',
-    body: JSON.stringify({ overlay_size: overlaySize }),
-  });
+export interface LayoutUpdatePayload {
+  overlay_size: number;
+  image_scale: number;
+}
+
+/**
+ * Update layout configuration (overlay size and image scale).
+ * BREAKING CHANGE: Now accepts config object instead of single number.
+ */
+export async function updateLayoutConfig(config: LayoutUpdatePayload): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/layout`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+  } catch (error) {
+    // Network error (no response received) - preserve original for debugging
+    console.error('Network request failed:', error);
+    // ES2022 Error cause - supported by all modern browsers (2022+)
+    throw new Error('Connection error. Please check your network.', { cause: error });
+  }
+
+  if (!response.ok) {
+    let message = 'Failed to update layout config';
+    try {
+      const error = await response.json();
+      // Handle FastAPI array format
+      const detail = Array.isArray(error.detail)
+        ? error.detail.map((e: { msg: string }) => e.msg).join(', ')
+        : error.detail;
+      message = detail || message;
+    } catch {
+      // Non-JSON response (e.g., 502 gateway error)
+    }
+    throw new Error(message);
+  }
 }
 
 /**

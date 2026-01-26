@@ -58,7 +58,7 @@ def error_response(
 async def get_layout_config():
     """Get layout configuration (FR-1.4).
 
-    Returns layout metadata including image info and overlay size.
+    Returns layout metadata including image info, overlay size, and image scale.
     """
     service = get_config_service()
     try:
@@ -70,6 +70,7 @@ async def get_layout_config():
             image_hash=config.image_hash,
             aspect_ratio=config.aspect_ratio,
             overlay_size=config.overlay_size,
+            image_scale=config.image_scale,
             last_modified=config.last_modified,
         )
     except ConfigServiceError as e:
@@ -80,13 +81,14 @@ async def get_layout_config():
 async def update_layout_config(request: LayoutUpdateRequest):
     """Update layout configuration (FR-5.2).
 
-    Updates overlay size. Image is updated via separate endpoint.
+    Updates overlay size and image scale. Image is updated via separate endpoint.
     """
     service = get_config_service()
     try:
         # Load existing config to preserve other fields
         config = service.load_layout_config()
         config.overlay_size = request.overlay_size
+        config.image_scale = request.image_scale
         config.last_modified = datetime.now(timezone.utc).isoformat()
         service.save_layout_config(config)
         return SuccessResponse(message="Layout configuration saved")
