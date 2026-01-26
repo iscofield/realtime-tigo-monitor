@@ -8,9 +8,11 @@ REST endpoints for backup/restore functionality:
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import io
 
 from .backup_service import (
@@ -18,6 +20,11 @@ from .backup_service import (
     BackupServiceError,
     get_backup_service,
 )
+
+
+class CommitImageRequest(BaseModel):
+    """Request body for committing a restore image."""
+    overlay_size: Optional[int] = None
 
 logger = logging.getLogger(__name__)
 
@@ -151,21 +158,24 @@ async def restore_backup(file: UploadFile = File(...)):
 
 
 @router.post("/restore/image/{token}")
-async def commit_restore_image(token: str):
+async def commit_restore_image(token: str, body: CommitImageRequest | None = None):
     """Commit a temporarily stored image to the final location.
 
     Called after user confirms restore in the wizard.
 
     Args:
         token: Token from POST /api/backup/restore response
+        body: Optional request body with overlay_size from backup
 
     Returns:
         Image metadata (width, height, hash)
     """
     service = get_backup_service()
 
+    overlay_size = body.overlay_size if body else None
+
     try:
-        result = service.commit_temp_image(token)
+        result = service.commit_temp_image(token, overlay_size=overlay_size)
     except BackupServiceError as e:
         status_code = 404 if e.error_code == "not_found" else 500
         raise error_response(status_code, e.error_code, e.message)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Test restore flow preserves panel positions."""
+"""Test restore flow preserves panel positions and overlay_size."""
 import json
 import requests
 
-BACKUP_FILE = "/Users/ian/code/local-sync/solar_tigo_viewer/.worktrees/fix-restore-panel-positions/dashboard/backend/tests/fixtures/test-backup-69-panels.zip"
+BACKUP_FILE = "/Users/ian/code/local-sync/solar_tigo_viewer/dashboard/backend/tests/fixtures/test-backup-69-panels.zip"
 BASE_URL = "http://localhost:5174"
 
 
@@ -21,8 +21,14 @@ def main():
 
     restore_data = resp.json()
     panels = restore_data.get("panels", [])
+    layout = restore_data.get("layout", {})
+    image_token = restore_data.get("image_token")
+
     with_pos = sum(1 for p in panels if p.get("position"))
     print(f"Panels with positions in restore response: {with_pos}/{len(panels)}")
+
+    backup_overlay_size = layout.get("overlay_size") if layout else None
+    print(f"Overlay size in backup: {backup_overlay_size}")
 
     if panels and panels[0].get("position"):
         p = panels[0]
@@ -50,6 +56,18 @@ def main():
 
     print(f"Save response: {resp.json()}")
 
+    # Commit the image with overlay_size if we have a token
+    if image_token:
+        print("\n=== Step 2b: Commit image with overlay_size ===")
+        resp = requests.post(
+            f"{BASE_URL}/api/backup/restore/image/{image_token}",
+            json={"overlay_size": backup_overlay_size}
+        )
+        if resp.status_code == 200:
+            print(f"Image commit response: {resp.json()}")
+        else:
+            print(f"Image commit failed (may be expected): {resp.status_code}")
+
     print("\n=== Step 3: Verify saved panels have positions ===")
     resp = requests.get(f"{BASE_URL}/api/config/panels")
     saved_data = resp.json()
@@ -65,7 +83,17 @@ def main():
         print(f"\nERROR: Only {saved_with_pos}/{len(saved_panels)} panels have positions!")
         return False
 
-    print("\n=== SUCCESS: All panels have positions after restore! ===")
+    print("\n=== Step 4: Verify overlay_size was preserved ===")
+    resp = requests.get(f"{BASE_URL}/api/layout")
+    layout_data = resp.json()
+    restored_overlay_size = layout_data.get("overlay_size")
+    print(f"Overlay size after restore: {restored_overlay_size}")
+
+    if backup_overlay_size is not None and restored_overlay_size != backup_overlay_size:
+        print(f"\nERROR: Overlay size mismatch! Expected {backup_overlay_size}, got {restored_overlay_size}")
+        return False
+
+    print("\n=== SUCCESS: All panels have positions and overlay_size preserved after restore! ===")
     return True
 
 
