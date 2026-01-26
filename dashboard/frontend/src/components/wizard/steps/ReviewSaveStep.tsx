@@ -129,6 +129,7 @@ interface ReviewSaveStepProps {
   translations: Record<string, string>;
   restoreImageToken?: string;
   restoreOverlaySize?: number;
+  restoreImageScale?: number;  // undefined for legacy backups = default to 100
   onComplete: () => void;
   onBack: () => void;
 }
@@ -140,6 +141,7 @@ export function ReviewSaveStep({
   translations,
   restoreImageToken,
   restoreOverlaySize,
+  restoreImageScale,
   onComplete,
   onBack,
 }: ReviewSaveStepProps) {
@@ -202,7 +204,8 @@ export function ReviewSaveStep({
       // Commit restore image if present (from backup restore flow)
       if (restoreImageToken) {
         try {
-          await commitRestoreImage(restoreImageToken, restoreOverlaySize);
+          // Pass image_scale (undefined for legacy backups defaults to 100 in API layer)
+          await commitRestoreImage(restoreImageToken, restoreOverlaySize, restoreImageScale);
         } catch (imageError) {
           console.warn('Failed to commit restore image:', imageError);
           // Don't fail the whole save - config is already saved
