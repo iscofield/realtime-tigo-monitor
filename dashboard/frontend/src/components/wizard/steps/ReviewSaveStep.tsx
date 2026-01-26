@@ -128,6 +128,7 @@ interface ReviewSaveStepProps {
   discoveredPanels: Record<string, DiscoveredPanel>;
   translations: Record<string, string>;
   restoreImageToken?: string;
+  restoreOverlaySize?: number;
   onComplete: () => void;
   onBack: () => void;
 }
@@ -138,6 +139,7 @@ export function ReviewSaveStep({
   discoveredPanels,
   translations,
   restoreImageToken,
+  restoreOverlaySize,
   onComplete,
   onBack,
 }: ReviewSaveStepProps) {
@@ -180,21 +182,27 @@ export function ReviewSaveStep({
       await saveSystemConfig(topology);
 
       // Save panels config - transform to backend format
-      // Backend expects: { serial, cca, string, tigo_label, display_label }
+      // Backend expects: { serial, cca, string, tigo_label, display_label, position }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const backendPanels = panels.map(p => ({
-        serial: p.serial,
-        cca: p.cca,
-        string: p.string,
-        tigo_label: p.tigo_label!,
-        display_label: p.label,  // Map frontend 'label' to backend 'display_label'
-      })) as any[];
+      const backendPanels = panels.map(p => {
+        // Look up the original discovered panel to get layout position (from backup restore)
+        const discovered = discoveredPanels[p.serial];
+        return {
+          serial: p.serial,
+          cca: p.cca,
+          string: p.string,
+          tigo_label: p.tigo_label!,
+          display_label: p.label,  // Map frontend 'label' to backend 'display_label'
+          // Include layout position if available (from backup restore)
+          position: discovered?.layout_position || null,
+        };
+      }) as any[];
       await savePanelsConfig({ version: 1, panels: backendPanels });
 
       // Commit restore image if present (from backup restore flow)
       if (restoreImageToken) {
         try {
-          await commitRestoreImage(restoreImageToken);
+          await commitRestoreImage(restoreImageToken, restoreOverlaySize);
         } catch (imageError) {
           console.warn('Failed to commit restore image:', imageError);
           // Don't fail the whole save - config is already saved

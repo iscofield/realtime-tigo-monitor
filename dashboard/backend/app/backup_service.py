@@ -388,11 +388,12 @@ class BackupService:
                 error_code="storage_error"
             )
 
-    def commit_temp_image(self, token: str) -> dict:
+    def commit_temp_image(self, token: str, overlay_size: int | None = None) -> dict:
         """Commit a temporary image to the final location.
 
         Args:
             token: Token from store_temp_image
+            overlay_size: Optional overlay size from backup to preserve
 
         Returns:
             dict with keys: width, height, hash
@@ -446,6 +447,9 @@ class BackupService:
             layout_config.image_hash = image_hash
             layout_config.aspect_ratio = width / height if height > 0 else None
             layout_config.last_modified = datetime.now(timezone.utc).isoformat()
+            # Preserve overlay_size from backup if provided
+            if overlay_size is not None:
+                layout_config.overlay_size = overlay_size
 
             self.config_service.save_layout_config(layout_config)
 

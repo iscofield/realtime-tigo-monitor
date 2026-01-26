@@ -60,15 +60,21 @@ export async function restoreBackup(file: File): Promise<RestoreData> {
  * Commit a temporarily stored image to the final location.
  *
  * @param token - Token from restoreBackup response
+ * @param overlaySize - Optional overlay size from backup to preserve
  * @returns Image metadata
  * @throws Error if commit fails
  */
 export async function commitRestoreImage(
-  token: string
+  token: string,
+  overlaySize?: number
 ): Promise<RestoreImageCommitResponse> {
   const url = `${API_BASE}/api/backup/restore/image/${encodeURIComponent(token)}`;
   const response = await fetch(url, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ overlay_size: overlaySize ?? null }),
   });
 
   if (!response.ok) {
