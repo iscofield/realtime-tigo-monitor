@@ -148,6 +148,7 @@ export interface WizardState {
   restoredFromBackup: boolean;
   restoreImageToken?: string;
   restoreOverlaySize?: number;  // Overlay size from backup to restore
+  restoreImageScale?: number;   // Image scale from backup to restore (undefined = missing from backup, defaults to 100)
 }
 
 // Persisted state wrapper with versioning
@@ -231,6 +232,7 @@ export interface LayoutConfig {
   image_hash: string | null;
   aspect_ratio: number | null;
   overlay_size: number;
+  image_scale: number;  // 25-200: background image display scale percentage
   last_modified: string | null;
 }
 
@@ -274,9 +276,15 @@ export interface LayoutDraft {
   overlaySize: number;
 }
 
+// Editor state captured for undo/redo history
+export interface EditorHistoryState {
+  positions: Record<string, PanelPosition | null>;
+  imageScale: number;
+}
+
 // Edit history for undo/redo
 export interface EditHistory {
-  states: Record<string, PanelPosition | null>[];
+  states: EditorHistoryState[];
   currentIndex: number;
 }
 
