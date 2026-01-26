@@ -4,11 +4,14 @@ These Pydantic models define the YAML configuration schema and related types.
 All API responses use snake_case for consistency with TypeScript interfaces.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 # Reserved CCA names that conflict with Docker or system conventions
@@ -156,17 +159,50 @@ class LayoutConfig(BaseModel):
     image_hash: Optional[str] = None
     aspect_ratio: Optional[float] = None
     overlay_size: int = Field(default=50, ge=20, le=200)
+    image_scale: int = Field(default=100, ge=25, le=200)
     last_modified: Optional[str] = None
+
+    @field_validator('image_scale', mode='before')
+    @classmethod
+    def clamp_image_scale(cls, v):
+        """Clamp image_scale to valid range and handle invalid types.
+
+        Handles legacy backups and manual edits gracefully:
+        - Missing/null: default to 100
+        - Out of range: clamp to 25-200 with warning
+        - Invalid type: log warning, use 100
+        """
+        if v is None:
+            return 100
+        try:
+            v = int(v)
+            if v < 25 or v > 200:
+                logger.warning(
+                    f"image_scale {v} out of range, clamping to {max(25, min(200, v))}"
+                )
+                return max(25, min(200, v))
+            return v
+        except (TypeError, ValueError):
+            logger.warning(
+                f"image_scale has invalid type {type(v).__name__}, using default 100"
+            )
+            return 100
 
 
 class LayoutConfigResponse(BaseModel):
-    """Response for GET /api/layout."""
+    """Response for GET /api/layout.
+
+    Note: Response model does not validate since data comes from
+    already-validated LayoutConfig internal model. Plain defaults
+    are sufficient for serialization.
+    """
     image_path: Optional[str] = None
     image_width: Optional[int] = None
     image_height: Optional[int] = None
     image_hash: Optional[str] = None
     aspect_ratio: Optional[float] = None
     overlay_size: int = 50
+    image_scale: int = 100
     last_modified: Optional[str] = None
 
 
