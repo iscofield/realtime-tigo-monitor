@@ -41,12 +41,12 @@ The current TableView has several UX issues:
 
 **FR-1.7**: The dropdown MUST be fully keyboard accessible:
 - Enter or Space on the "Columns" button MUST open the dropdown
-- Escape MUST close the dropdown and return focus to the trigger button
+- Escape MUST close the dropdown immediately and return focus to the trigger button (discarding any active type-ahead buffer)
 - Tab MUST navigate forward through checkboxes and preset buttons in document order
 - Shift+Tab MUST navigate backward through interactive elements
 - Space MUST toggle the currently focused checkbox
 - Arrow keys (`↑`/`↓`) MUST move focus between checkboxes within the current category
-- Arrow keys (`←`/`→`) MAY move focus between category sections (optional enhancement)
+- Arrow keys (`←`/`→`) MAY move focus between category sections (optional enhancement; not included in Phase 5 test plan)
 - Home MUST move focus to the first interactive element in the dropdown
 - End MUST move focus to the last interactive element in the dropdown
 - When dropdown opens, focus MUST move to the first interactive element
@@ -86,6 +86,7 @@ The current TableView has several UX issues:
 - When a sorted column is hidden: Sort MUST be preserved invisibly (data remains sorted, but no visual indicator is shown since the column is hidden)
 - When the persisted sort column no longer exists (removed in an update): Reset to unsorted without throwing an error
 - When localStorage contains malformed sort data: Reset to unsorted without throwing an error
+- When a hidden sorted column is shown again: The sort indicator MUST reappear and sorting MUST continue to apply (no data re-sort needed since it was preserved)
 
 **FR-3.5**: Sorting MUST apply within each string section independently (not globally across all panels).
 
@@ -95,9 +96,26 @@ The current TableView has several UX issues:
 
 **FR-3.8**: On mobile, a "Sort by" dropdown MUST be included in the controls bar to allow users to change the sort field:
 - The dropdown MUST display the currently selected sort field (or "Unsorted" if none)
-- Selecting a field cycles through: ascending → descending → unsorted (same as desktop)
+- Selecting a field follows this behavior:
+  - Selecting an unsorted field sets it to ascending (first click)
+  - Re-selecting the currently sorted field advances the cycle (asc→desc→unsorted)
+  - Selecting a different field clears the previous sort and sets the new field to ascending
+  - Selecting "Unsorted" explicitly clears all sorting
 - The dropdown options MUST include all visible data columns plus "Unsorted"
 - Sort indicator (`▲`/`▼`) MUST be displayed next to the selected field name
+- "Unsorted" appears at the top of the dropdown list
+- When "Unsorted" is selected, the dropdown button displays "Sort by" with no indicator
+- Only visible columns appear in the sort dropdown (hidden columns cannot be sorted on mobile)
+- If the currently sorted column is hidden via column selector, sort automatically resets to default (Panel ID ascending)
+
+**FR-3.9**: The mobile sort dropdown MUST follow the same keyboard accessibility requirements as the column dropdown (FR-1.7), including:
+- `aria-expanded`, `aria-haspopup="listbox"`, `aria-controls` attributes
+- Escape to close, Arrow keys to navigate options
+- Enter/Space to select
+
+**Note:** `aria-haspopup="listbox"` is used for the sort dropdown (simple selection list) vs `"dialog"` for the column dropdown (complex control panel).
+
+**FR-3.10**: Sort state changes MUST be announced to screen readers via an `aria-live="polite"` region with message format: "Table sorted by {column}, {direction}" (e.g., "Table sorted by Power, descending").
 
 ### FR-4: Mobile Tile Layout
 
@@ -111,7 +129,7 @@ The current TableView has several UX issues:
 
 **FR-4.4**: Data field layout in Row 2 MUST follow these rules:
 - **0 fields selected**: Row 2 is hidden entirely (only Row 1 with Panel ID, CCA Source, Age is shown)
-- **1-3 fields selected**: Fields are distributed with equal width (e.g., 1 field = 100%, 2 fields = 50% each, 3 fields = 33% each)
+- **1-3 fields selected**: Fields use `flex: 1` to auto-distribute with gap handling (flexbox manages spacing automatically)
 - **4 fields selected**: Each field is 25% width (4 fields fill one row)
 - **5+ fields selected**: Tiles flow to additional rows with maximum 4 fields per row
 - **Maximum**: No hard limit, but 8+ fields (3+ rows) may degrade UX; implementers MAY add a soft warning in the column selector
@@ -159,7 +177,26 @@ The current TableView has several UX issues:
 2. **Wrong CCA (purple)** - Configuration issue; panel is reporting to unexpected CCA
 3. **Temporary ID (yellow)** - Informational warning; panel is using a temporary identifier
 
-Only the highest-priority style is applied (no style combinations).
+Only the highest-priority style is applied. The following implementation pattern ensures correct priority:
+
+```typescript
+const getTileStyle = (panel: PanelData, hasMismatch: boolean): React.CSSProperties => {
+  let style = { ...tileStyles.base };
+
+  // Apply in reverse priority order (lowest first, highest overwrites)
+  if (panel.isTemporary) {
+    style = { ...style, ...tileStyles.temporary };
+  }
+  if (panel.expectedCcaId && panel.actualCcaId !== panel.expectedCcaId) {
+    style = { ...style, ...tileStyles.wrongCca };
+  }
+  if (hasMismatch) {
+    style = { ...style, ...tileStyles.mismatch };
+  }
+
+  return style;
+};
+```
 
 ### FR-7: String Summary Preservation
 
@@ -173,7 +210,13 @@ Only the highest-priority style is applied (no style combinations).
 - Total power for the string
 - Average/total voltage
 - Panel count (e.g., "12 panels")
-- The summary MUST be visually distinct from panel tiles (e.g., different background color, no border, or horizontal layout instead of tile format)
+- The summary MUST be visually distinct from panel tiles:
+  - Background color: `#1a1a1a` (slightly darker than tile `#252525`)
+  - No border (tiles have 2px border)
+  - Full-width horizontal layout (not card format)
+  - Example: `┌──────────────────────────────────────┐`
+             `│ String 1  │ 2.4 kW │ 45V │ 12 panels │ ▼ │`
+             `└──────────────────────────────────────┘`
 - The summary header is tappable to collapse/expand the string section
 
 ## Non-Functional Requirements
@@ -185,6 +228,8 @@ Only the highest-priority style is applied (no style combinations).
 **NFR-2.1**: Touch targets on mobile MUST be at least 44x44px per Apple HIG / Material Design guidelines.
 
 **NFR-2.2**: The controls bar (threshold + columns + expand/collapse) SHOULD target 56-64px height on mobile to accommodate comfortable touch targets. Touch targets MUST be at least 44x44px with a minimum horizontal gap of 12px between adjacent touch targets to prevent accidental taps. If the combined width of controls exceeds the viewport, the bar MAY wrap to multiple rows.
+
+**NFR-2.3**: On touch devices, compact density row height increases to 44px to meet touch target requirements. The 36px compact height only applies to pointer devices with fine precision (detected via `@media (pointer: fine)`). Implementation approach: use padding to extend tap target beyond visual bounds rather than increasing visual height.
 
 **NFR-3.1**: All user preferences (columns, density, sort, collapsed strings) MUST persist across page reloads via localStorage.
 
@@ -251,7 +296,7 @@ interface ColumnDropdownProps {
   onToggleColumn: (column: string) => void;
   density: 'compact' | 'standard';
   onDensityChange: (density: 'compact' | 'standard') => void;
-  onPreset: (preset: 'essential' | 'all' | 'reset') => void;
+  onPreset: (preset: 'essential' | 'all') => void;
 }
 
 // Column categories for grouping
@@ -311,7 +356,7 @@ interface PanelData {
   rssi?: number;
   energy?: number;
   is_temporary?: boolean;
-  age?: number; // seconds since last data update
+  age: number; // seconds since last data update (required; display "—" if unavailable)
 }
 
 interface PanelTileProps {
@@ -397,7 +442,9 @@ function SortableHeader({
       <button
         onClick={() => onSort(column)}
         style={buttonResetStyle}
-        aria-label={`Sort by ${label}`}
+        aria-label={isActive
+          ? `Sort by ${label}, currently ${sortState.direction === 'asc' ? 'ascending' : 'descending'}`
+          : `Sort by ${label}`}
       >
         {label} {indicator}
       </button>
@@ -554,6 +601,10 @@ const STORAGE_KEYS = {
 
 // Version key for future migrations (optional but recommended):
 // tablePrefsVersion: '1' - allows detecting schema changes in future updates
+
+// localStorage availability handling:
+// If localStorage is unavailable (private browsing, storage quota exceeded),
+// defaults are used for the session without persistence. No error is shown to the user.
 ```
 
 ## Task Breakdown
@@ -640,7 +691,7 @@ const STORAGE_KEYS = {
     - Escape key closes dropdown and returns focus to trigger button
     - Tab navigates through checkboxes and preset buttons in document order
     - Space/Enter toggles checkbox under focus
-    - Verify ARIA attributes: `aria-expanded`, `aria-haspopup="menu"` on trigger button
+    - Verify ARIA attributes: `aria-expanded`, `aria-haspopup="dialog"`, `aria-controls` on trigger button
 
 15. **Sorting feature testing**
     - Click column header cycles through: unsorted → ascending → descending → unsorted
