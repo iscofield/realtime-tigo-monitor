@@ -292,7 +292,7 @@ Issues to investigate.
 
 If you can't resolve an issue:
 
-1. **Check existing issues:** [GitHub Issues](https://github.com/yourusername/solar_tigo_viewer/issues)
+1. **Check existing issues:** [GitHub Issues](https://github.com/iscofield/solar_tigo_viewer/issues)
 
 2. **Gather diagnostic information:**
    - Container logs

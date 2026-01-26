@@ -63,79 +63,18 @@ For more details, see:
 - [Eclipse Mosquitto Docker Hub](https://hub.docker.com/_/eclipse-mosquitto)
 - [Mosquitto Docker Configuration Guide](https://cedalo.com/blog/mosquitto-docker-configuration-ultimate-guide/)
 
-## Step 1: Deploy the tigo-mqtt Service
+## Step 1: Deploy the Dashboard
 
-The tigo-mqtt service runs on the device connected to your Tigo CCA hardware (typically a Raspberry Pi).
+The dashboard can run on the same Raspberry Pi or a separate server.
 
 ### 1.1 Clone the Repository
 
 ```bash
-ssh pi@your-raspberry-pi
-git clone https://github.com/yourusername/solar_tigo_viewer.git
-cd solar_tigo_viewer/tigo-mqtt
-```
-
-### 1.2 Identify Serial Devices
-
-Connect your Tigo CCA device(s) via USB and identify the serial ports:
-
-```bash
-ls -la /dev/ttyACM*
-# or
-dmesg | grep ttyACM
-```
-
-Note the device paths (e.g., `/dev/ttyACM0`, `/dev/ttyACM1`).
-
-### 1.3 Configure Environment
-
-Create the environment file:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` with your MQTT broker details:
-
-```env
-MQTT_HOST=192.168.1.100
-MQTT_PORT=1883
-MQTT_USER=your_mqtt_username
-MQTT_PASS=your_mqtt_password
-```
-
-### 1.4 Generate Configuration via Setup Wizard
-
-The setup wizard (in the dashboard) will generate the tigo-mqtt configuration files for you. For now, you can start with a basic configuration or wait until Step 3.
-
-### 1.5 Start the Service
-
-```bash
-docker compose up --build -d
-```
-
-### 1.6 Verify Operation
-
-Check the logs to ensure it's running:
-
-```bash
-docker compose logs -f
-```
-
-You should see messages indicating connection to the CCA devices and MQTT publishing.
-
-## Step 2: Deploy the Dashboard
-
-The dashboard can run on the same Raspberry Pi or a separate server.
-
-### 2.1 Clone the Repository (if on a different machine)
-
-```bash
-git clone https://github.com/yourusername/solar_tigo_viewer.git
+git clone https://github.com/iscofield/solar_tigo_viewer.git
 cd solar_tigo_viewer/dashboard
 ```
 
-### 2.2 Configure Environment
+### 1.2 Configure Environment
 
 ```bash
 cp backend/.env.example backend/.env
@@ -163,25 +102,25 @@ WS_BATCH_INTERVAL_MS=500
 STALENESS_THRESHOLD_SECONDS=300
 ```
 
-### 2.3 Start the Dashboard
+### 1.3 Start the Dashboard
 
 ```bash
 docker compose up --build -d
 ```
 
-### 2.4 Access the Dashboard
+### 1.4 Access the Dashboard
 
 Open your browser to `http://your-server:5174`
 
-## Step 3: First-Time Setup Wizard
+## Step 2: First-Time Setup Wizard
 
 When you first access the dashboard, you'll be guided through the setup wizard.
 
-### 3.1 Welcome Screen
+### 2.1 Welcome Screen
 
 Choose **Fresh Setup** to configure from scratch, or **Restore from Backup** if you have a previous configuration.
 
-### 3.2 MQTT Configuration
+### 2.2 MQTT Configuration
 
 Enter your MQTT broker details and test the connection:
 
@@ -189,7 +128,7 @@ Enter your MQTT broker details and test the connection:
 - **Port**: Usually 1883
 - **Username/Password**: Your MQTT credentials
 
-### 3.3 System Topology
+### 2.3 System Topology
 
 Define your CCA devices and their strings:
 
@@ -208,32 +147,72 @@ CCA: "inverter2" on /dev/ttyACM1
   - String D: 8 panels
 ```
 
-### 3.4 Generate tigo-mqtt Configuration
+### 2.4 Download Generated Configurations
 
-The wizard will generate configuration files for the tigo-mqtt service. Download these and deploy them to your Raspberry Pi:
+The wizard will generate docker-compose and configuration files for the tigo-mqtt service. Download these files — you'll deploy them in Step 3.
 
-```bash
-# On your Raspberry Pi
-cd ~/solar_tigo_viewer/tigo-mqtt
-# Copy the downloaded files here
-docker compose down
-docker compose up --build -d
-```
-
-### 3.5 Panel Discovery
+### 2.5 Panel Discovery
 
 Once tigo-mqtt is running with the new configuration, the wizard will discover panels as they report in. Wait for all panels to appear (this may take a few minutes during daylight hours).
 
-### 3.6 Panel Validation
+### 2.6 Panel Validation
 
 Review and confirm the discovered panels:
 - Verify serial numbers match your installation
 - Assign labels if needed
 - Confirm string assignments
 
-### 3.7 Save Configuration
+### 2.7 Save Configuration
 
 Review the final configuration and save. The dashboard is now ready to use.
+
+## Step 3: Deploy tigo-mqtt Service
+
+The tigo-mqtt service runs on the device connected to your Tigo CCA hardware (typically a Raspberry Pi).
+
+### 3.1 Clone the Repository
+
+```bash
+ssh pi@your-raspberry-pi
+git clone https://github.com/iscofield/solar_tigo_viewer.git
+cd solar_tigo_viewer/tigo-mqtt
+```
+
+### 3.2 Identify Serial Devices
+
+Connect your Tigo CCA device(s) via USB and identify the serial ports:
+
+```bash
+ls -la /dev/ttyACM*
+# or
+dmesg | grep ttyACM
+```
+
+Note the device paths (e.g., `/dev/ttyACM0`, `/dev/ttyACM1`).
+
+**Note:** Your serial device paths may vary depending on your USB adapter and system configuration. Common device paths include:
+- `/dev/ttyACM0`, `/dev/ttyACM1` — for CDC ACM devices (most common)
+- `/dev/ttyUSB0`, `/dev/ttyUSB1` — for FTDI/CH340 USB-to-serial adapters
+
+### 3.3 Deploy Generated Configuration
+
+Copy the configuration files downloaded from the Setup Wizard (Step 2.4) to your Raspberry Pi:
+
+```bash
+# Copy docker-compose.yml and config files to tigo-mqtt directory
+# Then start the service
+docker compose up --build -d
+```
+
+### 3.4 Verify Operation
+
+Check the logs to ensure it's running:
+
+```bash
+docker compose logs -f
+```
+
+You should see messages indicating connection to the CCA devices and MQTT publishing.
 
 ## Step 4: Upload Layout Image
 

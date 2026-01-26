@@ -19,7 +19,7 @@ A real-time visualization dashboard for Tigo Energy solar panel monitoring syste
 
 ### Real-Time Monitoring
 - **Live WebSocket updates** every 5-10 seconds
-- Color-coded panel status (green = producing, yellow = low output, red = offline)
+- Color-coded panel status with gradient shading (dark green = low output, light green = high output, red ✕ = offline) — matches the Tigo app
 - Display modes: watts, voltage, or serial number (last 4 digits)
 - Panel labels always visible on overlays alongside metrics
 - Stale data detection with configurable thresholds
@@ -27,7 +27,7 @@ A real-time visualization dashboard for Tigo Energy solar panel monitoring syste
 
 ### Layout View
 Upload your own solar array image and overlay live panel data:
-- Drag-and-drop panel positioning
+- Toggle between watts, voltage, or serial number display modes
 - Pan and zoom with mouse wheel or touch gestures
 - Pinch-to-zoom on touch devices
 - Responsive scaling on any device
@@ -36,7 +36,7 @@ Upload your own solar array image and overlay live panel data:
 
 ### Table View
 Detailed metrics organized by string with aggregation:
-- Real-time voltage, current, power, temperature
+- Real-time voltage, current, power, temperature, signal strength, daily energy, and more
 - String-level summaries and totals
 - Configurable column visibility (15 columns available)
 - Mismatch detection for panels on wrong inverter
@@ -47,6 +47,7 @@ Available columns: Label, Tigo Label, Node ID, Serial Number, System, Voltage In
 
 ### Layout Editor
 Intuitive visual editor for positioning panels:
+- Drag-and-drop panel positioning on your layout image
 - Snap-to-align guides for precise placement
 - Multi-select with bulk operations
 - Keyboard shortcuts (arrows to nudge, Ctrl+Z to undo)
@@ -78,6 +79,7 @@ Works great on phones and tablets:
 - Responsive design with bottom navigation
 - Touch-optimized controls
 - Check your panels from anywhere on your network
+- **Pro tip:** Use [Tailscale](https://tailscale.com/) to access your dashboard securely from outside your home network
 
 <p align="center">
   <img src="docs/screenshots/mobile-layout.png" alt="Mobile Layout" width="300" />
@@ -106,20 +108,20 @@ Every panel reports the following metrics:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Data Collection Device                        │
-│                    (Raspberry Pi or similar)                     │
-│                                                                  │
-│   ┌──────────────┐    ┌──────────────┐                          │
-│   │   Tigo CCA   │    │   Tigo CCA   │    ... (1 or more)       │
-│   │   Device     │    │   Device     │                          │
-│   └──────┬───────┘    └──────┬───────┘                          │
-│          │ RS485             │ RS485                             │
-│   ┌──────▼───────┐    ┌──────▼───────┐                          │
-│   │   taptap     │    │   taptap     │                          │
-│   │  container   │    │  container   │                          │
-│   └──────┬───────┘    └──────┬───────┘                          │
-│          └────────────┬──────┘                                  │
-│                       │ MQTT Publish                            │
+│                    Data Collection Device                       │
+│                    (Raspberry Pi or similar)                    │
+│                                                                 │
+│   ┌──────────────┐    ┌──────────────┐                         │
+│   │   Tigo CCA   │    │   Tigo CCA   │    ... (1 or more)      │
+│   │   Device     │    │   Device     │                         │
+│   └──────┬───────┘    └──────┬───────┘                         │
+│          │ RS485             │ RS485                            │
+│   ┌──────▼───────┐    ┌──────▼───────┐                         │
+│   │   taptap     │    │   taptap     │                         │
+│   │  container   │    │  container   │                         │
+│   └──────┬───────┘    └──────┬───────┘                         │
+│          └────────────┬──────┘                                 │
+│                       │ MQTT Publish                           │
 └───────────────────────┼─────────────────────────────────────────┘
                         ▼
                  ┌─────────────┐
@@ -164,7 +166,7 @@ The system supports **1 or more CCA devices** — configure as many as your inst
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/solar_tigo_viewer.git
+git clone https://github.com/iscofield/solar_tigo_viewer.git
 cd solar_tigo_viewer
 ```
 
@@ -202,12 +204,19 @@ For detailed instructions, see the [Deployment Guide](docs/DEPLOYMENT.md).
 
 ## Home Assistant Integration
 
-Solar Tigo Viewer can be embedded in Home Assistant dashboards using an iframe card.
+Solar Tigo Viewer can be embedded in Home Assistant dashboards using an iframe card. For the best experience, install the [Iframe Card](https://github.com/nicufarmache/lovelace-iframe-card) from HACS.
+
+### HACS Installation
+
+1. Open HACS in Home Assistant
+2. Go to **Frontend** → **Explore & Download Repositories**
+3. Search for "Iframe Card" and install it
+4. Restart Home Assistant
 
 ### Lovelace Card Configuration
 
 ```yaml
-type: iframe
+type: custom:iframe-card
 url: "http://your-server:5174/?view=layout&mode=watts"
 aspect_ratio: "150%"
 ```
@@ -219,8 +228,10 @@ aspect_ratio: "150%"
 | `view` | `layout`, `table`, `editor` | Which view to display |
 | `mode` | `watts`, `voltage`, `sn` | Display mode for panels |
 
+**Recommended:** The **Layout View** works best for embedding. The Table View may not display optimally in an iframe — consider building table-style views natively in Home Assistant using template sensors for better formatting control.
+
 Example URLs:
-- `http://server:5174/?view=layout&mode=watts` — Layout view showing power
+- `http://server:5174/?view=layout&mode=watts` — Layout view showing power (recommended for embedding)
 - `http://server:5174/?view=table` — Table view with all metrics
 
 ## Data Storage
@@ -268,14 +279,14 @@ Contributions are welcome! The project has a comprehensive test suite:
 
 Found a bug or have a feature request?
 
-- **[Open an Issue](https://github.com/yourusername/solar_tigo_viewer/issues)** — Bug reports and feature requests
-- **[Discussions](https://github.com/yourusername/solar_tigo_viewer/discussions)** — Questions and community support
+- **[Open an Issue](https://github.com/iscofield/solar_tigo_viewer/issues)** — Bug reports and feature requests
+- **[Discussions](https://github.com/iscofield/solar_tigo_viewer/discussions)** — Questions and community support
 
 ## Support the Project
 
 If you find Solar Tigo Viewer useful, consider supporting development:
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/yourusername)
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/iscofield)
 
 ## License
 
