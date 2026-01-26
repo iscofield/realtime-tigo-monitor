@@ -44,8 +44,8 @@ config/*.bak
 config/.layout-history/
 
 # Layout editor assets (Phase 2)
-# User-uploaded layout images are git-ignored
-dashboard/backend/assets/layout.png
+# Main layout.png is tracked as sample image for new clones
+# Backup files created during uploads are ignored
 dashboard/backend/assets/layout.backup.png
 dashboard/backend/assets/layout.reset-backup.png
 dashboard/backend/assets/.layout.*
