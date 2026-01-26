@@ -22,9 +22,13 @@ from .backup_service import (
 )
 
 
+from pydantic import Field
+
+
 class CommitImageRequest(BaseModel):
-    """Request body for committing a restore image."""
-    overlay_size: Optional[int] = None
+    """Request body for POST /api/backup/restore/image/{token}."""
+    overlay_size: Optional[int] = Field(default=None, ge=20, le=200)
+    image_scale: Optional[int] = Field(default=None, ge=25, le=200)
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +169,7 @@ async def commit_restore_image(token: str, body: CommitImageRequest | None = Non
 
     Args:
         token: Token from POST /api/backup/restore response
-        body: Optional request body with overlay_size from backup
+        body: Optional request body with overlay_size and image_scale from backup
 
     Returns:
         Image metadata (width, height, hash)
@@ -173,9 +177,14 @@ async def commit_restore_image(token: str, body: CommitImageRequest | None = Non
     service = get_backup_service()
 
     overlay_size = body.overlay_size if body else None
+    image_scale = body.image_scale if body else None
 
     try:
-        result = service.commit_temp_image(token, overlay_size=overlay_size)
+        result = service.commit_temp_image(
+            token,
+            overlay_size=overlay_size,
+            image_scale=image_scale,
+        )
     except BackupServiceError as e:
         status_code = 404 if e.error_code == "not_found" else 500
         raise error_response(status_code, e.error_code, e.message)
