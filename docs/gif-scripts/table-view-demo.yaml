@@ -1,0 +1,123 @@
+# GIF Script: Table View Demo
+# Shows the table view with column hiding and scrolling
+name: "Table View Demo"
+description: "Demonstrates the collapsible table view with column visibility and scrolling"
+version: 1
+
+settings:
+  output: "docs/images/table-view-demo.gif"
+  width: 900
+  height: 500
+  fps: 12
+  quality: medium
+
+setup:
+  - description: "Start dashboard services"
+    command: "cd dashboard && docker compose up -d"
+    wait: 5000
+
+actions:
+  - type: navigate
+    url: "http://localhost:5174"
+    description: "Open dashboard"
+
+  - type: wait
+    duration: 1500
+
+  # Expand the table (if collapsed)
+  - type: click
+    selector: "[data-testid='table-toggle'], .table-collapse-toggle"
+    description: "Expand table view"
+
+  - type: wait
+    duration: 800
+    description: "Show table expanding"
+
+  # Scroll through table rows
+  - type: evaluate
+    script: |
+      const table = document.querySelector('[data-testid="panel-table"], .panel-table');
+      if (table) {
+        table.scrollTo({ top: 200, behavior: 'smooth' });
+      }
+    description: "Scroll down in table"
+
+  - type: wait
+    duration: 800
+
+  - type: evaluate
+    script: |
+      const table = document.querySelector('[data-testid="panel-table"], .panel-table');
+      if (table) {
+        table.scrollTo({ top: 400, behavior: 'smooth' });
+      }
+    description: "Continue scrolling"
+
+  - type: wait
+    duration: 600
+
+  # Open column visibility menu
+  - type: click
+    selector: "[data-testid='column-settings'], .column-visibility-toggle"
+    description: "Open column settings"
+
+  - type: wait
+    duration: 600
+
+  # Hide a column
+  - type: click
+    selector: "[data-column='temperature'], input[name='temperature']"
+    description: "Hide Temperature column"
+
+  - type: wait
+    duration: 500
+
+  # Hide another column
+  - type: click
+    selector: "[data-column='rssi'], input[name='rssi']"
+    description: "Hide RSSI column"
+
+  - type: wait
+    duration: 500
+
+  # Close column menu
+  - type: click
+    selector: "[data-testid='column-settings-close'], .column-visibility-toggle"
+    description: "Close column settings"
+
+  - type: wait
+    duration: 600
+    description: "Show table with hidden columns"
+
+  # Scroll horizontally if needed
+  - type: evaluate
+    script: |
+      const table = document.querySelector('[data-testid="panel-table"], .panel-table');
+      if (table) {
+        table.scrollTo({ left: 200, behavior: 'smooth' });
+      }
+    description: "Scroll table horizontally"
+
+  - type: wait
+    duration: 600
+
+  # Scroll back to start
+  - type: evaluate
+    script: |
+      const table = document.querySelector('[data-testid="panel-table"], .panel-table');
+      if (table) {
+        table.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+      }
+    description: "Scroll back to top"
+
+  - type: wait
+    duration: 600
+
+  # Collapse table
+  - type: click
+    selector: "[data-testid='table-toggle'], .table-collapse-toggle"
+    description: "Collapse table view"
+
+  - type: wait
+    duration: 800
+    description: "Show table collapsing"
