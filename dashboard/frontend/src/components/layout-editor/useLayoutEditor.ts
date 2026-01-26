@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import type { PanelPosition, EditHistory, LayoutDraft, LayoutConfig } from '../../types/config';
+import type { PanelPosition, EditHistory, EditorHistoryState, LayoutDraft, LayoutConfig } from '../../types/config';
 import type { EditorPanel, SpatialIndex } from './types';
 import { buildSpatialIndex } from './types';
 import {
@@ -35,6 +35,12 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
   const [layoutConfig, setLayoutConfig] = useState<LayoutConfig | null>(null);
   const [overlaySize, setOverlaySize] = useState(50);
 
+  // Image scale state: undefined = not yet loaded, number = loaded value
+  const [imageScale, setImageScale] = useState<number | undefined>(undefined);
+  // Effective scale for rendering (use default until config loads)
+  // Fallback chain: local state -> config -> default (100)
+  const effectiveImageScale = imageScale ?? layoutConfig?.image_scale ?? 100;
+
   // Panels
   const [panels, setPanels] = useState<EditorPanel[]>([]);
   const [positions, setPositions] = useState<Record<string, PanelPosition | null>>({});
@@ -51,9 +57,21 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const initialPositionsRef = useRef<Record<string, PanelPosition | null>>({});
 
-  // Ref to track latest positions (avoids stale closure in keyup handler)
+  // Refs to track latest values (avoids stale closure issues in callbacks)
+  // IMPORTANT: These useEffects create a timing gap between setState and ref update.
+  // Any code path calling setImageScale/setPositions MUST also manually sync the ref
+  // immediately if the value is needed before the next render.
   const positionsRef = useRef<Record<string, PanelPosition | null>>(positions);
   useEffect(() => { positionsRef.current = positions; }, [positions]);
+  const imageScaleRef = useRef<number>(effectiveImageScale);
+  useEffect(() => { imageScaleRef.current = effectiveImageScale; }, [effectiveImageScale]);
+
+  // Ref for history to avoid stale closure issues with rapid undo/redo clicks
+  const historyRef = useRef(history);
+  useEffect(() => { historyRef.current = history; }, [history]);
+
+  // Pending history record flag to prevent duplicate recordings (release + blur)
+  const [pendingHistoryRecord, setPendingHistoryRecord] = useState(false);
 
   // Load initial data
   useEffect(() => {
@@ -68,6 +86,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
 
         setLayoutConfig(config);
         setOverlaySize(config.overlay_size);
+        setImageScale(config.image_scale ?? 100);
 
         const editorPanels: EditorPanel[] = panelsData.panels.map(p => ({
           serial: p.serial,
@@ -113,18 +132,29 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
   // Initialize history when entering edit mode
   const enterEditMode = useCallback(() => {
     setIsEditMode(true);
+    const initialState: EditorHistoryState = {
+      positions: { ...positions },
+      imageScale: effectiveImageScale,
+    };
     setHistory({
-      states: [{ ...positions }],
+      states: [initialState],
       currentIndex: 0,
     });
     initialPositionsRef.current = { ...positions };
+    initialImageScaleRef.current = effectiveImageScale;
     setHasUnsavedChanges(false);
-  }, [positions]);
+  }, [positions, effectiveImageScale]);
+
+  // Initial image scale ref (for discard)
+  const initialImageScaleRef = useRef<number>(100);
 
   // Exit edit mode
   const exitEditMode = useCallback((discardChanges: boolean = false) => {
     if (discardChanges) {
+      // Reset to persisted values
       setPositions(initialPositionsRef.current);
+      setImageScale(initialImageScaleRef.current);
+      setOverlaySize(layoutConfig?.overlay_size ?? 50);
     }
 
     setIsEditMode(false);
@@ -132,7 +162,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     setHistory({ states: [], currentIndex: -1 });
     setHasUnsavedChanges(false);
     clearDraft();
-  }, []);
+  }, [layoutConfig?.overlay_size]);
 
   // Auto-enter edit mode after loading
   const hasAutoEntered = useRef(false);
@@ -143,28 +173,33 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     }
   }, [isLoading, error, enterEditMode]);
 
-  // Record position change to history
-  const recordHistoryState = useCallback((newPositions: Record<string, PanelPosition | null>) => {
+  // Record state change to history (captures both positions and imageScale)
+  // Call this on: panel drag END, slider RELEASE (onMouseUp/onTouchEnd), numeric input BLUR
+  const recordHistoryState = useCallback((
+    newPositions: Record<string, PanelPosition | null>,
+    newImageScale: number
+  ) => {
     setHistory(prev => {
       // Truncate any "future" states if we've undone then made new changes
-      const truncatedStates = prev.states.slice(0, prev.currentIndex + 1);
-      truncatedStates.push({ ...newPositions });
-
-      let newStates = truncatedStates;
-      let newIndex = truncatedStates.length - 1;
-
-      // Limit history depth
-      if (newStates.length > MAX_HISTORY_DEPTH) {
-        newStates = newStates.slice(1);
-        newIndex--;
-      }
-
+      // (user's new action invalidates forward history)
+      const truncated = prev.states.slice(0, prev.currentIndex + 1);
+      const newState: EditorHistoryState = {
+        positions: { ...newPositions },
+        imageScale: newImageScale,
+      };
+      // Truncation strategy:
+      // 1. Discard redo states beyond currentIndex (user's new action invalidates forward history)
+      // 2. Append new state
+      // 3. If exceeds 50, discard oldest states (FIFO)
+      // 4. currentIndex always points to the new state
+      const newStates = [...truncated, newState].slice(-MAX_HISTORY_DEPTH);
       return {
         states: newStates,
-        currentIndex: newIndex,
+        currentIndex: newStates.length - 1,  // Always point to newest
       };
     });
     setHasUnsavedChanges(true);
+    setPendingHistoryRecord(false);
   }, []);
 
   // Update panel position
@@ -172,7 +207,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     (serial: string, position: PanelPosition | null) => {
       setPositions(prev => {
         const newPositions = { ...prev, [serial]: position };
-        recordHistoryState(newPositions);
+        recordHistoryState(newPositions, imageScaleRef.current);
         return newPositions;
       });
     },
@@ -184,7 +219,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     (updates: Record<string, PanelPosition | null>) => {
       setPositions(prev => {
         const newPositions = { ...prev, ...updates };
-        recordHistoryState(newPositions);
+        recordHistoryState(newPositions, imageScaleRef.current);
         return newPositions;
       });
     },
@@ -206,32 +241,69 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     []
   );
 
-  // Expose for keyup handler in LayoutEditor.tsx (reads from positionsRef)
+  // Expose for keyup handler in LayoutEditor.tsx (reads from refs)
   const recordCurrentHistoryState = useCallback(() => {
-    recordHistoryState(positionsRef.current);
+    recordHistoryState(positionsRef.current, imageScaleRef.current);
   }, [recordHistoryState]);
 
-  // Undo
+  // Commit any pending history record (for keyboard-then-save without blur)
+  // Note: pendingHistoryRecord in deps causes callback recreation on flag change.
+  // A ref-based approach would make this stable but harder to debug.
+  // Current approach is clearer; recreation overhead is negligible.
+  const commitIfPending = useCallback(() => {
+    if (pendingHistoryRecord) {
+      recordHistoryState(positionsRef.current, imageScaleRef.current);
+    }
+  }, [pendingHistoryRecord, recordHistoryState]);
+
+  // Image scale change handler (marks pending, does not record immediately)
+  const handleImageScaleChange = useCallback((newScale: number) => {
+    setImageScale(newScale);
+    imageScaleRef.current = newScale;  // Sync ref immediately for onMouseUp
+    setPendingHistoryRecord(true);
+    setHasUnsavedChanges(true);
+  }, []);
+
+  // Image scale commit handler (called on release to record history)
+  const handleImageScaleCommit = useCallback(() => {
+    if (pendingHistoryRecord) {
+      recordHistoryState(positionsRef.current, imageScaleRef.current);
+    }
+  }, [pendingHistoryRecord, recordHistoryState]);
+
+  // Undo - uses ref for synchronous check to avoid stale closure issues with rapid clicks
   const canUndo = history.currentIndex > 0;
   const undo = useCallback(() => {
-    if (!canUndo) return;
-    setHistory(prev => {
-      const newIndex = prev.currentIndex - 1;
-      setPositions(prev.states[newIndex]);
-      return { ...prev, currentIndex: newIndex };
-    });
-  }, [canUndo]);
+    const currentHistory = historyRef.current;
+    // Explicit boundary check - distinguishes "at oldest state" from "corrupted history"
+    if (currentHistory.currentIndex <= 0) return;
+    const stateToRestore = currentHistory.states[currentHistory.currentIndex - 1];
 
-  // Redo
+    // Guard uses ref for synchronous check; setState rechecks in case of concurrent updates
+    setHistory(prev => {
+      if (prev.currentIndex <= 0) return prev;
+      return { ...prev, currentIndex: prev.currentIndex - 1 };
+    });
+    setPositions(stateToRestore.positions);
+    setImageScale(stateToRestore.imageScale);
+  }, []);  // No deps needed - reads from ref
+
+  // Redo - same ref pattern as undo for consistency
   const canRedo = history.currentIndex < history.states.length - 1;
   const redo = useCallback(() => {
-    if (!canRedo) return;
+    const currentHistory = historyRef.current;
+    // Explicit boundary check - distinguishes "at newest state" from "corrupted history"
+    if (currentHistory.currentIndex >= currentHistory.states.length - 1) return;
+    const stateToRestore = currentHistory.states[currentHistory.currentIndex + 1];
+
+    // Guard uses ref for synchronous check; setState rechecks in case of concurrent updates
     setHistory(prev => {
-      const newIndex = prev.currentIndex + 1;
-      setPositions(prev.states[newIndex]);
-      return { ...prev, currentIndex: newIndex };
+      if (prev.currentIndex >= prev.states.length - 1) return prev;
+      return { ...prev, currentIndex: prev.currentIndex + 1 };
     });
-  }, [canRedo]);
+    setPositions(stateToRestore.positions);
+    setImageScale(stateToRestore.imageScale);
+  }, []);  // No deps needed - reads from ref
 
   // Selection management - always toggle (no addToSelection parameter needed)
   const selectPanel = useCallback((serial: string) => {
@@ -263,17 +335,24 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
 
   // Save to backend
   const save = useCallback(async () => {
+    // Record any pending history before save (handles keyboard-change-then-save without blur)
+    commitIfPending();
+
     setIsSaving(true);
     setError(null);
     try {
-      // Save overlay size
-      await updateLayoutConfig(overlaySize);
-
-      // Save panel positions
+      // Save panel positions first
       await updatePanelPositions(positions);
 
-      // Update initial positions ref
+      // Save layout config (overlay size and image scale)
+      await updateLayoutConfig({
+        overlay_size: overlaySize,
+        image_scale: effectiveImageScale,
+      });
+
+      // Update initial refs for potential future discard
       initialPositionsRef.current = { ...positions };
+      initialImageScaleRef.current = effectiveImageScale;
       setHasUnsavedChanges(false);
 
       // Clear draft
@@ -290,7 +369,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     } finally {
       setIsSaving(false);
     }
-  }, [overlaySize, positions, exitEditMode, onSaveSuccess, onSaveError]);
+  }, [overlaySize, effectiveImageScale, positions, commitIfPending, exitEditMode, onSaveSuccess, onSaveError]);
 
   // Draft persistence
   const saveDraft = useCallback((pos: Record<string, PanelPosition | null>, size: number) => {
@@ -352,7 +431,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
 
     setPositions(prev => ({ ...prev, ...validPositions }));
     setOverlaySize(draft.overlaySize);
-    recordHistoryState({ ...positions, ...validPositions });
+    recordHistoryState({ ...positions, ...validPositions }, imageScaleRef.current);
   }, [panels, positions, recordHistoryState]);
 
   // Check for draft on mount
@@ -407,6 +486,9 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     layoutConfig,
     overlaySize,
     setOverlaySize,
+    imageScale: effectiveImageScale,
+    setImageScale: handleImageScaleChange,
+    onImageScaleCommit: handleImageScaleCommit,
     panels,
     positions,
     positionedPanels,
