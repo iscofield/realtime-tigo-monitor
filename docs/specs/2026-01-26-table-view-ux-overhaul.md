@@ -28,7 +28,6 @@ The current TableView has several UX issues:
 **FR-1.4**: The dropdown MUST include preset buttons:
 - "Essential" - Panel ID, Power, Input Voltage, Input Current, CCA Source, Temp ID Warning (matches existing DEFAULT_COLUMNS)
 - "All" - Enable all columns
-- "Reset" - Return to Essential columns (same as clicking "Essential")
 
 **Note:** The Essential preset intentionally matches the existing DEFAULT_COLUMNS from the original tabular-view implementation to maintain backward compatibility with existing user localStorage preferences.
 
@@ -36,15 +35,25 @@ The current TableView has several UX issues:
 - "Compact" - Reduced padding, smaller text (default)
 - "Standard" - More padding, larger text
 
+**Rationale for Compact default:** The existing TableView implementation uses compact styling to maximize data density, which is appropriate for monitoring dashboards where users need to see many panels at once. This preserves backward compatibility with the existing visual appearance.
+
 **FR-1.6**: Column visibility and density preference MUST persist to localStorage.
 
 **FR-1.7**: The dropdown MUST be fully keyboard accessible:
 - Enter or Space on the "Columns" button MUST open the dropdown
 - Escape MUST close the dropdown and return focus to the trigger button
-- Tab MUST navigate through checkboxes and preset buttons in order
+- Tab MUST navigate forward through checkboxes and preset buttons in document order
+- Shift+Tab MUST navigate backward through interactive elements
 - Space MUST toggle the currently focused checkbox
+- Arrow keys (`↑`/`↓`) MUST move focus between checkboxes within the current category
+- Arrow keys (`←`/`→`) MAY move focus between category sections (optional enhancement)
+- Home MUST move focus to the first interactive element in the dropdown
+- End MUST move focus to the last interactive element in the dropdown
 - When dropdown opens, focus MUST move to the first interactive element
-- The trigger button MUST have `aria-expanded` and `aria-haspopup="menu"` attributes
+- Focus MUST be trapped within the dropdown while open (Tab on last element wraps to first)
+- The trigger button MUST have `aria-expanded`, `aria-haspopup="dialog"`, and `aria-controls` (referencing the dropdown's ID) attributes
+
+**Note:** `aria-haspopup="dialog"` is used instead of `"menu"` because the dropdown contains interactive controls (checkboxes, toggles, buttons) rather than menu actions.
 
 ### FR-2: Segmented Expand/Collapse Toggle
 
@@ -54,14 +63,17 @@ The current TableView has several UX issues:
 
 **FR-2.3**: On mobile, the segmented control MUST display icons only: "▼▼" | "▲▲" to minimize width.
 
-**FR-2.4**: The segmented toggle MUST visually indicate which action was last triggered:
-- "Expand" segment highlighted when all strings are expanded (no collapsed strings)
-- "Collapse" segment highlighted when any string is collapsed
+**FR-2.4**: The segmented toggle MUST visually indicate the current state of string expansion:
+- "Expand" segment highlighted when all strings are currently expanded (clicking Collapse would change something)
+- "Collapse" segment highlighted when at least one string is currently collapsed (clicking Expand would change something)
 - Visual indication via background color differentiation (e.g., active segment has accent color, inactive has muted color)
+- On page load with mixed collapsed/expanded strings from localStorage, the "Collapse" segment is highlighted (since not all are expanded)
 
 ### FR-3: Sortable Columns (Desktop)
 
 **FR-3.1**: On desktop view, clicking a column header MUST cycle through sort states: unsorted → ascending → descending → unsorted.
+
+**Implementation note:** For numeric columns (power, voltage, current, temperature), consider starting with descending order on first click, as users typically want to identify highest values or outliers. String columns (Panel ID) should start with ascending. This is an optional enhancement; the spec requires the cycle order but does not mandate column-type-specific starting direction.
 
 **FR-3.2**: Sort indicators MUST be displayed in the column header:
 - `▲` for ascending
@@ -70,13 +82,22 @@ The current TableView has several UX issues:
 
 **FR-3.3**: Only one column MAY be sorted at a time.
 
-**FR-3.4**: Sort state MUST persist to localStorage.
+**FR-3.4**: Sort state MUST persist to localStorage with the following edge case handling:
+- When a sorted column is hidden: Sort MUST be preserved invisibly (data remains sorted, but no visual indicator is shown since the column is hidden)
+- When the persisted sort column no longer exists (removed in an update): Reset to unsorted without throwing an error
+- When localStorage contains malformed sort data: Reset to unsorted without throwing an error
 
 **FR-3.5**: Sorting MUST apply within each string section independently (not globally across all panels).
 
 **FR-3.6**: The Summary row MUST remain at the top of each string table regardless of sort order.
 
-**FR-3.7**: On mobile (tile layout), the sort state MUST be preserved and tiles MUST be sorted according to the current sort setting. When switching from desktop to mobile, the existing sort order applies to tiles. Mobile view does not provide UI to change sort order; users must switch to desktop view (or rotate to landscape on tablet) to modify sorting.
+**FR-3.7**: On mobile (tile layout), the sort state MUST be preserved and tiles MUST be sorted according to the current sort setting. When switching from desktop to mobile, the existing sort order applies to tiles.
+
+**FR-3.8**: On mobile, a "Sort by" dropdown MUST be included in the controls bar to allow users to change the sort field:
+- The dropdown MUST display the currently selected sort field (or "Unsorted" if none)
+- Selecting a field cycles through: ascending → descending → unsorted (same as desktop)
+- The dropdown options MUST include all visible data columns plus "Unsorted"
+- Sort indicator (`▲`/`▼`) MUST be displayed next to the selected field name
 
 ### FR-4: Mobile Tile Layout
 
@@ -88,7 +109,13 @@ The current TableView has several UX issues:
 
 **FR-4.3**: Data fields in Row 2 MUST be distributed with equal width using flexbox.
 
-**FR-4.4**: If more than 4 data fields are selected, tiles MUST flow to additional rows (maximum 4 fields per row, using CSS flexbox `flex-wrap: wrap` with each field set to `flex: 0 0 25%`).
+**FR-4.4**: Data field layout in Row 2 MUST follow these rules:
+- **0 fields selected**: Row 2 is hidden entirely (only Row 1 with Panel ID, CCA Source, Age is shown)
+- **1-3 fields selected**: Fields are distributed with equal width (e.g., 1 field = 100%, 2 fields = 50% each, 3 fields = 33% each)
+- **4 fields selected**: Each field is 25% width (4 fields fill one row)
+- **5+ fields selected**: Tiles flow to additional rows with maximum 4 fields per row
+- **Maximum**: No hard limit, but 8+ fields (3+ rows) may degrade UX; implementers MAY add a soft warning in the column selector
+- **Gap handling**: Use CSS flexbox with `gap: 8px` and calculate field widths as `calc(25% - 6px)` (or equivalent) to account for gaps
 
 **FR-4.5**: Power MUST be visually emphasized with bold text and an accent color (e.g., ⚡ icon prefix).
 
@@ -104,6 +131,13 @@ The current TableView has several UX issues:
 
 **FR-5.2**: Panel ID and Age MUST always be visible in tiles (not toggleable). CCA Source visibility in Row 1 is controlled by the column visibility setting — if CCA Source is disabled, Row 1 shows only Panel ID (left) and Age (right).
 
+**Age field definition:**
+- **Data key**: `age` (computed from `last_updated` timestamp in backend)
+- **Meaning**: Seconds since the panel's last data update was received
+- **Display format**: Human-readable relative time (e.g., "2s", "1m", "5m", ">10m")
+- **Purpose**: Indicates data freshness; stale data (>60s) may indicate communication issues
+- **Not toggleable**: Age is critical for monitoring data freshness and is always shown in tile Row 1
+
 **FR-5.3**: Field order in tiles MUST follow a fixed sequence: Power → Voltage(s) → Current(s) → Temperature → Duty → RSSI → Energy.
 
 ### FR-6: Mismatch Indication
@@ -113,12 +147,19 @@ The current TableView has several UX issues:
 - Background tint: `#3d2222` (dark red)
 
 **FR-6.2**: Wrong CCA panels MUST be indicated with:
-- Border color: purple
-- Background tint: purple tint (existing `#3d2244`)
+- Border color: `#9944ff` (purple)
+- Background tint: `#3d2244` (dark purple)
 
 **FR-6.3**: Temporary ID panels MUST retain the existing yellow tint indication.
 
 **FR-6.4**: These styles MUST apply to both table rows (desktop) and tiles (mobile).
+
+**FR-6.5**: When multiple conditions apply to a panel, use the following style priority (highest to lowest):
+1. **Mismatched (red)** - Most critical; indicates data inconsistency requiring investigation
+2. **Wrong CCA (purple)** - Configuration issue; panel is reporting to unexpected CCA
+3. **Temporary ID (yellow)** - Informational warning; panel is using a temporary identifier
+
+Only the highest-priority style is applied (no style combinations).
 
 ### FR-7: String Summary Preservation
 
@@ -128,6 +169,13 @@ The current TableView has several UX issues:
 
 **FR-7.3**: Warning banners for mismatch detection MUST be preserved.
 
+**FR-7.4**: On mobile, each string section MUST display a summary header showing:
+- Total power for the string
+- Average/total voltage
+- Panel count (e.g., "12 panels")
+- The summary MUST be visually distinct from panel tiles (e.g., different background color, no border, or horizontal layout instead of tile format)
+- The summary header is tappable to collapse/expand the string section
+
 ## Non-Functional Requirements
 
 **NFR-1.1**: The column dropdown MUST open/close within 100ms.
@@ -136,7 +184,7 @@ The current TableView has several UX issues:
 
 **NFR-2.1**: Touch targets on mobile MUST be at least 44x44px per Apple HIG / Material Design guidelines.
 
-**NFR-2.2**: The controls bar (threshold + columns + expand/collapse) SHOULD target 48-56px height on mobile. Touch targets within the bar MAY use the full 44px height with minimal vertical padding (2-6px), relying on horizontal spacing between controls to meet accessibility requirements. If 44px touch targets cannot fit within 56px bar height, the bar height MAY be increased to accommodate proper touch targets.
+**NFR-2.2**: The controls bar (threshold + columns + expand/collapse) SHOULD target 56-64px height on mobile to accommodate comfortable touch targets. Touch targets MUST be at least 44x44px with a minimum horizontal gap of 12px between adjacent touch targets to prevent accidental taps. If the combined width of controls exceeds the viewport, the bar MAY wrap to multiple rows.
 
 **NFR-3.1**: All user preferences (columns, density, sort, collapsed strings) MUST persist across page reloads via localStorage.
 
@@ -207,6 +255,9 @@ interface ColumnDropdownProps {
 }
 
 // Column categories for grouping
+// Column categories for grouping in dropdown
+// Note: CCA Source (actual_system) is grouped with Identity as it identifies the data source
+// This matches FR-1.2 which lists CCA Source under Identity
 const COLUMN_CATEGORIES = {
   identity: ['display_label', 'tigo_label', 'node_id', 'sn', 'actual_system'],
   electrical: ['voltage_in', 'voltage_out', 'current_in', 'current_out', 'watts'],
@@ -243,6 +294,26 @@ const COLUMN_LABELS: Record<string, string> = {
 ### Tile Layout Design
 
 ```tsx
+// PanelData matches the backend PanelInfo model fields
+interface PanelData {
+  display_label: string;
+  tigo_label?: string;
+  node_id?: string;
+  sn?: string;
+  actual_system?: string;
+  voltage_in?: number;
+  voltage_out?: number;
+  current_in?: number;
+  current_out?: number;
+  watts?: number;
+  temperature?: number;
+  duty_cycle?: number;
+  rssi?: number;
+  energy?: number;
+  is_temporary?: boolean;
+  age?: number; // seconds since last data update
+}
+
 interface PanelTileProps {
   panel: PanelData;
   visibleColumns: Set<string>;
@@ -285,6 +356,8 @@ interface SortState {
   direction: SortDirection;
 }
 
+// Sortable header with proper accessibility pattern
+// Uses a nested button inside <th> for better screen reader support
 function SortableHeader({
   column,
   label,
@@ -306,23 +379,28 @@ function SortableHeader({
     ? (sortState.direction === 'asc' ? 'ascending' : 'descending')
     : 'none';
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      onSort(column);
-    }
+  // Style to reset button appearance while maintaining clickability
+  const buttonResetStyle: CSSProperties = {
+    background: 'none',
+    border: 'none',
+    padding: 0,
+    margin: 0,
+    font: 'inherit',
+    color: 'inherit',
+    cursor: 'pointer',
+    width: '100%',
+    textAlign: 'inherit',
   };
 
   return (
-    <th
-      onClick={() => onSort(column)}
-      onKeyDown={handleKeyDown}
-      tabIndex={0}
-      role="columnheader"
-      aria-sort={ariaSort}
-      style={{ cursor: 'pointer' }}
-    >
-      {label} {indicator}
+    <th aria-sort={ariaSort}>
+      <button
+        onClick={() => onSort(column)}
+        style={buttonResetStyle}
+        aria-label={`Sort by ${label}`}
+      >
+        {label} {indicator}
+      </button>
     </th>
   );
 }
@@ -344,6 +422,28 @@ interface ExpandCollapseToggleProps {
   onCollapseAll: () => void;
   isMobile: boolean;
 }
+
+// Style definitions for segmented toggle
+const segmentedContainerStyle: CSSProperties = {
+  display: 'flex',
+  borderRadius: '6px',
+  overflow: 'hidden',
+  border: '1px solid #444',
+};
+
+const segmentButtonStyle: CSSProperties = {
+  padding: '8px 12px',
+  border: 'none',
+  background: '#333',
+  color: '#ccc',
+  cursor: 'pointer',
+  fontSize: '14px',
+};
+
+const activeSegmentStyle: CSSProperties = {
+  background: '#4a90d9',
+  color: '#fff',
+};
 
 function ExpandCollapseToggle({
   allExpanded,
@@ -405,6 +505,11 @@ const tileWrongCcaStyle: CSSProperties = {
   backgroundColor: '#3d2244',
 };
 
+const tileTemporaryStyle: CSSProperties = {
+  borderColor: '#ffaa00',
+  backgroundColor: '#3d3d22', // dark yellow tint
+};
+
 const powerStyle: CSSProperties = {
   fontWeight: 'bold',
   color: '#4a90d9', // accent color
@@ -440,6 +545,15 @@ const STORAGE_KEYS = {
 // tableDensity: 'compact'
 // tableSort: '{"column":"watts","direction":"desc"}'
 // collapsedStrings: '["string-1","string-3"]'
+
+// Migration / defaults for missing or invalid keys:
+// - tableColumns: DEFAULT_COLUMNS if missing; filter out invalid column keys silently
+// - tableDensity: 'compact' if missing or invalid
+// - tableSort: { column: null, direction: null } if missing or malformed
+// - collapsedStrings: [] if missing or malformed
+
+// Version key for future migrations (optional but recommended):
+// tablePrefsVersion: '1' - allows detecting schema changes in future updates
 ```
 
 ## Task Breakdown
@@ -547,6 +661,27 @@ const STORAGE_KEYS = {
     - Verify sortable headers are keyboard activatable (Enter/Space)
     - Add ARIA labels where needed
     - Test with screen reader
+    - Verify screen reader announces column sort state changes
+    - Verify focus visible outline on all interactive elements
+
+18. **Mobile tile edge cases**
+    - 0 data fields selected → verify only Row 1 visible
+    - 1 field selected → verify single field fills Row 2
+    - 8+ fields selected → verify 3-row layout renders correctly
+
+19. **Sort + column visibility interaction**
+    - Hide currently sorted column → verify data remains sorted (no indicator)
+    - Show hidden column that was previously sorted → verify indicator reappears
+
+20. **Mismatch style priority**
+    - Panel with mismatch AND wrong CCA → verify red (mismatch) style applies
+    - Panel with all three conditions → verify red (mismatch) style applies
+
+21. **localStorage migration**
+    - Fresh install (no localStorage) → verify defaults applied correctly
+    - Existing user with only old keys → verify new keys get defaults
+    - Corrupted/malformed localStorage → verify graceful fallback without errors
+    - Invalid column keys in tableColumns → verify invalid keys filtered silently
 
 ## Related Specifications
 
