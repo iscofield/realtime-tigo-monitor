@@ -19,22 +19,32 @@ The current TableView has several UX issues:
 **FR-1.1**: Replace the row of column toggle buttons with a single "Columns" button that opens a dropdown/popover.
 
 **FR-1.2**: The dropdown MUST display human-readable labels organized into categories:
-- **Identity**: Panel ID, Tigo ID, Node ID, Serial Number
+- **Identity**: Panel ID, Tigo ID, Node ID, Serial Number, CCA Source
 - **Electrical**: Input Voltage, Output Voltage, Input Current, Output Current, Power (Watts)
-- **Status**: CCA Source, Temperature, Duty Cycle, Signal (RSSI), Energy (kWh), Temp ID Warning
+- **Status**: Temperature, Duty Cycle, Signal (RSSI), Energy (kWh), Temp ID Warning
 
 **FR-1.3**: Each column MUST be represented by a checkbox that toggles visibility.
 
 **FR-1.4**: The dropdown MUST include preset buttons:
-- "Essential" - Panel ID, Power, Input Voltage, Input Current, CCA Source (default set)
+- "Essential" - Panel ID, Power, Input Voltage, Input Current, CCA Source, Temp ID Warning (matches existing DEFAULT_COLUMNS)
 - "All" - Enable all columns
-- "Reset" - Return to default columns
+- "Reset" - Return to Essential columns (same as clicking "Essential")
+
+**Note:** The Essential preset intentionally matches the existing DEFAULT_COLUMNS from the original tabular-view implementation to maintain backward compatibility with existing user localStorage preferences.
 
 **FR-1.5**: The dropdown MUST include a View Density toggle with two options:
 - "Compact" - Reduced padding, smaller text (default)
 - "Standard" - More padding, larger text
 
 **FR-1.6**: Column visibility and density preference MUST persist to localStorage.
+
+**FR-1.7**: The dropdown MUST be fully keyboard accessible:
+- Enter or Space on the "Columns" button MUST open the dropdown
+- Escape MUST close the dropdown and return focus to the trigger button
+- Tab MUST navigate through checkboxes and preset buttons in order
+- Space MUST toggle the currently focused checkbox
+- When dropdown opens, focus MUST move to the first interactive element
+- The trigger button MUST have `aria-expanded` and `aria-haspopup="menu"` attributes
 
 ### FR-2: Segmented Expand/Collapse Toggle
 
@@ -44,7 +54,10 @@ The current TableView has several UX issues:
 
 **FR-2.3**: On mobile, the segmented control MUST display icons only: "▼▼" | "▲▲" to minimize width.
 
-**FR-2.4**: The currently active state (expand or collapse) SHOULD be visually indicated.
+**FR-2.4**: The segmented toggle MUST visually indicate which action was last triggered:
+- "Expand" segment highlighted when all strings are expanded (no collapsed strings)
+- "Collapse" segment highlighted when any string is collapsed
+- Visual indication via background color differentiation (e.g., active segment has accent color, inactive has muted color)
 
 ### FR-3: Sortable Columns (Desktop)
 
@@ -63,6 +76,8 @@ The current TableView has several UX issues:
 
 **FR-3.6**: The Summary row MUST remain at the top of each string table regardless of sort order.
 
+**FR-3.7**: On mobile (tile layout), the sort state MUST be preserved and tiles MUST be sorted according to the current sort setting. When switching from desktop to mobile, the existing sort order applies to tiles. Mobile view does not provide UI to change sort order; users must switch to desktop view (or rotate to landscape on tablet) to modify sorting.
+
 ### FR-4: Mobile Tile Layout
 
 **FR-4.1**: On mobile viewports (≤768px), panels MUST be displayed as tiles/cards instead of table rows.
@@ -73,7 +88,7 @@ The current TableView has several UX issues:
 
 **FR-4.3**: Data fields in Row 2 MUST be distributed with equal width using flexbox.
 
-**FR-4.4**: If more than 4 data fields are selected, tiles MUST flow to additional rows (max ~4 fields per row).
+**FR-4.4**: If more than 4 data fields are selected, tiles MUST flow to additional rows (maximum 4 fields per row, using CSS flexbox `flex-wrap: wrap` with each field set to `flex: 0 0 25%`).
 
 **FR-4.5**: Power MUST be visually emphasized with bold text and an accent color (e.g., ⚡ icon prefix).
 
@@ -87,7 +102,7 @@ The current TableView has several UX issues:
 
 **FR-5.1**: The same column visibility settings from the dropdown MUST control which fields appear in tiles on mobile.
 
-**FR-5.2**: Panel ID and Age MUST always be visible in tiles (not toggleable).
+**FR-5.2**: Panel ID and Age MUST always be visible in tiles (not toggleable). CCA Source visibility in Row 1 is controlled by the column visibility setting — if CCA Source is disabled, Row 1 shows only Panel ID (left) and Age (right).
 
 **FR-5.3**: Field order in tiles MUST follow a fixed sequence: Power → Voltage(s) → Current(s) → Temperature → Duty → RSSI → Energy.
 
@@ -121,7 +136,7 @@ The current TableView has several UX issues:
 
 **NFR-2.1**: Touch targets on mobile MUST be at least 44x44px per Apple HIG / Material Design guidelines.
 
-**NFR-2.2**: The controls bar (threshold + columns + expand/collapse) MUST not exceed 56px height on mobile.
+**NFR-2.2**: The controls bar (threshold + columns + expand/collapse) SHOULD target 48-56px height on mobile. Touch targets within the bar MAY use the full 44px height with minimal vertical padding (2-6px), relying on horizontal spacing between controls to meet accessibility requirements. If 44px touch targets cannot fit within 56px bar height, the bar height MAY be increased to accommodate proper touch targets.
 
 **NFR-3.1**: All user preferences (columns, density, sort, collapsed strings) MUST persist across page reloads via localStorage.
 
@@ -193,9 +208,16 @@ interface ColumnDropdownProps {
 
 // Column categories for grouping
 const COLUMN_CATEGORIES = {
-  identity: ['display_label', 'tigo_label', 'node_id', 'sn'],
+  identity: ['display_label', 'tigo_label', 'node_id', 'sn', 'actual_system'],
   electrical: ['voltage_in', 'voltage_out', 'current_in', 'current_out', 'watts'],
-  status: ['actual_system', 'temperature', 'duty_cycle', 'rssi', 'energy', 'is_temporary'],
+  status: ['temperature', 'duty_cycle', 'rssi', 'energy', 'is_temporary'],
+};
+
+// Human-readable category labels for dropdown headers
+const CATEGORY_LABELS: Record<string, string> = {
+  identity: 'Identity',
+  electrical: 'Electrical',
+  status: 'Status',
 };
 
 // Human-readable labels
@@ -279,9 +301,25 @@ function SortableHeader({
     ? (sortState.direction === 'asc' ? '▲' : '▼')
     : '↕';
 
+  // Determine aria-sort value
+  const ariaSort = isActive
+    ? (sortState.direction === 'asc' ? 'ascending' : 'descending')
+    : 'none';
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSort(column);
+    }
+  };
+
   return (
     <th
       onClick={() => onSort(column)}
+      onKeyDown={handleKeyDown}
+      tabIndex={0}
+      role="columnheader"
+      aria-sort={ariaSort}
       style={{ cursor: 'pointer' }}
     >
       {label} {indicator}
@@ -390,12 +428,18 @@ interface TableViewPreferences {
 
 // Storage keys
 const STORAGE_KEYS = {
-  columns: 'tableColumns',           // Existing
-  density: 'tableDensity',           // New
-  sort: 'tableSort',                 // New
-  collapsed: 'collapsedStrings',     // Existing
-  threshold: 'mismatchThreshold',    // Existing
+  columns: 'tableColumns',           // Existing - JSON array of column keys
+  density: 'tableDensity',           // New - string: 'compact' | 'standard'
+  sort: 'tableSort',                 // New - JSON: { column: string | null, direction: 'asc' | 'desc' | null }
+  collapsed: 'collapsedStrings',     // Existing - JSON array of string IDs
+  threshold: 'mismatchThreshold',    // Existing - number
 };
+
+// Example localStorage values:
+// tableColumns: '["display_label","watts","voltage_in","current_in","actual_system","is_temporary"]'
+// tableDensity: 'compact'
+// tableSort: '{"column":"watts","direction":"desc"}'
+// collapsedStrings: '["string-1","string-3"]'
 ```
 
 ## Task Breakdown
@@ -476,13 +520,31 @@ const STORAGE_KEYS = {
     - Controls bar height verification (≤56px)
     - Verify no horizontal overflow
 
-14. **Cross-browser testing**
+14. **Dropdown interaction testing**
+    - Click "Columns" button opens dropdown
+    - Click outside dropdown closes it
+    - Escape key closes dropdown and returns focus to trigger button
+    - Tab navigates through checkboxes and preset buttons in document order
+    - Space/Enter toggles checkbox under focus
+    - Verify ARIA attributes: `aria-expanded`, `aria-haspopup="menu"` on trigger button
+
+15. **Sorting feature testing**
+    - Click column header cycles through: unsorted → ascending → descending → unsorted
+    - Sort indicator (▲/▼/↕) updates correctly
+    - Data order changes within string sections
+    - Summary row remains at top regardless of sort
+    - Sort state persists after page reload (localStorage)
+    - Switching columns clears previous sort
+
+16. **Cross-browser testing**
     - Test dropdown positioning
     - Test tile layout flex behavior
     - Verify localStorage persistence
 
-15. **Accessibility audit**
-    - Verify dropdown is keyboard accessible
+17. **Accessibility audit**
+    - Verify dropdown is keyboard accessible (Enter/Space to open, Escape to close)
+    - Verify sortable headers have `aria-sort` attribute
+    - Verify sortable headers are keyboard activatable (Enter/Space)
     - Add ARIA labels where needed
     - Test with screen reader
 
@@ -490,7 +552,7 @@ const STORAGE_KEYS = {
 
 | Spec | Relationship | Notes |
 |------|--------------|-------|
-| None | — | This is a standalone UI enhancement |
+| [2026-01-17-tabular-view.md](implemented/2026-01-17-tabular-view.md) | extends | This spec extends the original TableView implementation with UX improvements. Preserves existing DEFAULT_COLUMNS and localStorage keys for backward compatibility. |
 
 ## Context / Documentation
 
