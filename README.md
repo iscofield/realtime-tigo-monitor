@@ -20,14 +20,15 @@ A real-time visualization dashboard for Tigo Energy solar panel monitoring syste
 ### Real-Time Monitoring
 - **Live WebSocket updates** every 5-10 seconds
 - Color-coded panel status (green = producing, yellow = low output, red = offline)
-- Multiple display modes: watts, voltage, serial numbers, or labels
+- Display modes: watts, voltage, or serial number (last 4 digits)
+- Panel labels always visible on overlays alongside metrics
 - Stale data detection with configurable thresholds
-- Temporary ID alerts when optimizers need attention
+- Temporary ID warnings when optimizers report without persistent state (indicates taptap needs its state file bootstrapped)
 
 ### Layout View
 Upload your own solar array image and overlay live panel data:
 - Drag-and-drop panel positioning
-- Pan and zoom (25%-200%)
+- Pan and zoom with mouse wheel or touch gestures
 - Pinch-to-zoom on touch devices
 - Responsive scaling on any device
 
@@ -37,8 +38,10 @@ Upload your own solar array image and overlay live panel data:
 Detailed metrics organized by string with aggregation:
 - Real-time voltage, current, power, temperature
 - String-level summaries and totals
-- Sortable columns with configurable visibility
+- Configurable column visibility (15 columns available)
 - Mismatch detection for panels on wrong inverter
+
+Available columns: Label, Tigo Label, Node ID, Serial Number, System, Voltage In, Voltage Out, Current In, Current Out, Watts, Temperature, Duty Cycle, RSSI, Energy, Temp ID
 
 ![Table View](docs/screenshots/table-view.png)
 
@@ -47,19 +50,20 @@ Intuitive visual editor for positioning panels:
 - Snap-to-align guides for precise placement
 - Multi-select with bulk operations
 - Keyboard shortcuts (arrows to nudge, Ctrl+Z to undo)
-- 50-state undo/redo history
+- Undo/redo history
 - Auto-save drafts to prevent lost work
 
 ![Layout Editor](docs/screenshots/editor-multiselect.png)
 
 ### Setup Wizard
 Guided configuration for first-time setup:
-- MQTT broker connection
+- MQTT broker connection testing
 - CCA device topology configuration
+- **Auto-generates tigo-mqtt docker-compose files** for your Pi
 - Automatic panel discovery
-- Panel validation and matching
+- Panel validation and serial number mapping
 
-![Setup Wizard](docs/screenshots/wizard-welcome.png)
+![Setup Wizard - Panel Validation](docs/screenshots/wizard-validation.png)
 
 ### Backup & Restore
 Protect your configuration:
@@ -76,8 +80,7 @@ Works great on phones and tablets:
 - Check your panels from anywhere on your network
 
 <p align="center">
-  <img src="docs/screenshots/mobile-layout.png" alt="Mobile Layout" width="250" />
-  <img src="docs/screenshots/mobile-table.png" alt="Mobile Table" width="250" />
+  <img src="docs/screenshots/mobile-layout.png" alt="Mobile Layout" width="300" />
 </p>
 
 ## Panel Data Fields
@@ -110,7 +113,7 @@ Every panel reports the following metrics:
 │   │   Tigo CCA   │    │   Tigo CCA   │    ... (1 or more)       │
 │   │   Device     │    │   Device     │                          │
 │   └──────┬───────┘    └──────┬───────┘                          │
-│          │ USB               │ USB                              │
+│          │ RS485             │ RS485                             │
 │   ┌──────▼───────┐    ┌──────▼───────┐                          │
 │   │   taptap     │    │   taptap     │                          │
 │   │  container   │    │  container   │                          │
@@ -137,14 +140,14 @@ Every panel reports the following metrics:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The system supports **1 or more CCA devices** — configure as many as your installation requires. Each CCA connects via USB to the data collection device.
+The system supports **1 or more CCA devices** — configure as many as your installation requires. Each CCA connects via RS485 serial to the data collection device. See the [taptap documentation](https://github.com/taptap) for hardware connection details.
 
 ## Hardware Requirements
 
 ### Tigo Equipment
 - **Tigo CCA (Cloud Connect Advanced)** — 1 or more units
 - **Tigo TS4-A-O Optimizers** — one per solar panel
-- USB cables to connect CCA units
+- RS485-to-USB adapter for connecting CCA to Pi (see [taptap guide](https://github.com/taptap))
 
 ### Computing
 - **Data Collection Device** — Raspberry Pi (3B+ or newer) or similar
@@ -156,7 +159,7 @@ The system supports **1 or more CCA devices** — configure as many as your inst
 ### Prerequisites
 - Docker and Docker Compose installed
 - Access to an MQTT broker ([setup guide](docs/DEPLOYMENT.md#mqtt-broker-setup))
-- Raspberry Pi with Tigo CCA connected via USB
+- Raspberry Pi with Tigo CCA connected via RS485
 
 ### 1. Clone the Repository
 
@@ -165,17 +168,7 @@ git clone https://github.com/yourusername/solar_tigo_viewer.git
 cd solar_tigo_viewer
 ```
 
-### 2. Deploy the tigo-mqtt Service
-
-On your Raspberry Pi (or data collection device):
-
-```bash
-cd tigo-mqtt
-# The setup wizard will generate configuration files for you
-docker compose up --build -d
-```
-
-### 3. Deploy the Dashboard
+### 2. Deploy the Dashboard
 
 On your dashboard server (can be the same Pi or different machine):
 
@@ -186,15 +179,59 @@ cp backend/.env.example backend/.env
 docker compose up --build -d
 ```
 
-### 4. Run the Setup Wizard
+### 3. Run the Setup Wizard
 
 Open `http://your-server:5174` and follow the setup wizard to:
 1. Configure MQTT connection
-2. Define your CCA topology
-3. Discover and validate panels
-4. Position panels on your layout image
+2. Define your CCA topology (names, serial ports, strings)
+3. **Download generated docker-compose files** for tigo-mqtt
+4. Discover and validate panels
+
+### 4. Deploy tigo-mqtt Service
+
+Copy the generated files to your Raspberry Pi:
+
+```bash
+# On your Raspberry Pi
+cd solar_tigo_viewer/tigo-mqtt
+# Copy the downloaded docker-compose.yml and config files here
+docker compose up --build -d
+```
 
 For detailed instructions, see the [Deployment Guide](docs/DEPLOYMENT.md).
+
+## Home Assistant Integration
+
+Solar Tigo Viewer can be embedded in Home Assistant dashboards using an iframe card.
+
+### Lovelace Card Configuration
+
+```yaml
+type: iframe
+url: "http://your-server:5174/?view=layout&mode=watts"
+aspect_ratio: "150%"
+```
+
+### URL Parameters
+
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `view` | `layout`, `table`, `editor` | Which view to display |
+| `mode` | `watts`, `voltage`, `sn` | Display mode for panels |
+
+Example URLs:
+- `http://server:5174/?view=layout&mode=watts` — Layout view showing power
+- `http://server:5174/?view=table` — Table view with all metrics
+
+## Data Storage
+
+**Note:** Solar Tigo Viewer does not store historical data — it displays real-time values only. For historical tracking, graphing, and analytics, consider routing your MQTT data to:
+
+- **InfluxDB** — Time-series database, works great with Grafana
+- **Home Assistant** — Can record sensor history from MQTT
+- **Prometheus** — Metrics collection with alerting
+
+The tigo-mqtt service publishes standard MQTT messages that any of these systems can consume alongside the dashboard.
 
 ## Documentation
 
@@ -211,13 +248,34 @@ For detailed instructions, see the [Deployment Guide](docs/DEPLOYMENT.md).
 
 ## Contributing
 
+Contributions are welcome! The project has a comprehensive test suite:
+
+- **Frontend**: Vitest unit tests (`docker compose exec frontend npm test`)
+- **Backend**: pytest tests (`docker compose exec backend pytest`)
+- **E2E**: Playwright integration tests
+
+### Development Workflow
+
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
-4. Run tests: `cd dashboard && docker compose exec backend pytest`
+4. Run tests to ensure nothing breaks
 5. Commit your changes (`git commit -m 'Add amazing feature'`)
 6. Push to the branch (`git push origin feature/amazing-feature`)
 7. Open a Pull Request
+
+## Issues & Feedback
+
+Found a bug or have a feature request?
+
+- **[Open an Issue](https://github.com/yourusername/solar_tigo_viewer/issues)** — Bug reports and feature requests
+- **[Discussions](https://github.com/yourusername/solar_tigo_viewer/discussions)** — Questions and community support
+
+## Support the Project
+
+If you find Solar Tigo Viewer useful, consider supporting development:
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/yourusername)
 
 ## License
 
