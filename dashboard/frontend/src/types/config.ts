@@ -66,6 +66,8 @@ export interface DiscoveredPanel {
   voltage: number;
   discovered_at: string;  // ISO timestamp (added by frontend)
   last_seen_at: string;   // For stale panel detection (added by frontend)
+  // Layout position from backup restore (not present during live discovery)
+  layout_position?: PanelPosition | null;
 }
 
 // WebSocket events emitted during discovery

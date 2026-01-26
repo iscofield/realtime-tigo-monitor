@@ -356,6 +356,8 @@ export function useWizardState(): UseWizardStateReturn {
         voltage: 0,
         discovered_at: now,
         last_seen_at: now,
+        // Preserve layout position from backup for restore
+        layout_position: panel.position || null,
       };
     }
 
