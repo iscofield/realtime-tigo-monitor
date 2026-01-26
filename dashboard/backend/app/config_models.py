@@ -222,8 +222,12 @@ class LayoutImageUploadResponse(BaseModel):
 
 
 class LayoutUpdateRequest(BaseModel):
-    """Request body for PUT /api/layout."""
-    overlay_size: int = Field(..., ge=20, le=200)
+    """Request body for PUT /api/layout.
+
+    Both fields are optional with defaults, enabling partial updates.
+    """
+    overlay_size: int = Field(default=50, ge=20, le=200)
+    image_scale: int = Field(default=100, ge=25, le=200)
 
 
 class Panel(BaseModel):
