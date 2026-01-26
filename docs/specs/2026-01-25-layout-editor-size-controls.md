@@ -39,7 +39,7 @@ This enhancement improves usability by adding clear labels and giving users cont
 - If input is empty or non-numeric: reset to 100 (default)
 - Values outside range (including negative, zero, or very large numbers) are clamped to 25-200, not rejected
 - Non-multiple-of-5 values from numeric input are accepted and stored as-is
-- Decimal input (e.g., "150.5") is truncated to integer; scientific notation (e.g., "1.5e2") may parse unexpectedly - use `Math.round(Number(value))` for robust parsing if needed
+- Decimal input (e.g., "150.5") is truncated to integer via `parseInt`; scientific notation (e.g., "1.5e2") may parse unexpectedly. Implementation uses `parseInt(value, 10)` consistently, which truncates decimals. Use `Math.round(Number(value))` if rounding behavior is preferred instead of truncation
 
 **FR-2.8:** The slider MUST support keyboard control:
 - Left/Down Arrow: decrease by 5%
@@ -48,7 +48,11 @@ This enhancement improves usability by adding clear labels and giving users cont
 - End: jump to 200%
 - Focus MUST be visible (2px outline minimum)
 
+Note: Native `<input type="range">` provides Home/End key support automatically. No custom handlers needed; this requirement leverages browser-native behavior.
+
 **Keyboard history recording:** History is recorded on blur only (when user tabs away from slider). This prevents flooding the 50-state buffer with individual keypress states while ensuring changes are captured before focus moves elsewhere.
+
+**Limitation:** If user makes keyboard changes and clicks Save without blurring (focus stays on slider), the blur doesn't fire and history isn't recorded before save. Workaround: Record history at the start of the save operation before committing. Alternatively, document this as a known limitation - undo after save reflects the last recorded state, not necessarily the final keyboard adjustment.
 
 ### FR-3: Visual Layout
 
@@ -84,7 +88,7 @@ This enhancement improves usability by adding clear labels and giving users cont
   }}
 />
 ```
-Note: Using `role="separator"` allows screen readers to understand toolbar structure. For purely decorative separators, use `aria-hidden="true"` instead.
+Note: Using `role="separator"` allows screen readers to understand toolbar structure. These toolbar separators are structural (grouping related controls), so use `role="separator"`. If adding visual-only separators elsewhere for aesthetics, use `aria-hidden="true"` instead.
 
 **Selection info behavior:**
 - Single panel selected: displays "Panel: {id} ({x}%, {y}%)"
@@ -134,7 +138,7 @@ def clamp_image_scale(cls, v):
     try:
         v = int(v)
         if v < 25 or v > 200:
-            logger.warning(f"image_scale {v} out of range, clamping to {max(25, min(200, v))}")
+            logger.warning(f"image_scale out of range, clamping to {max(25, min(200, v))}")  # Don't log actual value for consistency with sensitive field patterns
             return max(25, min(200, v))
         return v
     except (TypeError, ValueError):
@@ -205,9 +209,13 @@ const recordHistoryState = useCallback((
 }, []);
 
 // Update undo to restore both positions and imageScale
-// Pattern: Read state outside setter, update all state synchronously
+// Pattern: Use ref to get current state synchronously, avoiding stale closure issues with rapid clicks
+const historyRef = useRef(history);
+useEffect(() => { historyRef.current = history; }, [history]);
+
 const undo = useCallback(() => {
-  const stateToRestore = history.states[history.currentIndex - 1];
+  const currentHistory = historyRef.current;
+  const stateToRestore = currentHistory.states[currentHistory.currentIndex - 1];
   if (!stateToRestore) return;
 
   // Update all state synchronously - React 18 batches these automatically
@@ -217,11 +225,13 @@ const undo = useCallback(() => {
   });
   setPositions(stateToRestore.positions);
   setImageScale(stateToRestore.imageScale);
-}, [history.currentIndex, history.states]);
+}, []);  // No deps needed - reads from ref
 
 // Update redo to restore both positions and imageScale
+// Same ref pattern as undo for consistency
 const redo = useCallback(() => {
-  const stateToRestore = history.states[history.currentIndex + 1];
+  const currentHistory = historyRef.current;
+  const stateToRestore = currentHistory.states[currentHistory.currentIndex + 1];
   if (!stateToRestore) return;
 
   setHistory(prev => {
@@ -230,7 +240,7 @@ const redo = useCallback(() => {
   });
   setPositions(stateToRestore.positions);
   setImageScale(stateToRestore.imageScale);
-}, [history.currentIndex, history.states]);
+}, []);  // No deps needed - reads from ref
 
 // Update enterEditMode to initialize history with EditorHistoryState shape
 const enterEditMode = useCallback(() => {
@@ -247,23 +257,34 @@ const enterEditMode = useCallback(() => {
 ```typescript
 // For slider - record on release, not during drag
 // Use pending flag to prevent duplicate recordings (release + blur)
+// Pending history is lost on unmount, which is acceptable since edit mode exit clears history regardless.
 const [pendingHistoryRecord, setPendingHistoryRecord] = useState(false);
+
+// Use refs to avoid stale closure issues - slider onChange sets new value but
+// onMouseUp fires before React re-renders, so closure would capture stale values
+const positionsRef = useRef(positions);
+const imageScaleRef = useRef(imageScale);
+useEffect(() => { positionsRef.current = positions; }, [positions]);
+useEffect(() => { imageScaleRef.current = imageScale; }, [imageScale]);
 
 const commitIfPending = useCallback(() => {
   if (pendingHistoryRecord) {
-    recordHistoryState(positions, imageScale);
+    recordHistoryState(positionsRef.current, imageScaleRef.current);
     setPendingHistoryRecord(false);
   }
-}, [pendingHistoryRecord, positions, imageScale, recordHistoryState]);
+}, [pendingHistoryRecord, recordHistoryState]);
 
 <input
   type="range"
   onChange={(e) => {
-    setImageScale(parseInt(e.target.value, 10));
+    const newScale = parseInt(e.target.value, 10);
+    setImageScale(newScale);
+    imageScaleRef.current = newScale;  // Sync ref immediately for onMouseUp
     setPendingHistoryRecord(true);
   }}
   onMouseUp={commitIfPending}
   onTouchEnd={commitIfPending}
+  onTouchCancel={commitIfPending}  // Handle touch cancellation (e.g., phone call interruption)
   onBlur={commitIfPending}
 />
 ```
@@ -271,7 +292,8 @@ const commitIfPending = useCallback(() => {
 This pattern prevents duplicate history entries when user releases slider and then tabs away (which would otherwise trigger both onMouseUp and onBlur).
 
 **Memory considerations:**
-- Each history state creates a new positions object (~200 keys)
+- Each history state creates a shallow copy of positions object via `{ ...newPositions }`
+- **Important:** Positions must always be updated immutably (create new objects, don't mutate). If code path does `positions[id].x = newX` instead of `setPositions(prev => ({...prev, [id]: {...prev[id], x: newX}}))`, history states would be corrupted. Consider using Immer if mutation safety becomes a concern.
 - PanelPosition values are shared by reference unless modified (structural sharing)
 - Worst case (all panels moved each state): 200 panels x 50 states = 10,000 PanelPosition objects
 - Typical case (few panels moved): ~200 + (moves x 50) PanelPosition objects
@@ -302,7 +324,7 @@ position.y = (pixelY / scaledHeight) * 100
 where pixelX/Y is the mouse position relative to the canvas origin.
 ```
 
-Note: Percentages are relative to the scaled canvas dimensions, which is what the user sees and interacts with.
+**Clarification on percentage storage:** Stored percentages are relative to the **original** image dimensions (scale-independent). The formulas above convert to/from pixel positions on the *scaled* canvas for display and interaction. When image scale changes, stored percentage values remain unchanged - only the rendered pixel positions change. This ensures panel positions don't drift when scale changes.
 
 - The panel's top-left corner aligns with (pixelX, pixelY)
 - Panel overlay size is independent of image scale (controlled by Panel Size slider)
@@ -312,13 +334,15 @@ Note: Percentages are relative to the scaled canvas dimensions, which is what th
 - Guide lines render at exact pixel positions matching snapped percentage
 - Snap calculations occur in pixel space, then convert to percentage for storage
 
-**Snap threshold UX tradeoff:** The fixed 10px threshold means snapping feels "stronger" at low zoom (10px = larger percentage) and "weaker" at high zoom (10px = smaller percentage). This is intentional: at low zoom, users want faster/coarser positioning; at high zoom, users want precision. If user feedback indicates inconsistent feel, consider scale-aware threshold: `thresholdPixels = 10 * (100 / imageScale)`.
+**Snap threshold UX tradeoff:** The fixed 10px threshold means snapping feels "stronger" at low zoom (10px = larger percentage) and "weaker" at high zoom (10px = smaller percentage). This is intentional: at low zoom, users want faster/coarser positioning; at high zoom, users want precision. If user feedback indicates inconsistent feel, consider scale-aware threshold: `thresholdPixels = 10 * (imageScale / 100)` - this makes threshold bigger at higher scales (easier snapping when zoomed in for precision work). Note: The formula `10 * (100 / imageScale)` would invert this behavior.
 
 **FR-6.5:** Clicking "Discard" MUST:
 - Reset imageScale to the value in persisted config (layout.yaml)
 - Reset panel positions to persisted values
 - Clear undo/redo history
 - Exit edit mode
+
+**Note on partial save recovery:** After a partial save failure (positions saved, config failed), "Discard" resets only unsaved changes. Positions remain at server state (which includes the partial save), while settings revert to their pre-edit values. This may create an unusual state where positions and settings reflect different edit sessions, but is acceptable as it preserves the user's successfully saved work.
 
 ## Non-Functional Requirements
 
@@ -329,7 +353,7 @@ Note: Percentages are relative to the scaled canvas dimensions, which is what th
 - If exceeds 50ms with >100 panels, document as known limitation
 - Verified via manual testing or performance profiling, not automated tests
 
-**Automated performance testing (out of scope):** Automated CI/CD performance testing is not required for this feature. The 50ms threshold is verified manually before release. If automated testing is desired later, consider a Playwright test measuring slider-to-render latency with a relaxed threshold (100ms) to account for CI variance.
+**Automated performance testing (out of scope):** Automated CI/CD performance testing is not required for this feature. The 50ms threshold is verified manually before release. Before release, run manual performance test on reference hardware (4-core, 8GB RAM) with 100 panels. Use Chrome DevTools Performance panel to verify slider-to-paint < 50ms. Document result in release notes. If automated testing is desired later, consider a Playwright test measuring slider-to-render latency with a relaxed threshold (100ms) to account for CI variance.
 
 **NFR-2:** The **toolbar layout** MUST not cause horizontal scrolling on viewports 900px or wider.
 
@@ -386,7 +410,7 @@ sequenceDiagram
 ### Error Handling
 
 If `PUT /api/layout` fails:
-- 422 Validation Error (e.g., malformed request from API client, concurrent modification): Frontend shows error toast with validation message, retains local state for user to correct. Note: 422 should not occur in normal operation due to frontend validation, but is handled defensively.
+- 422 Validation Error: Frontend shows error toast with validation message, retains local state for user to correct. Note: 422 should not occur in normal operation due to frontend validation, but may occur if: (1) browser extension modifies request, (2) API version mismatch between client and server, (3) concurrent session with stale client code, or (4) direct API access bypassing UI validation. Handled defensively.
 - 500 Server Error: Frontend shows generic error toast, retains local state for retry
 - Network Error (fetch throws, no response): Frontend shows connection error toast, retains local state for retry
 
@@ -546,7 +570,7 @@ export interface LayoutConfig {
 
 export interface WizardState {
   // ... existing fields ...
-  restoreImageScale?: number;  // NEW - undefined means "missing from backup", defaults to 100 on commit
+  restoreImageScale?: number;  // NEW - undefined means "missing from backup", defaults to 100 on commit. Note: null would also be handled gracefully by ?? 100 pattern, but undefined is the semantic intent.
 }
 
 // WizardState population during restore:
@@ -558,9 +582,10 @@ export interface WizardState {
 
 const handleBackupParsed = (response: RestoreParseResponse) => {
   // response.layout contains the parsed LayoutConfig from the backup
+  // Use optional chaining - response.layout may be null/undefined for legacy or malformed backups
   setWizardState(prev => ({
     ...prev,
-    restoreImageScale: response.layout.image_scale ?? 100  // Default for legacy backups
+    restoreImageScale: response.layout?.image_scale ?? 100  // Default for legacy backups
   }));
 };
 
@@ -590,7 +615,7 @@ interface EditorToolbarProps {
   <input
     type="range"
     id="image-scale-slider"
-    aria-labelledby="image-scale-label"
+    aria-labelledby="image-scale-label"  // Intentional redundancy with htmlFor for robust assistive tech compatibility
     aria-valuemin={25}
     aria-valuemax={200}
     aria-valuenow={imageScale}
@@ -608,9 +633,10 @@ interface EditorToolbarProps {
     inputMode="numeric"  // Ensures numeric keyboard on mobile (type="number" alone is inconsistent across browsers)
     min={25}
     max={200}
-    step="any"  // Allow any numeric value; onBlur clamps to valid range. Using step={5} would cause browser validation warnings for non-multiples.
+    step={1}  // Allows any integer; browser up/down arrows increment by 1 (differs from slider's step=5, which is intentional - number input allows fine-grained control). Using step="any" would also work but step={1} is more predictable.
     value={imageScale}
     onChange={(e) => {
+      // Skip non-numeric input including empty string; onBlur handles reset to default
       const value = parseInt(e.target.value, 10);
       if (!isNaN(value)) onImageScaleChange(value);
     }}
@@ -643,6 +669,8 @@ Apply image scale to canvas dimensions:
 ```typescript
 // Calculate scaled dimensions
 // Guard: don't render canvas if image dimensions are missing
+// Early return for no-image state. Place after all hooks but before canvas calculations.
+// If using hooks that depend on dimensions, add a loading state instead.
 if (!imageWidth || !imageHeight) {
   return <div className="no-image-placeholder">No layout image uploaded</div>;
 }
@@ -693,6 +721,7 @@ export async function updateLayoutConfig(config: LayoutUpdatePayload): Promise<v
   } catch (error) {
     // Network error (no response received) - preserve original for debugging
     console.error('Network request failed:', error);
+    // ES2022 Error cause - older browsers (Safari <15) ignore the option but still work
     throw new Error('Connection error. Please check your network.', { cause: error });
   }
 
@@ -747,13 +776,23 @@ const save = async () => {
     });
     // Success path: exitEditMode, clearDraft, etc.
   } catch (error) {
-    // Partial save handling:
-    // If updateLayoutConfig fails after updatePanelPositions succeeded:
-    // - Positions are saved (acceptable - user's drag work preserved)
-    // - Config not saved
-    // - Show specific error: "Panel positions saved, but layout settings failed to save. Please try again."
-    // - Edit mode remains active (user can retry)
-    // - If user clicks Discard, positions persist (already saved), settings revert to server state
+    // Partial save handling - track which operation succeeded:
+    // let positionsSaved = false;
+    // try {
+    //   await updatePanelPositions(positions);
+    //   positionsSaved = true;
+    //   await updateLayoutConfig({ overlay_size, image_scale });
+    //   // full success
+    // } catch (error) {
+    //   if (positionsSaved) {
+    //     showToast("Panel positions saved, but layout settings failed to save. Please try again.");
+    //   } else {
+    //     showToast("Failed to save changes. Please try again.");
+    //   }
+    //   // Edit mode remains active (user can retry)
+    //   // If user clicks Discard, positions persist (already saved), settings revert to server state
+    //   throw error;
+    // }
     throw error;
   }
 };
@@ -822,27 +861,29 @@ return {
 ### Functional Tests
 
 1. **Slider basic interaction**: Move Image Scale slider → verify canvas updates immediately
-2. **Numeric input**: Type value in input field → verify slider updates, canvas updates
-3. **Save/load cycle**: Change scale to 150%, save, refresh page → verify 150% is restored
-4. **Default value**: Remove `image_scale` from layout.yaml manually, reload → verify defaults to 100%
+2. **Keyboard navigation**: Focus Image Scale slider, press Right Arrow 3 times → verify scale increases by 15% (3x5%). Press Home → verify jumps to 25%. Press End → verify jumps to 200%.
+3. **Numeric input**: Type value in input field → verify slider updates, canvas updates
+4. **Save/load cycle**: Change scale to 150%, save, refresh page → verify 150% is restored
+5. **Default value**: Remove `image_scale` from layout.yaml manually, reload → verify defaults to 100%
 
 ### Boundary Tests
 
-5. **Minimum scale (25%)**: Set to 25% → verify canvas shrinks correctly, panels remain positioned
-6. **Maximum scale (200%)**: Set to 200% → verify canvas enlarges, no layout overflow on wide viewport
-7. **Invalid input**: Type 300 in input → verify clamped to 200 (per FR-2.7, values outside range are clamped)
+6. **Minimum scale (25%)**: Set to 25% → verify canvas shrinks correctly, panels remain positioned
+7. **Maximum scale (200%)**: Set to 200% → verify canvas enlarges, no layout overflow on wide viewport
+7. **Invalid input (out of range)**: Type 300 in input → verify clamped to 200 on blur (per FR-2.7)
+8. **Invalid input (non-numeric)**: Type 'abc' in input field → verify resets to 100 on blur (per FR-2.7)
 
 ### Backup/Restore Tests
 
-8. **Backup includes scale**: Export backup with scale=75% → extract ZIP → verify layout.yaml contains `image_scale: 75`
-9. **Restore preserves scale**: Import backup with scale=150% → complete wizard → verify editor shows 150%
-10. **Legacy backup (no image_scale)**: Import backup created before this feature → verify defaults to 100%
+9. **Backup includes scale**: Export backup with scale=75% → extract ZIP → verify layout.yaml contains `image_scale: 75`
+10. **Restore preserves scale**: Import backup with scale=150% → complete wizard → verify editor shows 150%
+11. **Legacy backup (no image_scale)**: Import backup created before this feature → verify defaults to 100%
 
 ### Undo/Redo Tests
 
-11. **Undo scale change**: Change 100% → 150%, Ctrl+Z → verify returns to 100%
-12. **Redo scale change**: After undo, Ctrl+Shift+Z → verify returns to 150%
-13. **Mixed undo (sequential operations)**:
+12. **Undo scale change**: Change 100% → 150%, Ctrl+Z → verify returns to 100%
+13. **Redo scale change**: After undo, Ctrl+Shift+Z → verify returns to 150%
+14. **Mixed undo (sequential operations)**:
     - Initial state (State 0): scale=100%, panel at (50%, 50%)
     - Change scale to 150%, release slider (State 1 recorded): scale=150%, panel at (50%, 50%)
     - Move panel to (60%, 60%), release drag (State 2 recorded): scale=150%, panel at (60%, 60%)
@@ -851,9 +892,11 @@ return {
 
 ### Panel Position Tests
 
-14. **Position accuracy at scale**: At 25% and 200%, verify panel positions match percentage coordinates
-15. **Drag at scale**: At 50% scale, drag panel → verify drop position is correct
-16. **Alignment guides at scale**:
+15. **Position accuracy at scale**: At 25% and 200%, verify panel positions match percentage coordinates
+16. **Drag at scale**: At 50% scale, drag panel from (50%, 50%) to visually ~30% from left edge. Verify:
+    - Stored position.x is approximately 30 (within 2% tolerance for snap)
+    - Panel visually aligns with 30% mark on scaled canvas
+17. **Alignment guides at scale**:
     - At 50% scale, drag panel near another panel's edge
     - Verify: guide line appears when panels are within snap threshold
     - Verify: guide line is positioned at exact alignment point (not offset)
@@ -864,8 +907,8 @@ return {
 
 | Spec | Relationship | Notes |
 |------|--------------|-------|
-| 2026-01-24-backup-restore.md | extends | Adds `image_scale` field to backup/restore workflow; updates `CommitImageRequest` model |
-| 2026-01-24-panel-selection-movement.md | related | Uses same undo/redo pattern; extends history state to include `imageScale` |
+| Backup & Restore (2026-01-24-backup-restore.md) | extends | Adds `image_scale` field to backup/restore workflow; updates `CommitImageRequest` model |
+| Panel Selection & Movement (2026-01-24-panel-selection-movement.md) | related | Uses same undo/redo pattern; extends history state to include `imageScale` |
 
 ## Context / Documentation
 
@@ -879,11 +922,51 @@ return {
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** January 2026
 **Authors:** Claude Opus 4.5
 
 ## Changelog
+
+### v1.6 (January 2026)
+**Summary:** Review iteration 6 - addressed 29 review comments focusing on race conditions, stale closures, and documentation improvements
+
+**Key Changes:**
+- FR-6.2: Fixed race condition in undo/redo by using refs instead of closure state for rapid click handling
+- FR-6.2: Fixed stale closure in commitIfPending by using refs for positions/imageScale
+- FR-6.2: Added onTouchCancel handler for touch interruption edge case
+- FR-6.4: Corrected snap threshold formula documentation (was inverted)
+- Error Handling: Added partial save tracking pattern with positionsSaved flag
+- Test Scenarios: Added keyboard navigation test, renumbered test cases, clarified drag test criteria
+
+**All Changes:**
+- FR-2.7: Clarified parseInt vs Math.round consistency in spec
+- FR-2.8: Added note that Home/End leverage native range input behavior
+- FR-2.8: Documented keyboard-to-save limitation with workaround
+- FR-3.1: Clarified separator role="separator" is structural, not decorative
+- FR-5.4: Removed value from log message for consistency with sensitive field patterns
+- FR-6.2: Added historyRef pattern to fix race condition with rapid undo/redo clicks
+- FR-6.2: Added positionsRef/imageScaleRef to fix stale closure in slider callbacks
+- FR-6.2: Added onTouchCancel handler for completeness
+- FR-6.2: Documented pending state unmount behavior
+- FR-6.2: Added immutability warning for positions updates
+- FR-6.3: Clarified that stored percentages are scale-independent (original image dimensions)
+- FR-6.4: Fixed snap threshold formula (imageScale/100, not 100/imageScale)
+- FR-6.5: Documented discard behavior after partial save
+- NFR-1: Added specific manual testing procedure
+- High Level Design: Added ES2022 error cause browser compatibility note
+- High Level Design: Expanded 422 error scenarios
+- High Level Design: Added partial save tracking code pattern
+- Frontend Changes: Added aria-labelledby redundancy comment
+- Frontend Changes: Changed step="any" to step={1} with rationale
+- Frontend Changes: Added onChange comment for empty string handling
+- Frontend Changes: Added guard placement comment
+- Frontend Changes: Added optional chaining for response.layout
+- Frontend Changes: Added null handling note for restoreImageScale
+- Test Scenarios: Added keyboard navigation test (#2)
+- Test Scenarios: Added non-numeric input test (#8)
+- Test Scenarios: Made drag test (#16) measurable with criteria
+- Related Specifications: Added document titles for clarity
 
 ### v1.5 (January 2026)
 **Summary:** Review iteration 5 - addressed 29 review comments across code correctness, accessibility, completeness, and documentation
