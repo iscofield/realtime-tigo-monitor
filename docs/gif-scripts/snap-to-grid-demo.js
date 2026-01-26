@@ -1,20 +1,21 @@
 /**
  * Snap-to-Grid Demo Recording Script
  *
- * Demonstrates the snap-to-grid alignment feature in the Layout Editor.
- * Drags a panel slightly off alignment, showing it snap back when released.
+ * Demonstrates dragging a panel from the sidebar to the canvas with snap-to-grid alignment.
+ * Shows the complete flow: unpositioned panel → drag to canvas → snap to aligned position.
  *
  * Prerequisites:
  * 1. Dashboard running: cd dashboard && docker compose up -d
  * 2. Navigate to editor: http://localhost:5174/editor?view=editor
- * 3. Panels should be positioned (restore from test backup if needed)
+ * 3. A1 must be unpositioned (in sidebar). To unplace: click panel to select, press Delete
  *
  * Usage with Claude Code / Playwright MCP:
  *   1. Navigate: mcp__playwright__browser_navigate({ url: "http://localhost:5174/editor?view=editor" })
  *   2. Wait: mcp__playwright__browser_wait_for({ time: 2 })
- *   3. Execute: mcp__playwright__browser_run_code({ code: SNAP_DEMO_CODE })
- *   4. Close: mcp__playwright__browser_close()
- *   5. Convert video to GIF (see workflow below)
+ *   3. Setup: Click A1 on canvas to select, press Delete to move to sidebar
+ *   4. Execute: mcp__playwright__browser_run_code({ code: SNAP_DEMO_CODE })
+ *   5. Close: mcp__playwright__browser_close()
+ *   6. Convert video to GIF (see workflow below)
  *
  * Output: docs/images/snap-to-grid-demo.gif
  */
@@ -41,7 +42,7 @@ async (page) => {
     await page.mouse.up();
   };
 
-  // === SETUP: Center view on A-row panels ===
+  // === SETUP: Center view on A-row ===
   await page.evaluate(() => {
     const scrollContainer = Array.from(document.querySelectorAll('div')).find(el => {
       const style = getComputedStyle(el);
@@ -50,18 +51,21 @@ async (page) => {
     });
 
     if (scrollContainer) {
-      const a1 = document.querySelector('[data-testid="editor-panel-A1"]');
+      const a2 = document.querySelector('[data-testid="editor-panel-A2"]');
       const a8 = document.querySelector('[data-testid="editor-panel-A8"]');
 
-      if (a1 && a8) {
-        const a1Rect = a1.getBoundingClientRect();
+      if (a2 && a8) {
+        const a2Rect = a2.getBoundingClientRect();
         const a8Rect = a8.getBoundingClientRect();
         const containerRect = scrollContainer.getBoundingClientRect();
 
-        const aRowCenterX = (a1Rect.left + a8Rect.right) / 2;
-        const aRowCenterY = a1Rect.top + a1Rect.height / 2;
+        // Center on A2-A8 row, leaving room for sidebar
+        const aRowCenterX = (a2Rect.left + a8Rect.right) / 2;
+        const aRowCenterY = a2Rect.top + a2Rect.height / 2;
 
-        const effectiveCenterX = containerRect.left + containerRect.width / 2;
+        const sidebarWidth = 220;
+        const effectiveWidth = containerRect.width - sidebarWidth;
+        const effectiveCenterX = containerRect.left + effectiveWidth / 2;
         const containerCenterY = containerRect.top + containerRect.height / 2;
 
         scrollContainer.scrollTo({
@@ -75,47 +79,46 @@ async (page) => {
 
   await page.waitForTimeout(300);
 
-  // === GET PANEL POSITION (dynamic, works with any scroll state) ===
-  const getA1Position = async () => {
-    return await page.evaluate(() => {
-      const a1 = document.querySelector('[data-testid="editor-panel-A1"]');
-      const rect = a1.getBoundingClientRect();
-      return { centerX: rect.x + rect.width/2, centerY: rect.y + rect.height/2 };
-    });
-  };
+  // === GET POSITIONS AFTER CENTERING ===
+  const positions = await page.evaluate(() => {
+    const a1Sidebar = document.querySelector('[data-testid="unpositioned-panel-A1"]');
+    const a2Panel = document.querySelector('[data-testid="editor-panel-A2"]');
 
-  const a1Pos = await getA1Position();
+    if (!a1Sidebar) throw new Error('A1 not in sidebar - click A1 on canvas, press Delete first');
+
+    const a1Rect = a1Sidebar.getBoundingClientRect();
+    const a2Rect = a2Panel.getBoundingClientRect();
+
+    return {
+      a1: { centerX: a1Rect.x + a1Rect.width/2, centerY: a1Rect.y + a1Rect.height/2 },
+      a2: { x: a2Rect.x, y: a2Rect.y, centerX: a2Rect.x + a2Rect.width/2, centerY: a2Rect.y + a2Rect.height/2 }
+    };
+  });
 
   // === DEMO SEQUENCE ===
 
-  // Initial pause to establish context
-  await page.waitForTimeout(800);
+  // Initial pause to show starting state (A1 in sidebar)
+  await page.waitForTimeout(1000);
 
-  // First drag: Move A1 about 8px left (within 10px snap threshold)
-  // This shows misalignment during drag, then snap back on release
+  // Calculate target: Above A2 (same X column), slightly off on X to show snap
+  // Drop 7px off from A2's X position - within 10px snap threshold, will snap to align
+  const targetX = positions.a2.x + 7;
+  const targetY = positions.a2.y - 55; // Above A2
+
+  // Drag from sidebar to canvas with smooth eased motion
   await smoothDrag(
-    a1Pos.centerX, a1Pos.centerY,
-    a1Pos.centerX - 8, a1Pos.centerY + 3,  // 8px left, 3px down
-    20, 25, 300
+    positions.a1.centerX, positions.a1.centerY,
+    targetX + 25, targetY + 25,  // +25 to target center of panel
+    30, 25, 500  // 30 steps, 25ms each, 500ms pause to show snap
   );
 
-  // Wait to show the snapped result
-  await page.waitForTimeout(800);
-
-  // Get updated position after first snap
-  const newPos = await getA1Position();
-
-  // Second drag: offset in opposite direction
-  await smoothDrag(
-    newPos.centerX, newPos.centerY,
-    newPos.centerX + 7, newPos.centerY - 5,  // 7px right, 5px up
-    18, 28, 400
-  );
-
-  // Final pause for loop buffer
+  // Hold to show the snapped result before loop
   await page.waitForTimeout(2000);
 
-  return { success: true, message: 'Snap-to-grid demo completed' };
+  return {
+    success: true,
+    message: 'Sidebar-to-canvas drag with snap completed'
+  };
 }
 `;
 
@@ -124,7 +127,7 @@ module.exports = {
 
   // FFmpeg command to convert video to GIF (trim to last N seconds)
   convertToGif: (inputVideo, outputGif, options = {}) => {
-    const { width = 640, fps = 15, trimSeconds = 8 } = options;
+    const { width = 640, fps = 15, trimSeconds = 7 } = options;
     return `
 # Get video duration and calculate start time for trim
 DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputVideo}")
@@ -147,9 +150,13 @@ cd dashboard && docker compose up -d
 
 ## 2. Navigate to editor
 mcp__playwright__browser_navigate({ url: "http://localhost:5174/editor?view=editor" })
-
-## 3. Wait for page load
 mcp__playwright__browser_wait_for({ time: 2 })
+
+## 3. Unplace A1 (move to sidebar)
+# Click A1 to select it (status bar shows "1 panel selected")
+mcp__playwright__browser_click({ ref: "<A1-ref>", element: "Panel A1" })
+# Press Delete to unplace
+mcp__playwright__browser_press_key({ key: "Delete" })
 
 ## 4. Execute the demo sequence
 mcp__playwright__browser_run_code({ code: SNAP_DEMO_CODE })
@@ -160,7 +167,7 @@ mcp__playwright__browser_close()
 ## 6. Find and convert video
 VIDEO=$(ls -t .playwright-mcp/recordings/videos/*.webm | head -1)
 DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO")
-START=$(echo "$DURATION - 8" | bc)
+START=$(echo "$DURATION - 7" | bc)
 
 ffmpeg -y -ss $START -i "$VIDEO" \\
   -vf "fps=15,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \\
