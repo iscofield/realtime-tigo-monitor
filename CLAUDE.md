@@ -161,6 +161,14 @@ docker compose up --build
 # Access at http://localhost:5174
 ```
 
+#### Test Backup File
+
+For testing in worktrees or fresh environments, restore from the test backup:
+
+**Location:** `dashboard/backend/tests/fixtures/test-backup-69-panels.zip`
+
+This backup contains a complete 69-panel configuration with all strings (A-I), panel positions, and layout settings. Use the Setup Wizard's "Restore from Backup" option to load it.
+
 #### Running Unit Tests (via Docker)
 ```bash
 cd dashboard

@@ -1,53 +1,34 @@
 /**
  * Snap-to-Grid Demo Recording Script
  *
- * This script is designed to be executed via Playwright MCP's browser_run_code tool,
- * which uses the MCP's --save-video configuration for reliable video recording.
+ * Demonstrates the snap-to-grid alignment feature in the Layout Editor.
+ * Drags a panel slightly off alignment, showing it snap back when released.
+ *
+ * Prerequisites:
+ * 1. Dashboard running: cd dashboard && docker compose up -d
+ * 2. Navigate to editor: http://localhost:5174/editor?view=editor
+ * 3. Panels should be positioned (restore from test backup if needed)
  *
  * Usage with Claude Code / Playwright MCP:
- *   1. Navigate to the editor: mcp__playwright__browser_navigate({ url: "http://localhost:5174/editor?view=editor" })
- *   2. Wait for load: mcp__playwright__browser_wait_for({ time: 2 })
- *   3. Execute this script: mcp__playwright__browser_run_code({ code: <contents of getSnapDemoCode()> })
- *   4. Close browser to save video: mcp__playwright__browser_close()
- *   5. Convert video to GIF (see convertToGif below)
+ *   1. Navigate: mcp__playwright__browser_navigate({ url: "http://localhost:5174/editor?view=editor" })
+ *   2. Wait: mcp__playwright__browser_wait_for({ time: 2 })
+ *   3. Execute: mcp__playwright__browser_run_code({ code: SNAP_DEMO_CODE })
+ *   4. Close: mcp__playwright__browser_close()
+ *   5. Convert video to GIF (see workflow below)
  *
- * The script performs:
- *   - Moves panel A1 to the right (misaligns it)
- *   - Pauses to show misaligned state
- *   - Slowly drags A1 back toward A2's column
- *   - Shows snap guide appearing
- *   - Releases to demonstrate snap
- *   - Pauses to show final aligned state
+ * Output: docs/images/snap-to-grid-demo.gif
  */
 
-// Helper function for smooth eased movement
-function easeInOut(t) {
-  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-}
-
-// The main demo code to be executed via browser_run_code
-// Copy this entire function body as the 'code' parameter
 const SNAP_DEMO_CODE = `
 async (page) => {
-  // Helper for eased movement
+  // === HELPERS ===
   const easeInOut = (t) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 
-  // Get panel positions
-  const getCenter = async (selector) => {
-    const box = await page.locator(selector).boundingBox();
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  };
-
-  const a1 = await getCenter('[data-testid="editor-panel-A1"]');
-  const a2 = await getCenter('[data-testid="editor-panel-A2"]');
-
-  // Smooth drag helper
   const smoothDrag = async (fromX, fromY, toX, toY, steps, stepDelay, pauseAtEnd = 0) => {
     await page.mouse.move(fromX, fromY);
     await page.waitForTimeout(100);
     await page.mouse.down();
     await page.waitForTimeout(100);
-
     for (let i = 1; i <= steps; i++) {
       const progress = easeInOut(i / steps);
       await page.mouse.move(
@@ -56,75 +37,141 @@ async (page) => {
       );
       await page.waitForTimeout(stepDelay);
     }
-
     if (pauseAtEnd > 0) await page.waitForTimeout(pauseAtEnd);
     await page.mouse.up();
   };
 
-  // === RECORDING SEQUENCE ===
+  // === SETUP: Center view on A-row panels ===
+  await page.evaluate(() => {
+    const scrollContainer = Array.from(document.querySelectorAll('div')).find(el => {
+      const style = getComputedStyle(el);
+      return (style.overflow === 'auto' || style.overflowY === 'auto') &&
+             el.scrollHeight > el.clientHeight;
+    });
 
-  // Initial pause to show starting state
-  await page.waitForTimeout(600);
+    if (scrollContainer) {
+      const a1 = document.querySelector('[data-testid="editor-panel-A1"]');
+      const a8 = document.querySelector('[data-testid="editor-panel-A8"]');
 
-  // PHASE 1: Move A1 to the right (misalign it)
-  await smoothDrag(a1.x, a1.y, a1.x + 80, a1.y, 15, 25);
+      if (a1 && a8) {
+        const a1Rect = a1.getBoundingClientRect();
+        const a8Rect = a8.getBoundingClientRect();
+        const containerRect = scrollContainer.getBoundingClientRect();
 
-  // Pause to show misaligned state
+        const aRowCenterX = (a1Rect.left + a8Rect.right) / 2;
+        const aRowCenterY = a1Rect.top + a1Rect.height / 2;
+
+        const effectiveCenterX = containerRect.left + containerRect.width / 2;
+        const containerCenterY = containerRect.top + containerRect.height / 2;
+
+        scrollContainer.scrollTo({
+          left: Math.max(0, scrollContainer.scrollLeft + (aRowCenterX - effectiveCenterX)),
+          top: Math.max(0, scrollContainer.scrollTop + (aRowCenterY - containerCenterY)),
+          behavior: 'instant'
+        });
+      }
+    }
+  });
+
+  await page.waitForTimeout(300);
+
+  // === GET PANEL POSITION (dynamic, works with any scroll state) ===
+  const getA1Position = async () => {
+    return await page.evaluate(() => {
+      const a1 = document.querySelector('[data-testid="editor-panel-A1"]');
+      const rect = a1.getBoundingClientRect();
+      return { centerX: rect.x + rect.width/2, centerY: rect.y + rect.height/2 };
+    });
+  };
+
+  const a1Pos = await getA1Position();
+
+  // === DEMO SEQUENCE ===
+
+  // Initial pause to establish context
   await page.waitForTimeout(800);
 
-  // PHASE 2: Get new position and drag back with snap
-  const a1Moved = await getCenter('[data-testid="editor-panel-A1"]');
-  await smoothDrag(a1Moved.x, a1Moved.y, a2.x, a1.y, 35, 30, 1000);
+  // First drag: Move A1 about 8px left (within 10px snap threshold)
+  // This shows misalignment during drag, then snap back on release
+  await smoothDrag(
+    a1Pos.centerX, a1Pos.centerY,
+    a1Pos.centerX - 8, a1Pos.centerY + 3,  // 8px left, 3px down
+    20, 25, 300
+  );
 
-  // Final pause to show snapped state
-  await page.waitForTimeout(1000);
+  // Wait to show the snapped result
+  await page.waitForTimeout(800);
 
-  return { success: true, a1Start: a1, a2Target: a2 };
+  // Get updated position after first snap
+  const newPos = await getA1Position();
+
+  // Second drag: offset in opposite direction
+  await smoothDrag(
+    newPos.centerX, newPos.centerY,
+    newPos.centerX + 7, newPos.centerY - 5,  // 7px right, 5px up
+    18, 28, 400
+  );
+
+  // Final pause for loop buffer
+  await page.waitForTimeout(2000);
+
+  return { success: true, message: 'Snap-to-grid demo completed' };
 }
 `;
 
-// Export for use in other scripts or documentation
 module.exports = {
   SNAP_DEMO_CODE,
 
-  // FFmpeg command to convert video to GIF
+  // FFmpeg command to convert video to GIF (trim to last N seconds)
   convertToGif: (inputVideo, outputGif, options = {}) => {
-    const { width = 640, fps = 15 } = options;
-    return `ffmpeg -y -i "${inputVideo}" \\
+    const { width = 640, fps = 15, trimSeconds = 8 } = options;
+    return `
+# Get video duration and calculate start time for trim
+DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${inputVideo}")
+START=$(echo "$DURATION - ${trimSeconds}" | bc)
+
+# Convert trimmed portion to GIF
+ffmpeg -y -ss $START -i "${inputVideo}" \\
   -vf "fps=${fps},scale=${width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \\
   -loop 0 \\
-  "${outputGif}"`;
+  "${outputGif}"
+`;
   },
 
-  // Full workflow instructions
+  // Full workflow
   workflow: `
 # Snap-to-Grid Demo Recording Workflow
 
-## 1. Start recording (navigate to editor)
+## 1. Start the dashboard
+cd dashboard && docker compose up -d
+
+## 2. Navigate to editor
 mcp__playwright__browser_navigate({ url: "http://localhost:5174/editor?view=editor" })
 
-## 2. Wait for page load
+## 3. Wait for page load
 mcp__playwright__browser_wait_for({ time: 2 })
 
-## 3. Dismiss draft if present (check snapshot first)
-mcp__playwright__browser_click({ ref: "...", element: "Discard button" })
-# Then reload: mcp__playwright__browser_navigate({ url: "http://localhost:5174/editor?view=editor" })
-
-## 4. Execute the demo sequence (paste SNAP_DEMO_CODE as the code parameter)
-mcp__playwright__browser_run_code({ code: "..." })
+## 4. Execute the demo sequence
+mcp__playwright__browser_run_code({ code: SNAP_DEMO_CODE })
 
 ## 5. Close browser to save video
 mcp__playwright__browser_close()
 
-## 6. Find the video and convert to GIF
-ls -t .playwright-mcp/recordings/videos/*.webm | head -1
-ffmpeg -y -i <video_file> -vf "fps=15,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 docs/images/snap-to-grid-demo.gif
+## 6. Find and convert video
+VIDEO=$(ls -t .playwright-mcp/recordings/videos/*.webm | head -1)
+DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$VIDEO")
+START=$(echo "$DURATION - 8" | bc)
+
+ffmpeg -y -ss $START -i "$VIDEO" \\
+  -vf "fps=15,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \\
+  -loop 0 \\
+  docs/images/snap-to-grid-demo.gif
 `
 };
 
-// If run directly, just print the code for copy-paste
+// Print code for copy-paste when run directly
 if (require.main === module) {
-  console.log('=== SNAP DEMO CODE (copy for browser_run_code) ===\n');
+  console.log('=== SNAP DEMO CODE ===\n');
   console.log(SNAP_DEMO_CODE);
   console.log('\n=== WORKFLOW ===');
   console.log(module.exports.workflow);
