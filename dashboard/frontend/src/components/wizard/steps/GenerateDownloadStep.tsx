@@ -215,7 +215,9 @@ export function GenerateDownloadStep({
           <>
             <h3 style={{ margin: '0 0 12px' }}>Download Configuration Files</h3>
             <p style={{ margin: '0 0 20px', color: '#666' }}>
-              This ZIP contains docker-compose.yml, INI configs, and deployment instructions.
+              This ZIP contains configuration files (docker-compose.yml, INI configs, .env) generated
+              for your setup. These must be extracted into the <code>tigo-mqtt/</code> directory of
+              the cloned repository, which provides the Dockerfile and build context.
             </p>
             <button
               onClick={handleDownload}
@@ -235,9 +237,11 @@ export function GenerateDownloadStep({
       <div style={instructionsStyle}>
         <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>Deployment Instructions</h3>
         <ol style={{ margin: 0, paddingLeft: '20px', lineHeight: 1.8 }}>
-          <li>Copy the ZIP file to your Raspberry Pi</li>
-          <li>Extract and copy files to your tigo-mqtt directory:
-            <pre style={codeBlockStyle}>unzip tigo-mqtt-config.zip -d /path/to/tigo-mqtt/</pre>
+          <li>Clone the repository on your Raspberry Pi:
+            <pre style={codeBlockStyle}>git clone https://github.com/iscofield/realtime-tigo-monitor.git{'\n'}cd realtime-tigo-monitor/tigo-mqtt</pre>
+          </li>
+          <li>Copy the ZIP to the Pi and extract into the tigo-mqtt directory:
+            <pre style={codeBlockStyle}>unzip tigo-mqtt-config.zip -d /path/to/realtime-tigo-monitor/tigo-mqtt/</pre>
           </li>
           <li>Build and start the containers:
             <pre style={codeBlockStyle}>docker compose up -d --build</pre>

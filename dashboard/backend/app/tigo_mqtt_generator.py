@@ -234,8 +234,24 @@ def generate_readme(system_config: SystemConfig) -> str:
 
     return f"""# Tigo-MQTT Deployment Configuration
 
-This archive contains configuration files for deploying the tigo-mqtt service
-on your Raspberry Pi.
+This archive contains **configuration files only** for the tigo-mqtt service.
+It does not include the Dockerfile or application code needed to build the
+containers — those are in the main repository.
+
+## What's in this ZIP
+
+- `docker-compose.yml` — Container orchestration for your CCA setup
+- `config-*.ini` — TapTap configuration for each CCA device
+- `.env` — MQTT broker credentials
+- `README.md` — This file
+
+## What's NOT in this ZIP
+
+The following files are required to build and are provided by the repository:
+
+- `Dockerfile` — Builds the taptap-mqtt container (downloads taptap binary and taptap-mqtt.py at build time)
+- `entrypoint.sh` — Startup script that generates config from template + environment variables
+- `temp-id-monitor/` — Companion service for detecting temporary panel IDs
 
 ## Generated Configuration
 
@@ -247,24 +263,22 @@ on your Raspberry Pi.
 
 ## Deployment Instructions
 
-### 1. Clone the tigo-mqtt repository
-
-On your Raspberry Pi:
+### 1. Clone the repository on your Raspberry Pi
 
 ```bash
-git clone https://github.com/your-org/tigo-mqtt.git
-cd tigo-mqtt
+git clone https://github.com/iscofield/realtime-tigo-monitor.git
+cd realtime-tigo-monitor/tigo-mqtt
 ```
 
-### 2. Copy generated configuration files
+### 2. Copy generated configuration files into the tigo-mqtt directory
 
-Extract this ZIP and copy all files to your tigo-mqtt directory:
+Extract this ZIP and overlay the generated files onto the cloned repository:
 
 ```bash
-cp -r * /path/to/tigo-mqtt/
+unzip tigo-mqtt-config.zip -d /path/to/realtime-tigo-monitor/tigo-mqtt/
 ```
 
-### 3. Create data directories
+### 3. Create data and runtime directories
 
 ```bash
 mkdir -p data/{{{",".join(cca_names)}}}
@@ -277,6 +291,10 @@ mkdir -p run/{{{",".join(cca_names)}}}
 docker compose build
 docker compose up -d
 ```
+
+**Note:** The Docker build downloads the taptap binary and taptap-mqtt.py from
+GitHub at build time. The Raspberry Pi must have internet access during the
+initial build.
 
 ### 5. Verify the services are running
 
