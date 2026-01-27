@@ -248,7 +248,7 @@ export function TableLayout({
 
   const tdStyle: CSSProperties = {
     padding,
-    borderBottom: '1px solid #333',
+    borderBottom: '1px solid #444',
     whiteSpace: 'nowrap',
   };
 
