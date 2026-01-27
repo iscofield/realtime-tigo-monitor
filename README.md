@@ -20,6 +20,7 @@ A real-time visualization dashboard for Tigo Energy solar panel monitoring syste
 ### Real-Time Monitoring
 - **Live WebSocket updates** every 5-10 seconds
 - Color-coded panel status with gradient shading (dark green = low output, light green = high output, red ✕ = offline) — matches the Tigo app
+  - Note that the color coded strings are part of the background layout image.  You can create this yourself if you have a screenshot from your plans and add the corresponding overlays in something like Gimp
 - Display modes: watts, voltage, or serial number (last 4 digits)
 - Panel labels always visible on overlays alongside metrics
 - Stale data detection with configurable thresholds
