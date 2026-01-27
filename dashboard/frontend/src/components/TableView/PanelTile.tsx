@@ -94,7 +94,7 @@ export function getTileStyle(
     borderRadius: '8px',
     padding: density === 'compact' ? '8px' : '12px',
     marginBottom: density === 'compact' ? '6px' : '8px',
-    border: '2px solid transparent',
+    border: '1px solid #444',
   };
 
   // Apply in reverse priority order (lowest first, highest overwrites)
