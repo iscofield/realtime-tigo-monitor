@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide walks you through deploying Solar Tigo Viewer from scratch.
+This guide walks you through deploying Realtime Tigo Monitor from scratch.
 
 ## Prerequisites
 

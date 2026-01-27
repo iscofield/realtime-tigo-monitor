@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Solar Tigo Viewer - A visualization tool for Tigo Energy solar panel monitoring systems. The project displays solar array layouts and real-time monitoring data from Tigo optimizers via MQTT.
+Realtime Tigo Monitor - A visualization tool for Tigo Energy solar panel monitoring systems. The project displays solar array layouts and real-time monitoring data from Tigo optimizers via MQTT.
 
 ## Services
 

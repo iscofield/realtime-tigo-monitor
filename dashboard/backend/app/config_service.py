@@ -145,7 +145,7 @@ class ConfigService:
         self._atomic_write_yaml(
             self.system_yaml_path,
             config.model_dump(),
-            header="# Solar Tigo Viewer System Configuration\n"
+            header="# Realtime Tigo Monitor System Configuration\n"
         )
         logger.info(f"Saved system config to {self.system_yaml_path}")
 

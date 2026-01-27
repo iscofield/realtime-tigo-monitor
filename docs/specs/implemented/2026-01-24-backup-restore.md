@@ -4,7 +4,7 @@ A backup/restore system that allows users to export all dashboard configuration 
 
 ## Motivation
 
-Users need a way to safely migrate their Solar Tigo Viewer installation to a new machine, recover from failed upgrades, or clone their configuration. Currently there is no way to export or import the dashboard configuration (system topology, panel definitions, translations, layout image, panel positions). This feature provides a single-file backup that captures the complete state and a restore flow that reuses the existing setup wizard for validation.
+Users need a way to safely migrate their Realtime Tigo Monitor installation to a new machine, recover from failed upgrades, or clone their configuration. Currently there is no way to export or import the dashboard configuration (system topology, panel definitions, translations, layout image, panel positions). This feature provides a single-file backup that captures the complete state and a restore flow that reuses the existing setup wizard for validation.
 
 ## Functional Requirements
 
@@ -643,7 +643,7 @@ New first step in the wizard:
 function WelcomeStep({ onFreshSetup, onRestore }: WelcomeStepProps) {
   return (
     <div className="welcome-step">
-      <h2>Welcome to Solar Tigo Viewer</h2>
+      <h2>Welcome to Realtime Tigo Monitor</h2>
       <p>Choose how to set up your system:</p>
 
       <button onClick={onFreshSetup}>

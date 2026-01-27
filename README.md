@@ -1,12 +1,12 @@
-# Solar Tigo Viewer
+# Realtime Tigo Monitor
 
 A real-time visualization dashboard for Tigo Energy solar panel monitoring systems. Monitor your solar array with **5-10 second updates** — all running 100% locally on your network.
 
 ![Dashboard Preview](docs/screenshots/layout-view.png)
 
-## Why Solar Tigo Viewer?
+## Why Realtime Tigo Monitor?
 
-| Feature | Solar Tigo Viewer | Tigo Cloud |
+| Feature | Realtime Tigo Monitor | Tigo Cloud |
 |---------|-------------------|------------|
 | **Update Speed** | 5-10 seconds | 30-60 minutes |
 | **Data Location** | 100% local | Cloud servers |
@@ -205,7 +205,7 @@ For detailed instructions, see the [Deployment Guide](docs/DEPLOYMENT.md).
 
 ## Home Assistant Integration
 
-Solar Tigo Viewer can be embedded in Home Assistant dashboards using an iframe card. For the best experience, install the [Iframe Card](https://github.com/nicufarmache/lovelace-iframe-card) from HACS.
+Realtime Tigo Monitor can be embedded in Home Assistant dashboards using an iframe card. For the best experience, install the [Iframe Card](https://github.com/nicufarmache/lovelace-iframe-card) from HACS.
 
 ### HACS Installation
 
@@ -237,7 +237,7 @@ Example URLs:
 
 ## Data Storage
 
-**Note:** Solar Tigo Viewer does not store historical data — it displays real-time values only. For historical tracking, graphing, and analytics, consider routing your MQTT data to:
+**Note:** Realtime Tigo Monitor does not store historical data — it displays real-time values only. For historical tracking, graphing, and analytics, consider routing your MQTT data to:
 
 - **InfluxDB** — Time-series database, works great with Grafana
 - **Home Assistant** — Can record sensor history from MQTT
@@ -285,7 +285,7 @@ Found a bug or have a feature request?
 
 ## Support the Project
 
-If you find Solar Tigo Viewer useful, consider supporting development:
+If you find Realtime Tigo Monitor useful, consider supporting development:
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/iscofield)
 

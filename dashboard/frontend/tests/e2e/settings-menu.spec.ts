@@ -150,7 +150,7 @@ test.describe('Settings Menu', () => {
       await page.locator('[data-testid="reset-confirm-button"]').click();
 
       // Should navigate to wizard
-      await expect(page.locator('text=Solar Tigo Viewer Setup')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('text=Realtime Tigo Monitor Setup')).toBeVisible({ timeout: 10000 });
       await expect(page.locator('text=Welcome to Solar Dashboard Setup')).toBeVisible();
     });
 
@@ -337,7 +337,7 @@ test.describe('Settings Menu', () => {
       await page.locator('[data-testid="restore-confirm-button"]').click();
 
       // Should navigate to wizard with restore flow
-      await expect(page.locator('text=Solar Tigo Viewer Setup')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('text=Realtime Tigo Monitor Setup')).toBeVisible({ timeout: 10000 });
     });
 
     test('pressing Escape closes restore modal', async ({ page }) => {

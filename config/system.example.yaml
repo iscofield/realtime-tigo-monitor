@@ -1,4 +1,4 @@
-# Solar Tigo Viewer System Configuration
+# Realtime Tigo Monitor System Configuration
 # Copy this file to system.yaml and customize for your setup
 
 version: 1  # Schema version for forward/backward compatibility

@@ -1,6 +1,6 @@
-# Solar Tigo Viewer Troubleshooting Guide
+# Realtime Tigo Monitor Troubleshooting Guide
 
-This guide covers common issues, diagnostic steps, and resolutions for the Solar Tigo Viewer system.
+This guide covers common issues, diagnostic steps, and resolutions for the Realtime Tigo Monitor system.
 
 ## System Architecture Overview
 

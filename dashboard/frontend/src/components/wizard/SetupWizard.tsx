@@ -1,6 +1,6 @@
 /**
  * Setup Wizard main component (Phase 1 spec FR-3).
- * Multi-step wizard for initial configuration of Solar Tigo Viewer.
+ * Multi-step wizard for initial configuration of Realtime Tigo Monitor.
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -227,7 +227,7 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
       <div style={containerStyle}>
         <div style={cardStyle}>
           <div style={headerStyle}>
-            <h1 style={titleStyle}>Solar Tigo Viewer Setup</h1>
+            <h1 style={titleStyle}>Realtime Tigo Monitor Setup</h1>
           </div>
           <div style={resumeDialogStyle}>
             <h2>Welcome Back!</h2>
@@ -252,7 +252,7 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
       <div style={containerStyle}>
         <div style={cardStyle}>
           <div style={headerStyle}>
-            <h1 style={titleStyle}>Solar Tigo Viewer Setup</h1>
+            <h1 style={titleStyle}>Realtime Tigo Monitor Setup</h1>
           </div>
           <div style={contentStyle}>
             <WelcomeStep
@@ -381,7 +381,7 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
     <div style={containerStyle}>
       <div style={cardStyle}>
         <div style={headerStyle}>
-          <h1 style={titleStyle}>Solar Tigo Viewer Setup</h1>
+          <h1 style={titleStyle}>Realtime Tigo Monitor Setup</h1>
           <p style={subtitleStyle}>Configure your Tigo solar monitoring system</p>
         </div>
 

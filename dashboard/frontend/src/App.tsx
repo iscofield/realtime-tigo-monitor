@@ -1,5 +1,5 @@
 /**
- * Main App component - entry point for Solar Tigo Viewer.
+ * Main App component - entry point for Realtime Tigo Monitor.
  * Routes between Setup Wizard (new users) and Dashboard (configured users).
  */
 

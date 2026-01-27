@@ -1,6 +1,6 @@
 # Tabular View with String Mismatch Detection
 
-A secondary tabular view for the Solar Tigo Viewer that displays detailed panel metrics in a structured table format organized by system and string. Includes client-side detection of misconfigured panels based on power output variance within strings.
+A secondary tabular view for the Realtime Tigo Monitor that displays detailed panel metrics in a structured table format organized by system and string. Includes client-side detection of misconfigured panels based on power output variance within strings.
 
 ## Motivation
 

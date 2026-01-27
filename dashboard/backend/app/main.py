@@ -183,7 +183,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Solar Tigo Viewer",
+    title="Realtime Tigo Monitor",
     description="Real-time solar panel monitoring visualization",
     version=VERSION,
     lifespan=lifespan,

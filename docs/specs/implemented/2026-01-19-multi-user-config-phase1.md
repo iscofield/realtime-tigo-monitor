@@ -1,10 +1,10 @@
 # Multi-User Configuration - Phase 1: Setup Wizard & Configuration Infrastructure
 
-This specification defines the configuration infrastructure and setup wizard that enables multiple users to deploy Solar Tigo Viewer with their own unique Tigo CCA setups. Phase 1 delivers a complete end-to-end configuration experience including auto-discovery and validation. Phase 2 (separate spec) will add the visual layout editor.
+This specification defines the configuration infrastructure and setup wizard that enables multiple users to deploy Realtime Tigo Monitor with their own unique Tigo CCA setups. Phase 1 delivers a complete end-to-end configuration experience including auto-discovery and validation. Phase 2 (separate spec) will add the visual layout editor.
 
 ## Motivation
 
-The current Solar Tigo Viewer is hardcoded for a specific installation (2 CCAs, 71 panels across 9 strings). To enable sharing with other users who have different setups (e.g., 1 CCA, 22 panels across 2 strings), the application needs:
+The current Realtime Tigo Monitor is hardcoded for a specific installation (2 CCAs, 71 panels across 9 strings). To enable sharing with other users who have different setups (e.g., 1 CCA, 22 panels across 2 strings), the application needs:
 
 1. A flexible configuration system that survives git updates
 2. Tools to generate tigo-mqtt deployment configurations
@@ -36,7 +36,7 @@ All user configuration MUST use YAML format:
 `config/system.yaml` MUST support the following structure:
 
 ```yaml
-# Solar Tigo Viewer System Configuration
+# Realtime Tigo Monitor System Configuration
 version: 1  # Schema version for forward/backward compatibility
 
 mqtt:

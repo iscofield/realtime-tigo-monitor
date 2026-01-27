@@ -4,7 +4,7 @@ This specification defines the interactive layout editor that enables users to v
 
 ## Motivation
 
-Phase 1 delivers a functional setup wizard with a grid/tile view for monitoring panels. However, the core value proposition of Solar Tigo Viewer is visualizing panel performance overlaid on an actual layout image (floor plan, roof diagram, aerial photo).
+Phase 1 delivers a functional setup wizard with a grid/tile view for monitoring panels. However, the core value proposition of Realtime Tigo Monitor is visualizing panel performance overlaid on an actual layout image (floor plan, roof diagram, aerial photo).
 
 Phase 2 enables users to:
 1. Upload their own layout image
