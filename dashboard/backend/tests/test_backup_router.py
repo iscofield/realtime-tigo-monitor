@@ -460,7 +460,7 @@ class TestPanelPositionPreservation:
         assert panel_a1["position"]["y_percent"] == 11.75
 
     def test_backup_zip_with_positions_fixture(self):
-        """Create a backup ZIP fixture with positions for other tests."""
+        """Verify backup ZIP with positions can be created."""
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w') as zf:
             manifest = {
@@ -501,7 +501,7 @@ class TestPanelPositionPreservation:
             }
             zf.writestr("panels.yaml", yaml.dump(panels))
 
-        return zip_buffer.getvalue()
+        assert len(zip_buffer.getvalue()) > 0
 
     def test_restore_preserves_position_values(self, client):
         """Test that specific position values are preserved through restore."""

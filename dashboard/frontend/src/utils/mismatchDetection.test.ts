@@ -206,15 +206,18 @@ describe('warning message generation', () => {
   });
 
   it('multiple mismatches lists all panel IDs', () => {
+    // Two outliers (A1=100, A2=100) vs median of 300 (from A3, A4, A5)
     const panels = [
       createMockPanel({ display_label: 'A1', watts: 100 }),
-      createMockPanel({ display_label: 'A2', watts: 200 }),
-      createMockPanel({ display_label: 'A3', watts: 200 }),
+      createMockPanel({ display_label: 'A2', watts: 100 }),
+      createMockPanel({ display_label: 'A3', watts: 300 }),
+      createMockPanel({ display_label: 'A4', watts: 300 }),
+      createMockPanel({ display_label: 'A5', watts: 300 }),
     ];
 
     const result = analyzeStringForMismatches(panels, 15);
+    expect(result.warningMessage).toContain('A1');
     expect(result.warningMessage).toContain('A2');
-    expect(result.warningMessage).toContain('A3');
   });
 });
 

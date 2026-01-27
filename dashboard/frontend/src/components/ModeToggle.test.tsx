@@ -3,30 +3,33 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { ModeToggle } from './ModeToggle';
 
 describe('ModeToggle', () => {
-  it('displays "Show Voltage" when in watts mode', () => {
+  it('renders all mode buttons', () => {
     const setMode = vi.fn();
     render(<ModeToggle mode="watts" setMode={setMode} />);
-    expect(screen.getByText('Show Voltage')).toBeInTheDocument();
+    expect(screen.getByText('Watts')).toBeInTheDocument();
+    expect(screen.getByText('Voltage')).toBeInTheDocument();
+    expect(screen.getByText('SN (last 4)')).toBeInTheDocument();
   });
 
-  it('displays "Show Watts" when in voltage mode', () => {
-    const setMode = vi.fn();
-    render(<ModeToggle mode="voltage" setMode={setMode} />);
-    expect(screen.getByText('Show Watts')).toBeInTheDocument();
-  });
-
-  it('calls setMode with "voltage" when clicked in watts mode', () => {
+  it('calls setMode with "voltage" when voltage button clicked', () => {
     const setMode = vi.fn();
     render(<ModeToggle mode="watts" setMode={setMode} />);
-    fireEvent.click(screen.getByTestId('mode-toggle'));
+    fireEvent.click(screen.getByTestId('mode-voltage'));
     expect(setMode).toHaveBeenCalledWith('voltage');
   });
 
-  it('calls setMode with "watts" when clicked in voltage mode', () => {
+  it('calls setMode with "watts" when watts button clicked', () => {
     const setMode = vi.fn();
     render(<ModeToggle mode="voltage" setMode={setMode} />);
-    fireEvent.click(screen.getByTestId('mode-toggle'));
+    fireEvent.click(screen.getByTestId('mode-watts'));
     expect(setMode).toHaveBeenCalledWith('watts');
+  });
+
+  it('calls setMode with "sn" when SN button clicked', () => {
+    const setMode = vi.fn();
+    render(<ModeToggle mode="watts" setMode={setMode} />);
+    fireEvent.click(screen.getByTestId('mode-sn'));
+    expect(setMode).toHaveBeenCalledWith('sn');
   });
 
   it('has correct data-testid attribute', () => {

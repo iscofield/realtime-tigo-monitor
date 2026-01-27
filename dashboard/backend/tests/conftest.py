@@ -1,7 +1,11 @@
+import os
 import pytest
 import json
 from pathlib import Path
 import tempfile
+
+# Ensure 'static' directory exists so app.main can mount StaticFiles at import time
+os.makedirs(os.path.join(os.path.dirname(__file__), '..', 'static'), exist_ok=True)
 
 
 @pytest.fixture
