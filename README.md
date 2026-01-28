@@ -287,5 +287,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Acknowledgments
 
-- [taptap](https://github.com/taptap) — Tigo CCA communication binary
+- [taptap](https://github.com/willglynn/taptap) — Tigo CCA communication binary
+- [taptap-mqtt](https://github.com/litinoveweedle/taptap-mqtt) - Tigo CCA to the Home Assistant MQTT bridge
 - [Tigo Energy](https://www.tigoenergy.com/) — Solar optimizer hardware
