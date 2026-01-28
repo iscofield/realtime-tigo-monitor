@@ -23,7 +23,7 @@ import { EditorToolbar } from './EditorToolbar';
 import { DraggablePanel } from './DraggablePanel';
 import { AlignmentGuides } from './AlignmentGuides';
 import { UnpositionedPanelsSidebar } from './UnpositionedPanelsSidebar';
-import { getLayoutImageUrl, uploadLayoutImage } from '../../api/config';
+import { getLayoutImageUrl, uploadLayoutImage, useSampleImage, deleteLayoutImage } from '../../api/config';
 
 const containerStyle: CSSProperties = {
   display: 'flex',
@@ -101,6 +101,65 @@ const noImageStyle: CSSProperties = {
   gap: '16px',
 };
 
+const modalOverlayStyle: CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  backgroundColor: 'rgba(0,0,0,0.6)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+};
+
+const modalStyle: CSSProperties = {
+  backgroundColor: '#2a2a2a',
+  borderRadius: '12px',
+  padding: '32px',
+  maxWidth: '480px',
+  width: '90%',
+  border: '1px solid #444',
+};
+
+const modalTitleStyle: CSSProperties = {
+  color: '#fff',
+  fontSize: '20px',
+  fontWeight: 600,
+  marginBottom: '8px',
+};
+
+const modalDescStyle: CSSProperties = {
+  color: '#aaa',
+  fontSize: '14px',
+  marginBottom: '24px',
+};
+
+const choiceButtonStyle: CSSProperties = {
+  display: 'block',
+  width: '100%',
+  padding: '14px 16px',
+  marginBottom: '10px',
+  fontSize: '14px',
+  fontWeight: 500,
+  border: '1px solid #555',
+  borderRadius: '8px',
+  cursor: 'pointer',
+  textAlign: 'left',
+  backgroundColor: '#333',
+  color: '#fff',
+  transition: 'background-color 0.15s',
+};
+
+const choiceDescStyle: CSSProperties = {
+  display: 'block',
+  fontSize: '12px',
+  color: '#999',
+  marginTop: '4px',
+  fontWeight: 400,
+};
+
 interface LayoutEditorProps {
   onClose?: () => void;
 }
@@ -117,6 +176,9 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [canvasFocused, setCanvasFocused] = useState(false);
+  const [showImageChoiceModal, setShowImageChoiceModal] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [useBlankCanvas, setUseBlankCanvas] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -358,6 +420,56 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  }, [editor]);
+
+  // Show image choice modal when there's no image (and not using blank canvas)
+  const effectiveHasImage = hasImage || useBlankCanvas;
+
+  useEffect(() => {
+    if (!editor.isLoading && !effectiveHasImage) {
+      setShowImageChoiceModal(true);
+    }
+  }, [editor.isLoading, effectiveHasImage]);
+
+  // Handle sample image selection
+  const handleUseSampleImage = useCallback(async () => {
+    setShowImageChoiceModal(false);
+    setIsUploading(true);
+    try {
+      await useSampleImage();
+      await editor.refreshLayoutConfig();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load sample image';
+      setUploadError(message);
+    } finally {
+      setIsUploading(false);
+    }
+  }, [editor]);
+
+  // Handle blank canvas selection
+  const handleUseBlankCanvas = useCallback(() => {
+    setShowImageChoiceModal(false);
+    setUseBlankCanvas(true);
+  }, []);
+
+  // Handle upload from modal
+  const handleUploadFromModal = useCallback(() => {
+    setShowImageChoiceModal(false);
+    fileInputRef.current?.click();
+  }, []);
+
+  // Handle image delete
+  const handleImageDelete = useCallback(async () => {
+    setShowDeleteConfirm(false);
+    try {
+      await deleteLayoutImage();
+      await editor.refreshLayoutConfig();
+      setUseBlankCanvas(false);
+      // Modal will reappear via useEffect since hasImage becomes false
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete image';
+      setUploadError(message);
     }
   }, [editor]);
 
@@ -663,13 +775,81 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
         onRedo={editor.redo}
         onDeselectAll={editor.deselectAll}
         onImageUpload={handleImageUpload}
+        onImageDelete={() => setShowDeleteConfirm(true)}
+        hasImage={hasImage}
       />
 
-      {!hasImage ? (
+      {/* Image choice modal */}
+      {showImageChoiceModal && (
+        <div style={modalOverlayStyle} onClick={() => setShowImageChoiceModal(false)}>
+          <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={modalTitleStyle}>Choose a Background Image</div>
+            <div style={modalDescStyle}>
+              Select a background for your panel layout editor.
+            </div>
+            <button
+              style={choiceButtonStyle}
+              onClick={handleUploadFromModal}
+              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#444'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#333'; }}
+            >
+              Upload your own image
+              <span style={choiceDescStyle}>Use a photo or diagram of your solar array</span>
+            </button>
+            <button
+              style={choiceButtonStyle}
+              onClick={handleUseBlankCanvas}
+              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#444'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#333'; }}
+            >
+              Use blank background
+              <span style={choiceDescStyle}>Position panels on a plain canvas</span>
+            </button>
+            <button
+              style={choiceButtonStyle}
+              onClick={handleUseSampleImage}
+              onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = '#444'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = '#333'; }}
+            >
+              Use sample image
+              <span style={choiceDescStyle}>Start with the included example layout</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <div style={modalOverlayStyle} onClick={() => setShowDeleteConfirm(false)}>
+          <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={modalTitleStyle}>Delete Background Image?</div>
+            <div style={modalDescStyle}>
+              This will remove the background image. Panel positions will be preserved.
+              You can re-upload or use the sample image later.
+            </div>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button
+                style={{ ...choiceButtonStyle, width: 'auto', display: 'inline-block', backgroundColor: '#444' }}
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+              <button
+                style={{ ...choiceButtonStyle, width: 'auto', display: 'inline-block', backgroundColor: '#dc3545', borderColor: '#dc3545' }}
+                onClick={handleImageDelete}
+              >
+                Delete Image
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!effectiveHasImage ? (
         <div style={noImageStyle}>
-          <span>No layout image configured</span>
+          <span>{isUploading ? 'Loading image...' : 'No layout image configured'}</span>
           <button
-            onClick={handleImageUpload}
+            onClick={() => setShowImageChoiceModal(true)}
             disabled={isUploading}
             style={{
               padding: '12px 24px',
@@ -681,7 +861,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
               cursor: 'pointer',
             }}
           >
-            {isUploading ? 'Uploading...' : 'Upload Layout Image'}
+            Choose Background Image
           </button>
         </div>
       ) : (
@@ -764,11 +944,22 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
                 onFocus={() => setCanvasFocused(true)}
                 onBlur={() => setCanvasFocused(false)}
               >
-                <img
-                  src={`${getLayoutImageUrl()}${editor.layoutConfig?.image_hash ? `?v=${editor.layoutConfig.image_hash}` : ''}`}
-                  alt="Layout"
-                  style={imageStyle}
-                />
+                {hasImage ? (
+                  <img
+                    src={`${getLayoutImageUrl()}${editor.layoutConfig?.image_hash ? `?v=${editor.layoutConfig.image_hash}` : ''}`}
+                    alt="Layout"
+                    style={imageStyle}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      backgroundColor: '#ffffff',
+                      borderRadius: '2px',
+                    }}
+                  />
+                )}
 
                 {/* Positioned panels */}
                 {editor.panels

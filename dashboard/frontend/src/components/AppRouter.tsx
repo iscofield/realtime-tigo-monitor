@@ -26,6 +26,7 @@ export function AppRouter() {
   const [appState, setAppState] = useState<AppState>('loading');
   const [DashboardComponent, setDashboardComponent] = useState<ComponentType<DashboardProps> | null>(null);
   const [restoreData, setRestoreData] = useState<RestoreData | null>(null);
+  const [initialTab, setInitialTab] = useState<'editor' | undefined>(undefined);
 
   useEffect(() => {
     const checkConfig = async () => {
@@ -55,10 +56,11 @@ export function AppRouter() {
   }, []);
 
   const handleWizardComplete = async () => {
-    // Wizard completed, reload dashboard
+    // Wizard completed, go to dashboard with editor tab active
     const module = await import('./Dashboard');
     setDashboardComponent(() => module.Dashboard);
     setRestoreData(null);
+    setInitialTab('editor');
     setAppState('dashboard');
   };
 
@@ -96,6 +98,7 @@ export function AppRouter() {
       <DashboardComponent
         onRestore={handleRestore}
         onRerunWizard={handleRerunWizard}
+        initialTab={initialTab}
       />
     );
   }

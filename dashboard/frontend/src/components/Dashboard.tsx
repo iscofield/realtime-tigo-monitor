@@ -115,11 +115,12 @@ const editorLoadingStyle: CSSProperties = {
 export interface DashboardProps {
   onRestore?: (data: RestoreData) => void;
   onRerunWizard?: () => void;
+  initialTab?: 'editor';
 }
 
-export function Dashboard({ onRestore, onRerunWizard }: DashboardProps = {}) {
+export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardProps = {}) {
   const [mode, setMode] = useState<DisplayMode>(initialState.mode);
-  const [activeTab, setActiveTab] = useState<TabType>(initialState.view);
+  const [activeTab, setActiveTab] = useState<TabType>(initialTab || initialState.view);
   const { panels, status, error, retry } = useWebSocket();
   const isMobile = useMediaQuery(`(max-width: ${MOBILE_BREAKPOINT}px)`);
 

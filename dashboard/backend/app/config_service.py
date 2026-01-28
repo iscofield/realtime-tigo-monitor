@@ -9,6 +9,7 @@ Handles reading/writing YAML configuration files with:
 import json
 import logging
 import os
+import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,7 @@ class ConfigService:
         self.legacy_json_path = legacy_json_path or (config_dir / "panel_mapping.json")
         self.assets_dir = assets_dir or DEFAULT_ASSETS_DIR
         self.layout_image_path = self.assets_dir / "layout.png"
+        self.layout_sample_image_path = self.assets_dir / "layout-sample.png"
 
     def get_config_status(self) -> ConfigStatusResponse:
         """Check configuration status (FR-3.1, FR-5.1).
@@ -331,6 +333,31 @@ class ConfigService:
             )
 
         return width, height, image_hash
+
+    def copy_sample_image(self) -> tuple[int, int, str]:
+        """Copy the sample layout image to the active layout image path.
+
+        Returns:
+            Tuple of (width, height, sha256_hash)
+
+        Raises:
+            ConfigServiceError: If sample image doesn't exist or copy fails
+        """
+        if not self.layout_sample_image_path.exists():
+            raise ConfigServiceError(
+                "Sample layout image not found",
+                error_code="not_found"
+            )
+
+        try:
+            image_data = self.layout_sample_image_path.read_bytes()
+        except OSError as e:
+            raise ConfigServiceError(
+                f"Failed to read sample image: {e}",
+                error_code="read_error"
+            )
+
+        return self.save_layout_image(image_data, "image/png")
 
     def delete_layout_image(self) -> bool:
         """Delete layout image if it exists.

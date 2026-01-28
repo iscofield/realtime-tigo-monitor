@@ -377,6 +377,15 @@ export async function deleteLayoutImage(): Promise<void> {
 }
 
 /**
+ * Use the sample layout image.
+ */
+export async function useSampleImage(): Promise<LayoutImageUploadResponse> {
+  return apiFetch<LayoutImageUploadResponse>('/api/layout/image/sample', {
+    method: 'POST',
+  });
+}
+
+/**
  * Update panel positions.
  */
 export async function updatePanelPositions(

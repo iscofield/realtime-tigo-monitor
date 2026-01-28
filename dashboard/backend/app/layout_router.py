@@ -159,6 +159,50 @@ async def upload_layout_image(file: UploadFile = File(...)):
     return LayoutImageUploadResponse(success=True, metadata=metadata)
 
 
+@router.post("/image/sample", response_model=LayoutImageUploadResponse)
+async def use_sample_image():
+    """Copy the sample layout image as the active layout image.
+
+    Copies layout-sample.png to layout.png and updates layout config.
+    """
+    service = get_config_service()
+
+    try:
+        width, height, image_hash = service.copy_sample_image()
+    except ConfigServiceError as e:
+        raise error_response(
+            404 if e.error_code == "not_found" else 500,
+            e.error_code,
+            e.message,
+        )
+
+    # Update layout config with new image metadata
+    try:
+        config = service.load_layout_config()
+        config.image_path = "assets/layout.png"
+        config.image_width = width
+        config.image_height = height
+        config.image_hash = image_hash
+        config.aspect_ratio = round(width / height, 4) if height > 0 else 0
+        config.last_modified = datetime.now(timezone.utc).isoformat()
+        service.save_layout_config(config)
+    except ConfigServiceError as e:
+        logger.error(f"Failed to update layout config after sample image copy: {e}")
+
+    import os
+    size_bytes = os.path.getsize(service.layout_image_path)
+
+    metadata = LayoutImageMetadata(
+        width=width,
+        height=height,
+        size_bytes=size_bytes,
+        hash=image_hash,
+        aspect_ratio=round(width / height, 4) if height > 0 else 0,
+    )
+
+    return LayoutImageUploadResponse(success=True, metadata=metadata)
+
+
 @router.get("/image")
 async def get_layout_image():
     """Get the current layout image (FR-1.2).

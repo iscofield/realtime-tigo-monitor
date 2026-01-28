@@ -260,7 +260,7 @@ export function ReviewSaveStep({
             onClick={onComplete}
             style={{ ...primaryButtonStyle, fontSize: '16px', padding: '14px 32px' }}
           >
-            Go to Dashboard
+            Configure Your Layout
           </button>
         </div>
       </div>
