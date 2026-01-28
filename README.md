@@ -279,16 +279,7 @@ Contributions are welcome! The project has a comprehensive test suite:
 
 ## Issues & Feedback
 
-Found a bug or have a feature request?
-
-- **[Open an Issue](https://github.com/iscofield/solar_tigo_viewer/issues)** — Bug reports and feature requests
-- **[Discussions](https://github.com/iscofield/solar_tigo_viewer/discussions)** — Questions and community support
-
-## Support the Project
-
-If you find Realtime Tigo Monitor useful, consider supporting development:
-
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/iscofield)
+Found a bug or have a feature request? **[Open an Issue](https://github.com/iscofield/realtime-tigo-monitor/issues)**
 
 ## License
 
