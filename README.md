@@ -80,7 +80,7 @@ Works great on phones and tablets:
 - Responsive design with bottom navigation
 - Touch-optimized controls
 - Check your panels from anywhere on your network
-- **Pro tip:** Use [Tailscale](https://tailscale.com/) to access your dashboard securely from outside your home network
+- **Tip:** Use [Tailscale](https://tailscale.com/) to access your dashboard securely from outside your home network
 
 <p align="center">
   <img src="docs/screenshots/mobile-layout.png" alt="Mobile Layout" width="300" />
@@ -98,8 +98,8 @@ Every panel reports the following metrics:
 | Voltage Out | Output voltage to string | Volts |
 | Current In | Input current | Amps |
 | Current Out | Output current | Amps |
-| Temperature | Optimizer temperature | °C |
-| Duty Cycle | Optimizer duty cycle | % |
+| Temperature | Panel temperature | °C |
+| Duty Cycle | Panel duty cycle | % |
 | RSSI | Wireless signal strength | dB |
 | Energy | Cumulative production | kWh |
 | Online | Currently communicating | Yes/No |
