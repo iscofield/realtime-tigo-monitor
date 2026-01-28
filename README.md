@@ -73,7 +73,7 @@ Protect your configuration:
 - Restore on new installations
 - Includes layout image and all settings
 
-![Settings Menu](docs/screenshots/settings-menu.png)
+![Settings Menu](docs/screenshots/backup-restore.png)
 
 ### Mobile-Friendly
 Works great on phones and tablets:
@@ -84,6 +84,7 @@ Works great on phones and tablets:
 
 <p align="center">
   <img src="docs/screenshots/mobile-layout.png" alt="Mobile Layout" width="300" />
+  <img src="docs/screenshots/mobile-layout2.png" alt="Mobile Layout" width="300" />
 </p>
 
 ## Panel Data Fields
@@ -112,17 +113,17 @@ Every panel reports the following metrics:
 │                    Data Collection Device                       │
 │                    (Raspberry Pi or similar)                    │
 │                                                                 │
-│   ┌──────────────┐    ┌──────────────┐                         │
-│   │   Tigo CCA   │    │   Tigo CCA   │    ... (1 or more)      │
-│   │   Device     │    │   Device     │                         │
-│   └──────┬───────┘    └──────┬───────┘                         │
+│   ┌──────────────┐    ┌──────────────┐                          │
+│   │   Tigo CCA   │    │   Tigo CCA   │    ... (1 or more)       │
+│   │   Device     │    │   Device     │                          │
+│   └──────┬───────┘    └──────┬───────┘                          │
 │          │ RS485             │ RS485                            │
-│   ┌──────▼───────┐    ┌──────▼───────┐                         │
-│   │   taptap     │    │   taptap     │                         │
-│   │  container   │    │  container   │                         │
-│   └──────┬───────┘    └──────┬───────┘                         │
-│          └────────────┬──────┘                                 │
-│                       │ MQTT Publish                           │
+│   ┌──────▼───────┐    ┌──────▼───────┐                          │
+│   │   taptap     │    │   taptap     │                          │
+│   │  container   │    │  container   │                          │
+│   └──────┬───────┘    └──────┬───────┘                          │
+│          └────────────┬──────┘                                  │
+│                       │ MQTT Publish                            │
 └───────────────────────┼─────────────────────────────────────────┘
                         ▼
                  ┌─────────────┐
