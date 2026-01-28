@@ -15,8 +15,6 @@ class Settings(BaseSettings):
     # Application Configuration
     log_level: str = "INFO"
     use_mock_data: bool = True  # FR-2.3: Mock data until MQTT integration complete
-    mock_watts: int = 100
-    mock_voltage: float = 45.0
 
     # WebSocket Configuration
     ws_heartbeat_interval: int = 30  # FR-3.4: Ping/pong every 30 seconds

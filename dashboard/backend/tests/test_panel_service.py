@@ -128,7 +128,9 @@ class TestPanelService:
         service.load_config()
         service.apply_mock_data()
 
-        settings = get_settings()
         for panel in service.get_all_panels():
-            assert panel.watts == settings.mock_watts
-            assert panel.voltage_in == settings.mock_voltage
+            assert panel.watts is not None
+            assert 180 <= panel.watts <= 420  # ~200-400 base ±5%
+            assert panel.voltage_in is not None
+            assert 40 <= panel.voltage_in <= 50  # ~42-48 base ±3%
+            assert panel.online is True

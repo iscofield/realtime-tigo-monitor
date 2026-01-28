@@ -88,7 +88,7 @@ async def handle_node_mappings(system: str, mappings: dict) -> None:
     await ws_manager.queue_update(panels)
 
 
-mock_refresh_task: asyncio.Task | None = None
+mock_panel_tasks: list[asyncio.Task] = []
 temp_image_cleanup_task: asyncio.Task | None = None
 
 # Cleanup interval for temp restore images (10 minutes)
@@ -110,24 +110,26 @@ async def temp_image_cleanup_loop():
             logger.error(f"Error in temp image cleanup: {e}")
 
 
-async def mock_refresh_loop():
-    """Periodically check for config changes and broadcast updates in mock mode."""
+async def mock_panel_loop(sn: str, string: str):
+    """Simulate a single panel updating on its own random interval."""
+    import random
     while True:
-        await asyncio.sleep(0.5)  # Check every 500ms
-        # Always reload config from disk and broadcast (bypasses mtime caching issues)
         try:
-            panel_service.load_config()
-            panel_service.apply_mock_data()
+            await asyncio.sleep(random.uniform(7, 15))
+            watts, voltage = panel_service.simulator.generate_panel_value(string)
+            panel_service.update_panel(sn=sn, watts=watts, voltage_in=voltage, online=True)
             panels = panel_service.get_all_panels()
-            await ws_manager.broadcast(panels)
+            await ws_manager.queue_update(panels)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.error(f"Error in refresh loop: {e}")
+            logger.error(f"Error in mock panel loop for {sn}: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global mqtt_client, mock_refresh_task, temp_image_cleanup_task
+    global mqtt_client, mock_panel_tasks, temp_image_cleanup_task
 
     # Load panel configuration (FR-1.5)
     # Allow startup without config for setup wizard
@@ -146,8 +148,11 @@ async def lifespan(app: FastAPI):
     if settings.use_mock_data:
         panel_service.apply_mock_data()
         logger.info("Running in mock data mode")
-        # Start periodic refresh for hot-reload during calibration
-        mock_refresh_task = asyncio.create_task(mock_refresh_loop())
+        # Spawn per-panel simulation tasks
+        if panel_service.panel_mapping:
+            for panel in panel_service.panel_mapping.panels:
+                task = asyncio.create_task(mock_panel_loop(panel.sn, panel.string))
+                mock_panel_tasks.append(task)
     else:
         # Start MQTT client with state, temp_nodes, and node_mappings handlers
         mqtt_client = MQTTClient(
@@ -166,12 +171,14 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     await ws_manager.stop_background_tasks()
-    if mock_refresh_task:
-        mock_refresh_task.cancel()
+    for task in mock_panel_tasks:
+        task.cancel()
+    for task in mock_panel_tasks:
         try:
-            await mock_refresh_task
+            await task
         except asyncio.CancelledError:
             pass
+    mock_panel_tasks.clear()
     if temp_image_cleanup_task:
         temp_image_cleanup_task.cancel()
         try:

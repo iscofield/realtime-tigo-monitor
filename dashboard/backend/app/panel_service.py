@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Set
@@ -10,6 +11,24 @@ from .models import PanelMapping, PanelConfig, PanelData, Position
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+class MockSimulator:
+    """Generates realistic per-string, per-panel mock values."""
+
+    def __init__(self, strings: set[str]):
+        self.string_bases: dict[str, tuple[float, float]] = {}
+        for s in strings:
+            base_watts = random.uniform(200, 400)
+            base_voltage = random.uniform(42, 48)
+            self.string_bases[s] = (base_watts, base_voltage)
+
+    def generate_panel_value(self, string: str) -> tuple[float, float]:
+        base_watts, base_voltage = self.string_bases[string]
+        watts = round(base_watts * random.uniform(0.95, 1.05), 1)
+        voltage = round(base_voltage * random.uniform(0.97, 1.03), 1)
+        return watts, voltage
+
 
 # Config paths for multi-user setup
 YAML_PANELS_PATH = Path("config/panels.yaml")
@@ -225,6 +244,7 @@ class PanelService:
             self.load_config()
             settings = get_settings()
             if settings.use_mock_data:
+                self._init_simulator()
                 self.apply_mock_data()
             return True
         return False
@@ -325,19 +345,27 @@ class PanelService:
         return list(self.panel_state.values())
 
     def apply_mock_data(self) -> None:
-        """Apply mock data to all panels (FR-2.3)."""
+        """Apply initial mock data to all panels using simulator (FR-2.3)."""
         if self.panel_mapping is None:
             logger.warning("Cannot apply mock data: no panel configuration loaded")
             return
-        settings = get_settings()
+        self._init_simulator()
         for panel in self.panel_mapping.panels:
+            watts, voltage = self.simulator.generate_panel_value(panel.string)
             self.update_panel(
                 sn=panel.sn,
-                watts=settings.mock_watts,
-                voltage_in=settings.mock_voltage,
+                watts=watts,
+                voltage_in=voltage,
                 online=True,
             )
-        logger.info(f"Applied mock data: {settings.mock_watts}W, {settings.mock_voltage}V")
+        logger.info("Applied simulated mock data")
+
+    def _init_simulator(self) -> None:
+        """Initialize or reinitialize the mock simulator from current config."""
+        if self.panel_mapping is None:
+            return
+        strings = {p.string for p in self.panel_mapping.panels}
+        self.simulator = MockSimulator(strings)
 
     def update_temp_nodes(self, system: str, node_ids: List[int]) -> None:
         """Update the list of temporarily-enumerated nodes for a system (FR-5.4).
