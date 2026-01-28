@@ -143,10 +143,11 @@ class PanelService:
         # Preserve existing watts/voltage/online state when reloading
         old_state = {k: v for k, v in self.panel_state.items()}
 
-        # Initialize panel state with no data (or preserve existing values)
+        # Build new panel state, preserving existing values where display_label matches
+        new_panel_state: dict[str, PanelData] = {}
         for panel in self.panel_mapping.panels:
             old = old_state.get(panel.display_label)
-            self.panel_state[panel.display_label] = PanelData(
+            new_panel_state[panel.display_label] = PanelData(
                 display_label=panel.display_label,
                 tigo_label=panel.tigo_label,
                 string=panel.string,
@@ -168,6 +169,9 @@ class PanelService:
                 last_update=old.last_update if old else None,
                 position=panel.position,
             )
+
+        # Replace panel_state entirely to remove stale entries from old config
+        self.panel_state = new_panel_state
 
         logger.info(f"Loaded {len(self.panel_mapping.panels)} panels from YAML config")
 
@@ -189,10 +193,11 @@ class PanelService:
         # Preserve existing watts/voltage/online state when reloading
         old_state = {k: v for k, v in self.panel_state.items()}
 
-        # Initialize panel state with no data (or preserve existing values)
+        # Build new panel state, preserving existing values where display_label matches
+        new_panel_state: dict[str, PanelData] = {}
         for panel in self.panel_mapping.panels:
             old = old_state.get(panel.display_label)
-            self.panel_state[panel.display_label] = PanelData(
+            new_panel_state[panel.display_label] = PanelData(
                 display_label=panel.display_label,
                 tigo_label=panel.tigo_label,
                 string=panel.string,
@@ -215,6 +220,9 @@ class PanelService:
                 position=panel.position,
             )
 
+        # Replace panel_state entirely to remove stale entries from old config
+        self.panel_state = new_panel_state
+
         logger.info(f"Loaded {len(self.panel_mapping.panels)} panels from config")
 
     def check_and_reload_config(self) -> bool:
@@ -235,6 +243,12 @@ class PanelService:
                 logger.info("YAML config detected, switching from JSON...")
                 self.load_config()
                 return True
+            # Config file was deleted (e.g. reset) - clear in-memory state
+            if self.panel_state:
+                logger.info("Config file removed, clearing panel state")
+                self.panel_state = {}
+                self.panels_by_sn = {}
+                self.panel_mapping = PanelMapping(panels=[], translations={})
             return False
 
         current_mtime = config_file.stat().st_mtime
