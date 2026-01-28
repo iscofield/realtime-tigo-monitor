@@ -33,7 +33,7 @@ Upload your own solar array image and overlay live panel data:
 - Pinch-to-zoom on touch devices
 - Responsive scaling on any device
 
-![Layout View Zoomed](docs/screenshots/layout-view-zoom.png)
+![Layout View Zoomed](https://github.com/iscofield/realtime-tigo-monitor/blob/assets/layout-view.gif?raw=true)
 
 ### Table View
 Detailed metrics organized by string with aggregation:
@@ -44,7 +44,7 @@ Detailed metrics organized by string with aggregation:
 
 Available columns: Label, Tigo Label, Node ID, Serial Number, System, Voltage In, Voltage Out, Current In, Current Out, Watts, Temperature, Duty Cycle, RSSI, Energy, Temp ID
 
-![Table View](docs/screenshots/table-view.png)
+![Table View](https://github.com/iscofield/realtime-tigo-monitor/blob/assets/table-view.gif?raw=true)
 
 ### Layout Editor
 Intuitive visual editor for positioning panels:
@@ -55,7 +55,7 @@ Intuitive visual editor for positioning panels:
 - Undo/redo history
 - Auto-save drafts to prevent lost work
 
-![Layout Editor](docs/screenshots/editor-multiselect.png)
+![Layout Editor](https://github.com/iscofield/realtime-tigo-monitor/blob/assets/layout-editor.gif?raw=true)
 
 ### Setup Wizard
 Guided configuration for first-time setup:
@@ -65,7 +65,7 @@ Guided configuration for first-time setup:
 - Automatic panel discovery
 - Panel validation and serial number mapping
 
-![Setup Wizard - Panel Validation](docs/screenshots/wizard-validation.png)
+![Setup Wizard - Panel Validation](https://github.com/iscofield/realtime-tigo-monitor/blob/assets/setup-wizard.gif?raw=true)
 
 ### Backup & Restore
 Protect your configuration:
