@@ -40,7 +40,8 @@ Detailed metrics organized by string with aggregation:
 - Real-time voltage, current, power, temperature, signal strength, daily energy, and more
 - String-level summaries and totals
 - Configurable column visibility (15 columns available)
-- Mismatch detection for panels on wrong inverter
+- **Mismatch detection** for panels assigned to the wrong inverter/string
+- **Deviation highlighting** — quickly spot underperforming or shaded panels by identifying outliers within each string
 
 Available columns: Label, Tigo Label, Node ID, Serial Number, System, Voltage In, Voltage Out, Current In, Current Out, Watts, Temperature, Duty Cycle, RSSI, Energy, Temp ID
 
@@ -62,8 +63,10 @@ Guided configuration for first-time setup:
 - MQTT broker connection testing
 - CCA device topology configuration
 - **Auto-generates tigo-mqtt docker-compose files** for your Pi
-- Automatic panel discovery
+- **Automatic panel discovery** — scans your Tigo optimizers via MQTT and auto-detects all panels, feeding discovered serials directly into string assignment
+- **String mapping with drag-and-drop** — visually reassign panels across strings to ensure your physical wiring topology matches the depicted layout (useful when installers wire panels differently than the design)
 - Panel validation and serial number mapping
+- **Mismatch detection** — identifies panels that may be misconfigured (wrong string assignment) or underperforming due to shading by analyzing power output deviations within each string
 
 ![Setup Wizard - Panel Validation](https://github.com/iscofield/realtime-tigo-monitor/blob/assets/setup-wizard.gif?raw=true)
 
