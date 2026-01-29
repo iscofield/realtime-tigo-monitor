@@ -60,6 +60,7 @@ config/panel_mapping.json.backup
 # Internal documentation (not for distribution)
 docs/archive/
 docs/imports/
+docs/TODOs.md
 
 # Test fixtures (large backup files for testing)
 dashboard/backend/tests/fixtures/*.zip
