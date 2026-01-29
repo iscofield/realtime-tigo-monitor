@@ -57,5 +57,9 @@ config/*.reset-backup
 config/panel_mapping.json.backup
 .worktrees/
 
+# Internal documentation (not for distribution)
+docs/archive/
+docs/imports/
+
 # Test fixtures (large backup files for testing)
 dashboard/backend/tests/fixtures/*.zip
