@@ -220,6 +220,8 @@ export function SolarLayout({
         minScale={MIN_ZOOM}
         maxScale={MAX_ZOOM}
         centerOnInit={true}
+        limitToBounds={false}
+        alignmentAnimation={{ disabled: true }}
         wheel={{
           // Disable library's wheel handling - we use custom handler for Ctrl/Cmd check
           disabled: true,
