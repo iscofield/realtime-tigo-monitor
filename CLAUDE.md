@@ -26,6 +26,62 @@ This repository contains two independent services that work together:
 
 **Docker Compose:** `tigo-mqtt/docker-compose.yml`
 
+## CRITICAL: TapTap State Files - READ THIS FIRST
+
+**State files are IRREPLACEABLE and must NEVER be overwritten without a backup.**
+
+### What are state files?
+
+Located at `tigo-mqtt/data/{primary,secondary}/taptap.state`, these JSON files contain **node_id → MAC address mappings** from CCA infrastructure reports. They allow taptap to permanently identify which physical panel corresponds to which node ID.
+
+### Why are they critical?
+
+- **Infrastructure reports are EXTREMELY RARE** - they may only be sent once per day, or not at all
+- **Without correct state files, panel data is SCRAMBLED** - data shows on wrong panels
+- **Temporary enumeration is UNRELIABLE** - panels are assigned in random order as they report in
+- **Losing state files can halt all progress for 24+ hours** while waiting for new infrastructure reports
+
+### Operations that can destroy state files
+
+**BEFORE performing ANY of these operations, you MUST backup the state files:**
+
+1. **Mutagen sync operations** - especially resolving conflicts or resetting sync
+2. **Copying files to/from NAS** - local files may be older than NAS files
+3. **Docker volume operations** - removing or recreating volumes
+4. **Restoring from backups** - backup may have older state files
+5. **Any file sync that touches `tigo-mqtt/data/`**
+
+### Required backup procedure
+
+```bash
+# ALWAYS run this BEFORE any sync/copy operation that could touch state files:
+
+# 1. Backup from Pi's NAS mount (the authoritative source)
+ssh solar-assistant@<PI_HOST> "cp /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/primary/taptap.state \
+    /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/primary/taptap.state.backup-$(date +%Y%m%d-%H%M%S)"
+ssh solar-assistant@<PI_HOST> "cp /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/secondary/taptap.state \
+    /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/secondary/taptap.state.backup-$(date +%Y%m%d-%H%M%S)"
+
+# 2. Verify backups exist before proceeding
+ssh solar-assistant@<PI_HOST> "ls -la /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/*/taptap.state*"
+```
+
+### If state files are lost
+
+1. Delete the corrupted/old state file
+2. Restart the taptap container
+3. **Wait for an infrastructure report** (could take hours or until next day)
+4. Monitor with: `sudo docker logs -f taptap-{primary,secondary} 2>&1 | grep -i "permanent\|infrastructure"`
+5. When you see "Permanently enumerated" messages, the state file has been rebuilt
+
+### Verifying state file correctness
+
+```bash
+# Check node count matches expected panel count
+# Primary: 47 panels, Secondary: 22 panels
+ssh solar-assistant@<PI_HOST> "cat /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/primary/taptap.state | python3 -c \"import json,sys; d=json.load(sys.stdin); print(sum(len(n) for n in d.get('gateway_node_tables',{}).values()))\""
+```
+
 ### 2. Dashboard Service (frontend + backend)
 
 **Location:** `dashboard/`
