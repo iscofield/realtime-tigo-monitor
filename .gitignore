@@ -64,3 +64,7 @@ docs/TODOs.md
 
 # Test fixtures (large backup files for testing)
 dashboard/backend/tests/fixtures/*.zip
+
+# TapTap state file backups (critical - never commit these)
+tigo-mqtt/backups/*
+!tigo-mqtt/backups/README.md
