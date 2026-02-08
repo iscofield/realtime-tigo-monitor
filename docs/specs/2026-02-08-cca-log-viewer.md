@@ -55,13 +55,13 @@ volumes:
   - ./backend/logs:/app/logs
 ```
 
-**FR-2.6:** The backend MUST maintain an in-memory buffer of the most recent 1000 log entries per CCA system for fast initial delivery to new WebSocket clients.
+**FR-2.6:** On startup, the backend MUST load all log entries within the 7-day retention window into memory for fast initial delivery to new WebSocket clients. New entries received via MQTT are appended to the in-memory store and persisted to disk simultaneously.
 
 ### FR-3: Backend Log API
 
 **FR-3.1:** The backend MUST expose a WebSocket endpoint at `/ws/logs` for streaming log data to the frontend.
 
-**FR-3.2:** When a client connects to `/ws/logs`, the backend MUST immediately send the buffered recent log entries (up to 1000 per system) as an initial payload:
+**FR-3.2:** When a client connects to `/ws/logs`, the backend MUST immediately send all in-memory log entries (the full 7-day window) as an initial payload:
 ```json
 {
   "type": "initial",
@@ -131,7 +131,7 @@ Response:
 
 **FR-4.10:** Each log entry MUST display the timestamp in the user's local timezone, formatted as `HH:MM:SS.mmm` (hours, minutes, seconds, milliseconds) with the full date shown on hover via a title attribute.
 
-**FR-4.11:** The frontend MUST cap its in-memory log buffer at 5000 entries per system to prevent unbounded memory growth. When the cap is reached, the oldest entries MUST be discarded.
+**FR-4.11:** The frontend MUST hold all log entries delivered by the backend (up to the full 7-day retention window). Given the low log volume (~200-500 lines/CCA/day, ~3,500 max per CCA for 7 days), no client-side cap is needed.
 
 ### FR-5: Configuration
 
@@ -139,7 +139,7 @@ Response:
 
 **FR-5.2:** The backend `Settings` class MUST add a `log_dir` configuration option (default: `/app/logs`).
 
-**FR-5.3:** The backend `Settings` class MUST add a `log_buffer_size` configuration option (default: 1000) controlling the in-memory buffer size per system.
+**FR-5.3:** *(Removed — no buffer size cap needed given low log volume.)*
 
 ## Non-Functional Requirements
 
@@ -147,7 +147,7 @@ Response:
 
 **NFR-1.2:** The MQTT log publishing MUST NOT impact the performance of the existing panel data flow. Log messages use QoS 0 and are independent of state/temp_nodes/node_mappings topics.
 
-**NFR-1.3:** The frontend log viewer MUST remain responsive with up to 5000 entries displayed. The search filter MUST respond within 100ms for typical search terms.
+**NFR-1.3:** The frontend log viewer MUST remain responsive with the full 7-day log history (~3,500 entries per CCA max). The search filter MUST respond within 100ms for typical search terms.
 
 **NFR-1.4:** Log persistence MUST be crash-safe: each log line is flushed after append. Partial writes (due to crash mid-line) MUST be handled gracefully on reload (skip malformed trailing line).
 
@@ -223,17 +223,16 @@ from pathlib import Path
 class LogService:
     """Manages CCA log ingestion, persistence, and retrieval."""
 
-    def __init__(self, log_dir: str, retention_days: int, buffer_size: int):
+    def __init__(self, log_dir: str, retention_days: int):
         self.log_dir = Path(log_dir)
         self.retention_days = retention_days
-        self.buffer_size = buffer_size
-        # Per-system ring buffers for fast initial delivery
-        self._buffers: dict[str, deque] = {}
+        # Per-system log stores (full 7-day window, loaded from disk on startup)
+        self._logs: dict[str, list] = {}
         # WebSocket connections for log streaming
         self._connections: list[WebSocket] = []
 
     def ingest(self, system: str, entry: dict) -> None:
-        """Ingest a log entry: persist to disk and buffer in memory."""
+        """Ingest a log entry: persist to disk and store in memory."""
         # Append to daily log file
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         log_path = self.log_dir / system / f"{date_str}.log"
@@ -241,20 +240,20 @@ class LogService:
         with open(log_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
-        # Add to ring buffer
-        if system not in self._buffers:
-            self._buffers[system] = deque(maxlen=self.buffer_size)
-        self._buffers[system].append(entry)
+        # Add to in-memory store
+        if system not in self._logs:
+            self._logs[system] = []
+        self._logs[system].append(entry)
 
-    def get_buffered_logs(self) -> dict[str, list]:
-        """Return all buffered logs by system."""
+    def get_all_logs(self) -> dict[str, list]:
+        """Return all logs by system."""
         return {
-            system: list(buf) for system, buf in self._buffers.items()
+            system: list(entries) for system, entries in self._logs.items()
         }
 
     def get_systems(self) -> list[str]:
         """Return list of systems that have log data."""
-        return list(self._buffers.keys())
+        return list(self._logs.keys())
 
     def prune_old_logs(self) -> int:
         """Delete log files older than retention_days. Returns files deleted."""
@@ -273,28 +272,29 @@ class LogService:
                     pass
         return deleted
 
-    def load_recent_into_buffer(self) -> None:
-        """On startup, load recent log entries from disk into memory buffers."""
+    def load_from_disk(self) -> None:
+        """On startup, load all log entries within retention window from disk."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         for system_dir in self.log_dir.iterdir():
             if not system_dir.is_dir():
                 continue
             system = system_dir.name
             entries = []
-            # Read files from newest to oldest
-            log_files = sorted(system_dir.glob("*.log"), reverse=True)
+            # Read files in chronological order
+            log_files = sorted(system_dir.glob("*.log"))
             for log_file in log_files:
-                for raw_line in reversed(log_file.read_text().strip().splitlines()):
+                try:
+                    file_date = datetime.strptime(log_file.stem, "%Y-%m-%d")
+                    if file_date.date() < cutoff.date():
+                        continue
+                except ValueError:
+                    continue
+                for raw_line in log_file.read_text().strip().splitlines():
                     try:
                         entries.append(json.loads(raw_line))
                     except json.JSONDecodeError:
                         continue  # Skip malformed lines (NFR-1.4)
-                    if len(entries) >= self.buffer_size:
-                        break
-                if len(entries) >= self.buffer_size:
-                    break
-            # Reverse back to chronological order for the deque
-            entries.reverse()
-            self._buffers[system] = deque(entries, maxlen=self.buffer_size)
+            self._logs[system] = entries
 ```
 
 #### 3. MQTT Integration (backend)
@@ -321,11 +321,11 @@ async def logs_websocket(websocket: WebSocket):
     await websocket.accept()
     log_service.add_connection(websocket)
 
-    # Send initial buffered logs
+    # Send all logs within retention window
     initial = {
         "type": "initial",
         "systems": log_service.get_systems(),
-        "logs": log_service.get_buffered_logs(),
+        "logs": log_service.get_all_logs(),
     }
     await websocket.send_json(initial)
 
@@ -381,7 +381,7 @@ function getLogWebSocketUrl(): string {
 | Daily file size per CCA | ~20-50 KB |
 | 7 days, 2 CCAs | ~280-700 KB |
 | Maximum (heavy error days) | ~2-3 MB total |
-| In-memory buffer (1000 entries/CCA) | ~200 KB |
+| In-memory store (full 7 days/CCA) | ~280-700 KB |
 
 ## Task Breakdown
 
@@ -398,9 +398,9 @@ function getLogWebSocketUrl(): string {
 
 **Files:** `dashboard/backend/app/log_service.py` (new)
 
-1. Create `LogService` class with ingestion, disk persistence, ring buffer, and pruning
+1. Create `LogService` class with ingestion, disk persistence, and pruning
 2. JSONL file format, one file per system per day
-3. Startup: load recent entries from disk into memory buffer
+3. Startup: load all entries within 7-day window from disk into memory
 4. Daily pruning of files older than 7 days
 
 ### Task 3: Backend MQTT + WebSocket Integration
@@ -408,7 +408,7 @@ function getLogWebSocketUrl(): string {
 **Files:** `dashboard/backend/app/mqtt_client.py`, `dashboard/backend/app/main.py`, `dashboard/backend/app/config.py`
 
 1. Add `on_log` callback to `MQTTClient` and subscribe to `taptap/+/logs`
-2. Add `log_retention_days`, `log_dir`, `log_buffer_size` to `Settings`
+2. Add `log_retention_days`, `log_dir` to `Settings`
 3. Create `LogService` instance in `main.py` lifespan
 4. Add `/ws/logs` WebSocket endpoint with initial payload + real-time push
 5. Add `GET /api/logs/systems` and `GET /api/logs/{system}` REST endpoints
@@ -425,7 +425,6 @@ function getLogWebSocketUrl(): string {
    - Descending timestamp log list in monospace font
    - Entry count display
    - Scroll position preservation on new entries
-   - 5000 entry cap per system
 3. Extend `TabType` to include `'logs'`
 4. Add Logs tab to `TabNavigation` (both mobile and desktop)
 5. Add Logs tab routing in `Dashboard.tsx` (lazy-loaded)
