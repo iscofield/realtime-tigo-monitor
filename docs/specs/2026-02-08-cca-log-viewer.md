@@ -31,9 +31,9 @@ Currently, CCA logs are only accessible by SSH-ing into the Raspberry Pi and run
 **FR-1.5:** On startup, the publisher MUST replay existing historical container logs (from the current container lifecycle) to the MQTT topic, so the backend can populate its log store even if it connects after the taptap container has been running.
 
 **FR-1.6:** The publisher MUST NOT duplicate log lines. When transitioning from historical log replay (Phase 1) to real-time follow (Phase 2), the publisher MUST use a deduplication strategy that accounts for the time gap between Phase 1 completion and Phase 2 start. The `--since` flag alone is insufficient because Docker's `--since` has only second-level granularity and logs emitted between `last_historical_ts` capture and Phase 2 start may be missed or duplicated. The publisher MUST:
-1. Track the last line seen during Phase 1 (e.g., store the last N lines in a set)
-2. When Phase 2 starts with `--since`, skip any lines that were already published during Phase 1 replay
-3. Use a `--since` timestamp captured *before* Phase 1 begins (not after), then rely on the deduplication set to filter already-published lines
+1. Track the last 100 lines seen during Phase 1 in a dedup set, with a `dedup_phase_active` flag to control the transition lifecycle
+2. When Phase 2 starts with `--since`, skip any lines that match the dedup set (via `discard()` to drain naturally). Once the set is empty, clear the flag and free memory.
+3. Use a `--since` timestamp captured *before* Phase 1 begins (not after), then rely on the deduplication set to filter already-published lines. The natural drain approach (vs. clearing on first non-match) prevents premature clearing when Phase 2 lines interleave with overlap lines.
 
 **FR-1.7:** The publisher MUST truncate individual log lines to a maximum of 10,240 bytes (10 KB) before publishing. Lines exceeding this limit MUST be truncated and suffixed with ` [truncated]`.
 
@@ -47,7 +47,7 @@ Currently, CCA logs are only accessible by SSH-ing into the Raspberry Pi and run
 /app/logs/primary/2026-02-09.log
 /app/logs/secondary/2026-02-08.log
 ```
-The system name used in directory paths MUST be validated against an allowlist pattern (`^[a-zA-Z0-9_-]+$`, max 64 chars) before any filesystem operation. Invalid system names MUST be rejected with a warning log. The daily filename is derived from `datetime.now(timezone.utc).strftime("%Y-%m-%d")` — entries arriving around midnight UTC will be written to the file corresponding to their arrival time, which may differ from the `ts` in the entry. This is acceptable since the filename is used only for retention management, not for querying. Concurrent writes from multiple MQTT messages are safe because `ingest()` is an async method running in a single-threaded event loop — the `asyncio.to_thread(_write_line)` calls serialize at the file level since each opens the file in append mode with `flush()`.
+The system name used in directory paths MUST be validated against an allowlist pattern (`^[a-zA-Z0-9_-]+$`, max 64 chars) before any filesystem operation. Invalid system names MUST be rejected with a warning log. The daily filename is derived from `datetime.now(timezone.utc).strftime("%Y-%m-%d")` — entries arriving around midnight UTC will be written to the file corresponding to their arrival time, which may differ from the `ts` in the entry. This is acceptable since the filename is used only for retention management, not for querying. Concurrent writes from multiple MQTT messages are handled safely by removing `asyncio.to_thread` entirely. Since each log line is small (~200 bytes typical, max 10 KB), the synchronous `open()+write()+flush()` completes in under 0.1ms and does not meaningfully block the event loop. Writing synchronously within the async `ingest()` method guarantees serialization through the single-threaded event loop — only one `_write_line` call executes at a time, with no threading concerns. (Note: the previous approach using `asyncio.to_thread` was incorrect — it dispatched writes to a multi-worker `ThreadPoolExecutor`, which could run concurrent `_write_line` calls on different threads. While POSIX `O_APPEND` provides atomic writes for lines under `PIPE_BUF` (4096 bytes), lines up to 10 KB exceed this guarantee.)
 
 **FR-2.3:** Each line in the log file MUST be stored as a single JSON object (one per line, JSONL format):
 ```jsonl
@@ -69,32 +69,33 @@ The `./backend/logs` path is relative to the `dashboard/docker-compose.yml` file
 
 ### FR-3: Backend Log API
 
-**FR-3.1:** The backend MUST expose a WebSocket endpoint at `/ws/logs` for streaming log data to the frontend.
+**FR-3.1:** The backend MUST expose a WebSocket endpoint at `/ws/logs` for streaming log data to the frontend. The `/ws/logs` protocol is **unidirectional server-push only**: the server sends initial and live log data, and any client-to-server messages are silently ignored (the `receive_text()` loop serves only as a disconnect detection mechanism). Both frontend and backend implementers should rely on this contract.
 
-**FR-3.2:** When a client connects to `/ws/logs`, the backend MUST immediately send all in-memory log entries as an initial payload. Given the expected volume (~7,000 entries total for 2 CCAs over 7 days, ~700 KB JSON), this is sent as a single message. The initial payload includes a `seq` field per system representing the latest sequence number, so the client can detect gaps if subsequent live entries have non-contiguous sequence numbers:
+**FR-3.2:** When a client connects to `/ws/logs`, the backend MUST immediately send all in-memory log entries as an initial payload. Given the expected volume (~7,000 entries total for 2 CCAs over 7 days, ~700 KB JSON), this is sent as a single message. Each entry in the initial payload MUST include its `seq` field (consistent with the MQTT message schema in FR-1.2 and the JSONL storage format in FR-2.3). The `seq` values enable the client to detect gaps if subsequent live entries have non-contiguous sequence numbers:
 ```json
 {
   "type": "initial",
   "systems": ["primary", "secondary"],
   "logs": {
     "primary": [
-      {"ts": "2026-02-08T14:30:05.123456", "line": "..."},
+      {"ts": "2026-02-08T14:30:05.123456", "line": "...", "seq": 41},
+      {"ts": "2026-02-08T14:30:05.123457", "line": "...", "seq": 42},
       ...
     ],
     "secondary": [
-      {"ts": "2026-02-08T14:30:06.789012", "line": "..."},
+      {"ts": "2026-02-08T14:30:06.789012", "line": "...", "seq": 17},
       ...
     ]
   }
 }
 ```
 
-**FR-3.3:** After the initial payload, new log entries MUST be pushed to connected clients in real-time as they arrive from MQTT:
+**FR-3.3:** After the initial payload, new log entries MUST be pushed to connected clients in real-time as they arrive from MQTT. Each entry includes its `seq` field for gap detection (consistent with FR-1.2 and FR-3.2):
 ```json
 {
   "type": "log",
   "system": "primary",
-  "entry": {"ts": "2026-02-08T14:30:07.345678", "line": "..."}
+  "entry": {"ts": "2026-02-08T14:30:07.345678", "line": "...", "seq": 43}
 }
 ```
 
@@ -106,7 +107,7 @@ GET /api/logs/primary?days=3&limit=500&offset=0
 ```
 | Parameter | Type | Default | Max | Description |
 |-----------|------|---------|-----|-------------|
-| `days` | int | 7 | `log_retention_days` | Number of days of history to include |
+| `days` | int | 7 | 30 | Number of days of history to include. Values exceeding `log_retention_days` are accepted but return only data within the retention window (pruned days yield no data, not an error). |
 | `limit` | int | 1000 | 5000 | Maximum entries to return |
 | `offset` | int | 0 | — | Offset into the filtered result set |
 
@@ -126,6 +127,7 @@ Response (200 OK):
 Error responses:
 - `404 Not Found`: Unknown system name — `{"detail": "System not found"}`
 - `422 Unprocessable Entity`: Invalid parameter values — uses FastAPI's default validation error format: `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}`. Note: This project does not currently have a unified 422 error format wrapper; FastAPI's default format is used consistently across all endpoints.
+- `503 Service Unavailable`: Log service not initialized — `{"detail": "Log service not available"}`. This is a defensive guard that should not fire in production since `LogService` is created unconditionally at startup. It protects against race conditions during startup or unexpected initialization failures.
 
 The `system` path parameter MUST be validated against the same allowlist pattern used by `LogService.ingest()` (see FR-2.2 system name validation). Invalid system names MUST return 404, not a filesystem error.
 
@@ -154,10 +156,11 @@ The `days` parameter means "entries with timestamps within the last N×24 hours 
 
 **FR-4.7:** The search bar MUST have a clear button (X) to reset the filter and a placeholder text: "Search logs (MAC, serial, node ID...)".
 
-**FR-4.8:** New log entries arriving via WebSocket MUST be prepended to the top of the list in real-time. Scroll position behavior:
-- **User is at top** (scrollTop <= 1px threshold): New entries MUST be immediately visible and the view MUST auto-scroll to show them.
-- **User has scrolled down**: New entries MUST be prepended to the DOM without changing the user's current scroll position. Implementation: capture `scrollTop` and `scrollHeight` before DOM update, then after update set `scrollTop += (newScrollHeight - oldScrollHeight)` to compensate for the added content above.
-- **"New entries" indicator**: When the user is scrolled down and new entries arrive, a floating badge (e.g., "N new entries") SHOULD appear at the top of the log area. Clicking it scrolls to the top to reveal new entries.
+**FR-4.8:** New log entries arriving via WebSocket MUST be appended to the end of the DOM list (ascending DOM order) and displayed at the visual top via CSS `flex-direction: column-reverse` (see FR-4.13 for rationale). Scroll position behavior with `column-reverse`:
+- **User is at newest entries** (`scrollTop === 0` or `Math.abs(scrollTop) <= 1`): New entries appended to the DOM end automatically appear at the visual top. The browser natively preserves scroll position when items are added at the DOM end (away from the scroll anchor), so no manual `scrollTop` compensation is needed.
+- **User has scrolled to older entries** (`scrollTop > 1`): New entries are appended to the DOM end without affecting the user's current scroll position. In a `column-reverse` container, content added at the DOM end appears at the visual top — away from where the user is scrolled — so the browser preserves the viewport position automatically. No `scrollTop` compensation math is required.
+- **"New entries" indicator**: When the user is scrolled away from the newest entries (`scrollTop > 1`) and new entries arrive, a floating badge (e.g., "N new entries") SHOULD appear at the top of the log area. Clicking it scrolls to `scrollTop = 0` to reveal new entries.
+- **Note on `column-reverse` scroll behavior**: In a `column-reverse` flex container, `scrollTop = 0` corresponds to the visual top (newest entries). Scrolling down (increasing `scrollTop`) moves toward older entries at the DOM start. This is the inverse of normal scroll containers.
 
 **FR-4.9:** The log view MUST display a count of total entries and filtered entries:
 - When search is active: "Showing 23 of 456 entries" (filtered count / total for the current system)
@@ -173,7 +176,7 @@ The `days` parameter means "entries with timestamps within the last N×24 hours 
 **FR-4.13:** The log viewer MUST maintain the accessibility standards established by the existing tab navigation:
 - Sub-tabs (when shown) MUST use `role="tablist"` and `role="tab"` with `aria-selected`
 - The search input MUST have `aria-label="Search logs"`
-- The log entry container MUST use `role="log"` with `aria-live="polite"` (WAI-ARIA log role for live log regions). Note: the `role="log"` implies `aria-live="polite"` by default per WAI-ARIA spec, but the explicit `aria-live` attribute is included for clarity. The descending sort order (newest first) is acceptable with `role="log"` because the WAI-ARIA spec does not mandate chronological DOM order — it only specifies that new entries are meaningful. Screen readers will announce new entries as they are added.
+- The log entry container MUST use `role="log"` with `aria-live="polite"` and CSS `flex-direction: column-reverse` to reconcile WAI-ARIA semantics with the desired visual order. The WAI-ARIA spec mandates that new content in a `role="log"` container is "added only to the end of the log." To comply: entries MUST be stored in ascending DOM order (oldest first, new entries appended to the end of the DOM), and `flex-direction: column-reverse` MUST be used to visually display newest-first. This satisfies the spec (DOM append-to-end) while providing the desired UX (newest entries visually at top). Screen readers read DOM order, so new entries appended to the end will be announced correctly. The `aria-live="polite"` attribute is included explicitly for clarity, even though `role="log"` implies it per the WAI-ARIA spec.
 - The clear search button MUST have `aria-label="Clear search"`
 - The entry count display MUST use `aria-live="polite"` to announce filter result counts to screen readers
 - Log entries are not individually focusable or interactive (they are read-only text), so keyboard navigation within the log list is not required. Standard browser scrolling (arrow keys, Page Up/Down) provides navigation.
@@ -261,8 +264,9 @@ async def monitor_container(container_name: str, system: str):
 
     # Phase 1: Collect historical logs (no MQTT needed yet)
     historical_lines = []
-    # Track last N lines for deduplication during phase transition (FR-1.6)
-    dedup_set = set()
+    # Track last 100 lines for deduplication during phase transition (FR-1.6)
+    dedup_set: set[str] | None = None  # Populated after Phase 1
+    dedup_phase_active = False  # True during the Phase 1→2 transition
     before_phase1_ts = datetime.now(timezone.utc)  # Captured BEFORE Phase 1
 
     try:
@@ -282,8 +286,8 @@ async def monitor_container(container_name: str, system: str):
         # Continue to Phase 2 even if Phase 1 fails — real-time logs still work
 
     # Build dedup set from last 100 lines for phase transition
-    for line_str in historical_lines[-100:]:
-        dedup_set.add(line_str)
+    dedup_set = set(historical_lines[-100:])
+    dedup_phase_active = True
 
     # Phase 2: Connect MQTT, replay historical, then follow real-time
     while True:
@@ -323,11 +327,17 @@ async def monitor_container(container_name: str, system: str):
                     if line_str:
                         if len(line_str) > MAX_LINE_LENGTH:
                             line_str = line_str[:MAX_LINE_LENGTH] + " [truncated]"
-                        # Skip lines already published during replay
-                        if dedup_set and line_str in dedup_set:
+                        # Skip lines already published during replay (FR-1.6)
+                        # The dedup set drains naturally via discard() — once
+                        # all entries have been discarded, the set is empty and
+                        # the flag is cleared. This avoids premature clearing
+                        # that could let interleaved duplicates through.
+                        if dedup_phase_active and line_str in dedup_set:
                             dedup_set.discard(line_str)
                             continue
-                        dedup_set = set()  # Clear after transition complete
+                        if dedup_phase_active and not dedup_set:
+                            dedup_phase_active = False
+                            dedup_set = None  # Free memory
                         log_entry = json.dumps({
                             "ts": datetime.now(timezone.utc).isoformat(),
                             "line": line_str,
@@ -355,7 +365,7 @@ async def monitor_container(container_name: str, system: str):
 - Phase 2 MUST publish initial retained state (`temp_nodes`, `node_mappings`) after MQTT connect, as the existing code does. This happens BEFORE the historical log replay.
 - MQTT client MUST use keyword arguments matching existing configuration: `aiomqtt.Client(hostname=MQTT_HOST, port=MQTT_PORT, username=MQTT_USER, password=MQTT_PASS)`
 - The `MQTT_TOPIC_PREFIX` variable MUST be read from the same environment configuration as the existing enumeration topics.
-- Historical replay uses `asyncio.sleep(0)` every 50 lines to yield control and avoid blocking the event loop during large replays. This provides natural rate limiting without an explicit delay.
+- Historical replay uses `asyncio.sleep(0)` every 50 lines for cooperative yielding — this prevents event loop starvation during large replays by allowing other pending coroutines (e.g., MQTT message handling, WebSocket sends) to run. Note: this does not limit message throughput; publishing still proceeds as fast as the event loop can iterate. If the broker cannot keep up with the burst (unlikely with QoS 0), it simply drops messages.
 - On MQTT reconnection (after the `while True` loop restarts), `historical_lines` is already empty (cleared after first replay). This is correct — the backend persists logs to disk, so historical lines don't need to be re-sent on reconnect.
 - If the Phase 2 subprocess exits (container stopped/restarted), the inner loop ends and the `while True` loop will retry after a 5-second delay.
 
@@ -408,18 +418,25 @@ class LogService:
             logger.warning(f"Rejected log entry with invalid system name: {system!r}")
             return
 
-        # Validate entry schema
-        if not isinstance(entry, dict) or "ts" not in entry or "line" not in entry:
+        # Validate entry schema (must match FR-1.2: {ts, line, seq})
+        if (
+            not isinstance(entry, dict)
+            or "ts" not in entry
+            or "line" not in entry
+            or "seq" not in entry
+            or not isinstance(entry.get("seq"), int)
+        ):
             logger.warning(f"Rejected log entry with invalid schema: {entry!r}")
             return
 
-        # Append to daily log file (run sync I/O in thread to avoid blocking event loop)
+        # Append to daily log file (synchronous — single line writes are <0.1ms
+        # and serialization is guaranteed by the single-threaded event loop)
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         log_path = self.log_dir / system / f"{date_str}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(entry) + "\n"
         try:
-            await asyncio.to_thread(self._write_line, log_path, line)
+            self._write_line(log_path, line)
         except OSError as e:
             logger.error(f"Failed to write log entry to {log_path}: {e}")
             # Continue to add to memory and broadcast even if disk write fails —
@@ -449,18 +466,24 @@ class LogService:
         self._connections.discard(ws)
 
     async def _broadcast_entry(self, system: str, entry: dict) -> None:
-        """Push a new log entry to all connected WebSocket clients."""
+        """Push a new log entry to all connected WebSocket clients.
+
+        Uses asyncio.gather for parallel sends to avoid a slow client
+        blocking delivery to subsequent clients. Expected client count
+        is low (1-3), but this pattern scales correctly.
+        """
         msg = json.dumps({"type": "log", "system": system, "entry": entry})
         # Snapshot the set to avoid mutation during iteration
         connections = set(self._connections)
-        failed = []
-        for ws in connections:
-            try:
-                await ws.send_text(msg)
-            except Exception:
-                failed.append(ws)
-        for ws in failed:
-            self._connections.discard(ws)
+        if not connections:
+            return
+        results = await asyncio.gather(
+            *[ws.send_text(msg) for ws in connections],
+            return_exceptions=True,
+        )
+        for ws, result in zip(connections, results):
+            if isinstance(result, Exception):
+                self._connections.discard(ws)
 
     async def _pruning_loop(self) -> None:
         """Delete old log files once per day. First run is 24h after startup."""
@@ -479,7 +502,15 @@ class LogService:
                 # Continue loop — don't let a transient error kill the pruning task
 
     def _prune_memory(self) -> None:
-        """Remove in-memory entries older than retention window."""
+        """Remove in-memory entries older than retention window.
+
+        Uses ISO 8601 string comparison for filtering. This works correctly
+        because all timestamps are generated by the same codepath
+        (datetime.now(timezone.utc).isoformat()) and have consistent formatting
+        (YYYY-MM-DDTHH:MM:SS.ffffff+00:00). If timestamp formats ever diverge
+        (e.g., 'Z' suffix, missing microseconds), this should be replaced with
+        datetime.fromisoformat() parsing.
+        """
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         cutoff_str = cutoff.isoformat()
         for system in list(self._logs.keys()):
@@ -489,17 +520,40 @@ class LogService:
             ]
 
     def get_all_logs(self) -> dict[str, list[LogEntry]]:
-        """Return all logs by system (shallow copy of lists)."""
+        """Return all logs by system (shallow copy of lists).
+
+        Note: Returns new list objects but shared LogEntry dicts. This is safe
+        because all consumers (json.dumps, send_json) are read-only. Callers
+        MUST NOT mutate the returned LogEntry dicts.
+        """
         return {
             system: list(entries) for system, entries in self._logs.items()
         }
+
+    def get_logs_for_system(self, system: str) -> list[LogEntry]:
+        """Return logs for a single system (copy of list).
+
+        Returns an empty list if system has no data. Callers MUST NOT
+        mutate the returned LogEntry dicts.
+        """
+        return list(self._logs.get(system, []))
 
     def get_systems(self) -> list[str]:
         """Return list of systems that have log data."""
         return list(self._logs.keys())
 
     def prune_old_logs(self) -> int:
-        """Delete log files older than retention_days. Returns files deleted."""
+        """Delete log files older than retention_days. Returns files deleted.
+
+        Uses strict less-than (file_date < cutoff_date), which means the
+        cutoff day's file is retained. This results in retaining one extra
+        day of files as a safety margin (e.g., retention_days=7 keeps 8 days
+        of files: the cutoff day through today). This is intentional — better
+        to keep one extra day than risk data loss. Note: _prune_memory() may
+        prune some entries from the cutoff day's file from memory while the
+        file itself is retained on disk; this is acceptable since the file
+        is only used for startup loading and retention management.
+        """
         if not self.log_dir.exists():
             return 0
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
@@ -552,10 +606,19 @@ class LogService:
                         if not raw_line:
                             continue
                         try:
-                            entries.append(json.loads(raw_line))
+                            data = json.loads(raw_line)
                         except json.JSONDecodeError:
                             logger.debug(f"Skipping malformed line in {log_file}")
                             continue  # Skip malformed lines (NFR-1.4)
+                        # Validate schema (consistent with ingest() validation)
+                        if (
+                            isinstance(data, dict)
+                            and "ts" in data
+                            and "line" in data
+                        ):
+                            entries.append(data)
+                        else:
+                            logger.debug(f"Skipping invalid entry in {log_file}")
             self._logs[system] = entries
 ```
 
@@ -627,6 +690,8 @@ else:
 New WebSocket endpoint `/ws/logs` in `main.py`:
 
 ```python
+from starlette.websockets import WebSocketDisconnect
+
 @app.websocket("/ws/logs")
 async def logs_websocket(websocket: WebSocket):
     # Guard against log_service not being initialized (defensive)
@@ -647,9 +712,10 @@ async def logs_websocket(websocket: WebSocket):
         await websocket.send_json(initial)
 
         # Keep connection alive — receive_text() blocks until client sends
-        # or disconnects. Any client-sent messages are ignored (log WS is
-        # server-push only). This also serves as the disconnect detection
-        # mechanism — WebSocketDisconnect is raised when the client closes.
+        # or disconnects. The /ws/logs protocol is unidirectional server-push
+        # only (see FR-3.1); any client-sent messages are silently discarded.
+        # This loop serves as the disconnect detection mechanism —
+        # WebSocketDisconnect is raised when the client closes.
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -672,7 +738,9 @@ The `/ws/logs` endpoint MUST use `try/except/finally` for error handling, ensuri
 REST endpoints for log retrieval, also in `main.py`:
 
 ```python
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, Query
+# log_service and LogService are available from lifespan setup (Section 3)
 
 @app.get("/api/logs/systems")
 async def get_log_systems():
@@ -704,7 +772,7 @@ async def get_logs(
     # Filter entries by days
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_str = cutoff.isoformat()
-    all_entries = log_service._logs.get(system, [])
+    all_entries = log_service.get_logs_for_system(system)
     filtered = [e for e in all_entries if e.get("ts", "") >= cutoff_str]
 
     # Sort descending by timestamp (newest first)
@@ -752,7 +820,7 @@ function getLogWebSocketUrl(): string {
     // VITE_WS_URL may be a full WS URL (e.g., ws://host:port/ws/panels)
     // or just a host (e.g., ws://host:port). Strip any /ws/... suffix and append /ws/logs.
     const wsUrl = import.meta.env.VITE_WS_URL;
-    const base = wsUrl.replace(/\/ws\/.*$/, '');
+    const base = wsUrl.replace(/\/ws\/.*$/, '').replace(/\/$/, '');
     // Handle edge case: if VITE_WS_URL has no /ws/ path, base === wsUrl (unchanged)
     return `${base}/ws/logs`;
   }
@@ -760,7 +828,7 @@ function getLogWebSocketUrl(): string {
   return `${protocol}//${window.location.host}/ws/logs`;
 }
 ```
-Note: The regex `/\/ws\/.*$/` strips any existing `/ws/...` path suffix, making this robust regardless of whether `VITE_WS_URL` ends with `/ws/panels`, `/ws`, or has no path. If `VITE_WS_URL` contains no `/ws/` segment, the regex is a no-op and the URL is used as-is with `/ws/logs` appended.
+Note: The first regex `/\/ws\/.*$/` strips any existing `/ws/...` path suffix, making this robust regardless of whether `VITE_WS_URL` ends with `/ws/panels`, `/ws`, or has no path. The second regex `/\/$/` strips any trailing slash to prevent double-slash URLs (e.g., `ws://host:8080/` would otherwise become `ws://host:8080//ws/logs`). If `VITE_WS_URL` contains no `/ws/` segment and no trailing slash, both regexes are no-ops and the URL is used as-is with `/ws/logs` appended.
 
 The `useLogWebSocket` hook MUST implement the same reconnection pattern as the existing `useWebSocket` hook: automatic reconnect with exponential backoff (e.g., 1s, 2s, 4s, up to 30s max). On reconnect, the hook requests a fresh initial payload, fully replacing the stale log state.
 
@@ -856,16 +924,37 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 
 ---
 
-**Specification Version:** 1.1
+**Specification Version:** 1.2
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
 
+### v1.2 (February 2026)
+**Summary:** Address review comments (38 comments across review round 4)
+
+**Changes:**
+- FR-1.6: Replace dedup set eager-clear with flag-based natural drain approach to prevent premature clearing when Phase 2 lines interleave; specify constant 100 instead of generic "N"
+- FR-2.2: Fix incorrect concurrency reasoning — remove `asyncio.to_thread` in favor of synchronous writes (single-threaded event loop guarantees serialization)
+- FR-3.1: Document `/ws/logs` as unidirectional server-push protocol
+- FR-3.2: Add `seq` field to initial payload JSON example entries (consistent with FR-1.2 schema)
+- FR-3.3: Add `seq` field to live entry JSON example (consistent with FR-1.2 schema)
+- FR-3.4: Fix `days` parameter max from `log_retention_days` to `30` (hardcoded); document that values exceeding retention window return less data; add 503 error response documentation
+- FR-4.8: Rewrite scroll position behavior for `column-reverse` layout (no manual scrollTop compensation needed)
+- FR-4.13: Fix `role="log"` to use ascending DOM order with CSS `flex-direction: column-reverse` for WAI-ARIA compliance
+- Section 1 (Publisher): Replace dedup set clearing with flag-based approach; fix "rate limiting" language to "cooperative yielding"
+- Section 2 (LogService): Remove `asyncio.to_thread` for synchronous writes; add `get_logs_for_system()` public method; add `seq` validation to `ingest()` schema check; add schema validation to `load_from_disk()`; document ISO string comparison assumption in `_prune_memory`; document off-by-one safety margin in `prune_old_logs`; switch `_broadcast_entry` to `asyncio.gather` for parallel sends; add mutation warning to `get_all_logs` docstring
+- Section 4 (WebSocket): Add `WebSocketDisconnect` import
+- Section 4b (REST): Add missing `datetime` imports; use `get_logs_for_system()` instead of private `_logs` access
+- Section 5 (Frontend): Fix VITE_WS_URL trailing slash handling
+
 ### v1.1 (February 2026)
 **Summary:** Address review comments (98 comments across 3 review rounds)
 
 **Changes:**
+- FR-5.3: Removed (no buffer size cap needed given low log volume)
+- FR-5.4: Expand empty state handling to cover non-mock mode and single-CCA edge case
+- NFR-1.5: Add lazy loading requirement for Logs tab
 - FR-1.1: Use configurable `mqtt_topic_prefix` instead of hardcoded `taptap/` for topic consistency
 - FR-1.2: Add `seq` field for sort stability and gap detection; use incrementing timestamps for historical replay instead of single timestamp; add 10 KB max line length with truncation
 - FR-1.3: Document QoS 0 data loss expectations and clarify backend should not request retransmission
@@ -890,7 +979,7 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 - NFR-1.2: Add detail on isolation between log publishing and enumeration state
 - NFR-1.3: Replace vague 100ms target with specific ~16ms frame budget; note debouncing is optional
 - NFR-1.4: Add detail on per-crash data loss scope (at most one entry)
-- Section 1 (Publisher): Complete rewrite — add error handling, line truncation, dedup set, incrementing timestamps, configurable prefix, subprocess error handling, rate limiting via asyncio.sleep(0)
+- Section 1 (Publisher): Complete rewrite — add error handling, line truncation, dedup set, incrementing timestamps, configurable prefix, subprocess error handling, cooperative yielding via asyncio.sleep(0)
 - Section 2 (LogService): Add system name validation (allowlist regex), LogEntry TypedDict, entry schema validation, _write_line error handling, set-based connections, _prune_memory method, line-by-line file reading, exception handling in pruning loop
 - Section 3 (MQTT): Add prefix-aware topic parsing, payload type validation, startup order documentation
 - Section 4 (WebSocket): Add log_service null check, authentication model note, receive_text explanation
