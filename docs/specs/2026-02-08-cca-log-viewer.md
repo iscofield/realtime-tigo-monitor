@@ -22,7 +22,7 @@ Currently, CCA logs are only accessible by SSH-ing into the Raspberry Pi and run
 ```
 - `ts`: ISO 8601 timestamp (UTC). For real-time logs, this is the capture time (`datetime.now(timezone.utc)`). For historical replay on startup, the publisher MUST assign monotonically incrementing timestamps by adding a microsecond offset per line (e.g., `base_ts + timedelta(microseconds=i)` for line `i`). This preserves the original ordering of historical log lines while making it clear they are replay timestamps (all clustered within the same second). The `seq` field provides a secondary sort key for entries with identical timestamps.
 - `line`: The raw log line text from the taptap container, truncated to a maximum of 10,240 bytes (10 KB). Lines exceeding this limit MUST be truncated with a `[truncated]` suffix. This prevents oversized MQTT messages, unbounded memory usage, and rendering issues in the frontend.
-- `seq`: Monotonically incrementing sequence number per system, starting from 0 on publisher startup. Used as a tiebreaker for sorting entries with identical timestamps, and enables gap detection on the backend (non-contiguous sequence numbers indicate dropped messages). A `seq` value lower than the previous value for the same system indicates a publisher restart, not dropped messages — the backend SHOULD detect and log this condition separately from gap detection.
+- `seq`: Monotonically incrementing sequence number per system, starting from 0 on publisher startup. Used as a tiebreaker for sorting entries with identical timestamps, and enables gap detection on the backend (non-contiguous sequence numbers indicate dropped messages). A `seq` value lower than the previous value for the same system indicates a publisher restart, not dropped messages — the backend MUST detect and log this condition separately from gap detection. See the `_last_seq` tracking in Section 2 (LogService `ingest()`) for the implementation.
 
 **FR-1.3:** Log messages MUST be published with QoS 0 (fire-and-forget) and `retain=false`. Logs are ephemeral and MUST NOT be retained at the broker. QoS 0 means messages may be silently dropped during broker congestion or network hiccups — this is acceptable for log data since the backend persists to disk and the `seq` field enables gap detection. The backend SHOULD NOT attempt to request retransmission of missed messages.
 
@@ -407,6 +407,8 @@ class LogService:
         self._logs: dict[str, list[LogEntry]] = {}
         # WebSocket connections for log streaming (set for O(1) add/remove)
         self._connections: set[WebSocket] = set()
+        # Last seen seq per system for gap/restart detection (FR-1.2)
+        self._last_seq: dict[str, int] = {}
 
     @staticmethod
     def _validate_system(system: str) -> bool:
@@ -430,6 +432,15 @@ class LogService:
         ):
             logger.warning(f"Rejected log entry with invalid schema: {entry!r}")
             return
+
+        # Detect seq gaps and publisher restarts (FR-1.2)
+        prev = self._last_seq.get(system)
+        if prev is not None:
+            if entry["seq"] < prev:
+                logger.info(f"Publisher restart detected for {system} (seq {entry['seq']} < {prev})")
+            elif entry["seq"] != prev + 1:
+                logger.warning(f"Seq gap for {system}: expected {prev + 1}, got {entry['seq']}")
+        self._last_seq[system] = entry["seq"]
 
         # Append to daily log file (synchronous — single line writes are <0.1ms
         # and serialization is guaranteed by the single-threaded event loop)
@@ -520,6 +531,9 @@ class LogService:
                 e for e in self._logs[system]
                 if e.get("ts", "") >= cutoff_str
             ]
+            # Remove empty systems to prevent ghost sub-tabs in the frontend
+            if not self._logs[system]:
+                del self._logs[system]
 
     def get_all_logs(self) -> dict[str, list[LogEntry]]:
         """Return all logs by system (shallow copy of lists).
@@ -581,7 +595,11 @@ class LogService:
         MUST only be called during startup, before MQTT client connects.
         Uses line-by-line reading to avoid loading entire files into memory.
         """
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.error(f"Cannot create log directory {self.log_dir}: {e}")
+            return  # Start with empty log store; entries will accumulate via MQTT
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
         cutoff_date = cutoff.date()
         for system_dir in self.log_dir.iterdir():
@@ -912,7 +930,7 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 8. Verify the Logs tab shows the empty state message ("No log data available...") when no log data exists (test with mock mode)
 9. Call `GET /api/logs/systems` via fetch — assert it returns a JSON object with a `systems` array
 10. Call `GET /api/logs/primary?days=7&limit=10&offset=0` via fetch — assert response contains `entries` array, `total` integer, and `has_more` boolean (FR-3.4 pagination)
-11. Wait for a new log entry to appear (or trigger one via CCA activity) — assert it appears at the visual top of the log list without page refresh (FR-4.8 live delivery)
+11. Trigger a new log entry by running `docker exec taptap-primary sh -c 'echo "Playwright test line $(date)"'` (which writes to the container's stdout, picked up by the log publisher). If no live CCA container is available, inject directly via the backend's log service by calling `await page.evaluate(async () => { /* POST to a test-only inject endpoint or use WebSocket */ })`. Assert the new entry appears at the visual top of the log list within 5 seconds without page refresh (FR-4.8 live delivery). Note: In CI environments without live CCA containers, this step requires a test-only `/api/test/inject-log` endpoint (guarded by `USE_MOCK_DATA=true` or a test flag) that calls `log_service.ingest()` directly.
 12. Simulate WebSocket disconnect via `page.evaluate` (e.g., close the WebSocket) — assert a reconnection indicator (e.g., "Disconnected") appears in the log viewer (FR-4.14)
 13. Navigate away from the Logs tab and back — assert the Logs tab reloads correctly
 
@@ -938,11 +956,21 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 
 ---
 
-**Specification Version:** 1.2
+**Specification Version:** 1.3
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
+
+### v1.3 (February 2026)
+**Summary:** Address review comments (4 comments from review round 6)
+
+**Changes:**
+- FR-1.2: Upgrade seq reset/gap detection from SHOULD to MUST; add cross-reference to LogService implementation
+- Section 2 (LogService): Add `_last_seq` dict to `__init__` and seq gap/restart detection logic in `ingest()` (closes spec/code gap for FR-1.2)
+- Section 2 (LogService): Add `try/except OSError` around `load_from_disk()` mkdir to degrade gracefully on filesystem errors
+- Section 2 (LogService): Clean up empty system entries in `_prune_memory()` to prevent ghost sub-tabs in frontend
+- Task 5: Replace vague step 11 ("wait for a new log entry") with concrete trigger mechanisms (`docker exec` and test-only inject endpoint) for CI/local environments
 
 ### v1.2 (February 2026)
 **Summary:** Address review comments (38 + 9 comments across review rounds 4 and 5)
