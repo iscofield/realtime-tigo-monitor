@@ -3,7 +3,7 @@
  * Generates tigo-mqtt deployment files and provides download.
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { downloadTigoMqttConfig } from '../../../api/config';
 import type { MQTTConfig, SystemConfig } from '../../../types/config';
@@ -133,12 +133,20 @@ export function GenerateDownloadStep({
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
+  const detectedTimezone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return undefined;
+    }
+  }, []);
+
   const handleDownload = async () => {
     setIsDownloading(true);
     setDownloadError(null);
 
     try {
-      const blob = await downloadTigoMqttConfig(mqttConfig, topology.ccas, []);
+      const blob = await downloadTigoMqttConfig(mqttConfig, topology.ccas, [], detectedTimezone);
 
       // Trigger download
       const url = window.URL.createObjectURL(blob);
@@ -190,6 +198,10 @@ export function GenerateDownloadStep({
           <div style={summaryItemStyle}>
             <div style={labelStyle}>Expected Panels</div>
             <div style={valueStyle}>{getTotalPanels()}</div>
+          </div>
+          <div style={summaryItemStyle}>
+            <div style={labelStyle}>Timezone</div>
+            <div style={valueStyle}>{detectedTimezone || 'UTC (could not detect)'}</div>
           </div>
         </div>
 

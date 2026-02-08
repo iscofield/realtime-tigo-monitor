@@ -15,12 +15,12 @@ RUN curl -L "https://github.com/litinoveweedle/taptap/releases/download/${TAPTAP
     && chmod +x /usr/local/bin/taptap
 
 # Download taptap-mqtt from pinned commit for reproducibility
-ARG TAPTAP_MQTT_COMMIT=bbac4720d50fc2b73f4d4190a0601f9b49ee2990
+ARG TAPTAP_MQTT_COMMIT=c656d6b31247e906bf7186f28df36385018c8979
 WORKDIR /app
 RUN curl -L "https://github.com/litinoveweedle/taptap-mqtt/archive/${TAPTAP_MQTT_COMMIT}.tar.gz" \
     | tar -xz --strip-components=1
 
-# requirements.txt verified to exist at pinned commit bbac472
+# requirements.txt verified to exist at pinned commit c656d6b
 # Contains: paho-mqtt==1.6.1, python-dateutil==2.8.1, uptime==3.0.1
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -107,7 +107,8 @@ export async function testMqttConnection(
 export async function downloadTigoMqttConfig(
   mqtt: MQTTConfig,
   ccas: CCAConfig[],
-  panels?: Panel[]
+  panels?: Panel[],
+  timezone?: string
 ): Promise<Blob> {
   const url = `${API_BASE}/api/config/generate-tigo-mqtt`;
   const response = await fetch(url, {
@@ -115,7 +116,7 @@ export async function downloadTigoMqttConfig(
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ mqtt, ccas, panels }),
+    body: JSON.stringify({ mqtt, ccas, panels, timezone }),
   });
 
   if (!response.ok) {

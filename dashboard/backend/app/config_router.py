@@ -171,7 +171,8 @@ async def generate_tigo_mqtt_config(request: GenerateConfigRequest = None):
 
     # Generate ZIP
     try:
-        zip_content = generate_tigo_mqtt_zip(system_config, panels)
+        timezone = request.timezone if request else None
+        zip_content = generate_tigo_mqtt_zip(system_config, panels, timezone=timezone)
     except Exception as e:
         logger.error(f"Failed to generate tigo-mqtt config: {e}")
         raise error_response(500, "generation_error", f"Failed to generate config: {e}")

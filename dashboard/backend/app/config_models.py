@@ -448,3 +448,4 @@ class GenerateConfigRequest(BaseModel):
     mqtt: Optional[MQTTConfig] = None
     ccas: Optional[list[CCAConfig]] = None
     panels: Optional[list[Panel]] = None
+    timezone: Optional[str] = None
