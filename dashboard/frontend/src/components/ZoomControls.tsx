@@ -1,8 +1,6 @@
 import type { CSSProperties, RefObject, MutableRefObject } from 'react';
 import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import {
-  LAYOUT_WIDTH,
-  LAYOUT_HEIGHT,
   CONTENT_PADDING,
   ZOOM_STEP,
   MIN_ZOOM,
@@ -21,6 +19,8 @@ interface ZoomControlsProps {
   onFitAction: () => void;
   onManualZoom: () => void;
   isMobile: boolean;
+  layoutWidth: number;
+  layoutHeight: number;
 }
 
 const getButtonStyle = (disabled: boolean): CSSProperties => ({
@@ -56,6 +56,8 @@ export function ZoomControls({
   onFitAction,
   onManualZoom,
   isMobile,
+  layoutWidth,
+  layoutHeight,
 }: ZoomControlsProps) {
   const canZoomIn = currentZoom < MAX_ZOOM;
   const canZoomOut = currentZoom > MIN_ZOOM;
@@ -94,8 +96,8 @@ export function ZoomControls({
     }
 
     // Calculate content dimensions at target scale
-    const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * fitViewportZoom;
-    const contentHeight = (LAYOUT_HEIGHT + CONTENT_PADDING * 2) * fitViewportZoom;
+    const contentWidth = (layoutWidth + CONTENT_PADDING * 2) * fitViewportZoom;
+    const contentHeight = (layoutHeight + CONTENT_PADDING * 2) * fitViewportZoom;
 
     // Calculate centered X and Y positions
     const centerX = (wrapperBounds.width - contentWidth) / 2;
@@ -124,7 +126,7 @@ export function ZoomControls({
       return;
     }
 
-    const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * fitWidthZoom;
+    const contentWidth = (layoutWidth + CONTENT_PADDING * 2) * fitWidthZoom;
     const centerX = (wrapperBounds.width - contentWidth) / 2;
 
     // Set guard, call method, reset immediately (callbacks are synchronous)

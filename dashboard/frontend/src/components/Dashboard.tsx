@@ -330,6 +330,8 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
           onFitAction={handleFitAction}
           onManualZoom={handleManualZoom}
           isMobile={isMobile}
+          layoutWidth={layoutWidth}
+          layoutHeight={layoutHeight}
         />
       )}
 
