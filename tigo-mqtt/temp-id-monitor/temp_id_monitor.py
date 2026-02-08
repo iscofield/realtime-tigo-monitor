@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Set
 
 import aiomqtt
@@ -26,6 +27,9 @@ MQTT_HOST = os.environ.get("MQTT_HOST") or os.environ.get("MQTT_SERVER", "localh
 MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
 MQTT_USER = os.environ.get("MQTT_USER")
 MQTT_PASS = os.environ.get("MQTT_PASS")
+MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "taptap")
+
+MAX_LINE_LENGTH = 10240
 
 # Log patterns for enumeration events
 # Pattern: "Temporary enumerated node id: 42 to node name: A7"
@@ -48,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 async def publish_temp_nodes(mqtt: aiomqtt.Client, system: str, nodes: Set[int]):
     """Publish current list of temporarily enumerated nodes with retain flag."""
-    topic = f"taptap/{system}/temp_nodes"
+    topic = f"{MQTT_TOPIC_PREFIX}/{system}/temp_nodes"
     payload = json.dumps(sorted(list(nodes)))
     # Retained message ensures new subscribers get current state immediately
     await mqtt.publish(topic, payload, retain=True)
@@ -61,21 +65,28 @@ async def publish_node_mappings(mqtt: aiomqtt.Client, system: str, mappings: Dic
     This provides the node_id data that isn't included in taptap-mqtt's
     standard MQTT messages, allowing the dashboard to display node IDs.
 
-    Topic: taptap/{system}/node_mappings
+    Topic: {MQTT_TOPIC_PREFIX}/{system}/node_mappings
     Payload: {"42": "4-C3F23CR", "57": "4-XYZ123", ...}
     """
-    topic = f"taptap/{system}/node_mappings"
+    topic = f"{MQTT_TOPIC_PREFIX}/{system}/node_mappings"
     payload = json.dumps(mappings)
     await mqtt.publish(topic, payload, retain=True)
     logger.info(f"Published node_mappings for {system}: {len(mappings)} nodes")
 
 
 async def monitor_container(container_name: str, system: str):
-    """Monitor a container's logs and publish temp node status and mappings."""
+    """Monitor a container's logs and publish temp node status, mappings, and log lines."""
     temp_nodes: Set[int] = set()
     node_mappings: Dict[str, str] = {}  # node_id (str) -> serial
+    seq = 0
+    log_topic = f"{MQTT_TOPIC_PREFIX}/{system}/logs"
 
     # Phase 1: Parse historical logs to recover state on startup
+    historical_lines: list[str] = []
+    dedup_set: set[str] | None = None
+    dedup_phase_active = False
+    before_phase1_ts = datetime.now(timezone.utc)
+
     logger.info(f"Parsing historical logs for {container_name}...")
     try:
         hist_process = await asyncio.create_subprocess_exec(
@@ -86,9 +97,18 @@ async def monitor_container(container_name: str, system: str):
         stdout, _ = await hist_process.communicate()
 
         for line in stdout.decode(errors="replace").splitlines():
-            if temp_match := TEMP_PATTERN.search(line):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            # Truncate long lines
+            if len(line_stripped) > MAX_LINE_LENGTH:
+                line_stripped = line_stripped[:MAX_LINE_LENGTH] + " [truncated]"
+            historical_lines.append(line_stripped)
+
+            # Existing enumeration parsing
+            if temp_match := TEMP_PATTERN.search(line_stripped):
                 temp_nodes.add(int(temp_match.group(1)))
-            elif perm_match := PERM_SERIAL_PATTERN.search(line):
+            elif perm_match := PERM_SERIAL_PATTERN.search(line_stripped):
                 node_id = perm_match.group(1)
                 serial = perm_match.group(2)
                 temp_nodes.discard(int(node_id))
@@ -97,32 +117,29 @@ async def monitor_container(container_name: str, system: str):
         if hist_process.returncode == 0:
             logger.info(
                 f"Recovered from {container_name} history: "
-                f"{len(temp_nodes)} temp nodes, {len(node_mappings)} mappings"
+                f"{len(temp_nodes)} temp nodes, {len(node_mappings)} mappings, "
+                f"{len(historical_lines)} log lines"
             )
         else:
             logger.warning(f"Docker logs failed for {container_name} (exit code {hist_process.returncode})")
-            logger.warning("Container may not exist yet - will retry in follow phase")
 
     except FileNotFoundError:
         logger.error("Docker CLI not found - is Docker installed?")
         raise
     except PermissionError as e:
         logger.error(f"Docker socket permission denied: {e}")
-        logger.error("Ensure /var/run/docker.sock is mounted and readable")
         raise
     except Exception as e:
         logger.warning(f"Failed to parse historical logs for {container_name}: {e}")
 
-    # Phase 2: Follow logs in real-time with retry loop
+    # Build dedup set from last 100 lines
+    dedup_set = set(historical_lines[-100:])
+    dedup_phase_active = True
+
+    # Phase 2: Connect MQTT, replay historical, then follow real-time
     while True:
         try:
             logger.info(f"Starting real-time log monitoring for {container_name}...")
-
-            process = await asyncio.create_subprocess_exec(
-                "docker", "logs", "-f", "--since", "0s", container_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
 
             async with aiomqtt.Client(
                 hostname=MQTT_HOST,
@@ -130,49 +147,93 @@ async def monitor_container(container_name: str, system: str):
                 username=MQTT_USER,
                 password=MQTT_PASS,
             ) as mqtt:
-                # Publish initial state on connect (retained for new subscribers)
+                # Publish initial retained state on connect
                 await publish_temp_nodes(mqtt, system, temp_nodes)
                 await publish_node_mappings(mqtt, system, node_mappings)
 
+                # Replay historical lines with incrementing timestamps
+                base_ts = datetime.now(timezone.utc)
+                for i, line_str in enumerate(historical_lines):
+                    entry_ts = base_ts + timedelta(microseconds=i)
+                    log_entry = json.dumps({
+                        "ts": entry_ts.isoformat(),
+                        "line": line_str,
+                        "seq": seq,
+                    })
+                    await mqtt.publish(log_topic, log_entry, qos=0, retain=False)
+                    seq += 1
+                    if i % 50 == 0:
+                        await asyncio.sleep(0)
+                historical_lines = []  # Free memory
+
+                # Follow new logs with dedup
+                since_ts = before_phase1_ts.isoformat()
+                process = await asyncio.create_subprocess_exec(
+                    "docker", "logs", "-f", "--since", since_ts, container_name,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+
                 async for line in process.stdout:
                     line_str = line.decode(errors="replace").strip()
+                    if not line_str:
+                        continue
 
-                    # Check for temporary enumeration
+                    if len(line_str) > MAX_LINE_LENGTH:
+                        line_str = line_str[:MAX_LINE_LENGTH] + " [truncated]"
+
+                    # Dedup during phase transition
+                    if dedup_phase_active and dedup_set is not None and line_str in dedup_set:
+                        dedup_set.discard(line_str)
+                        # Still parse for enumeration events even during dedup
+                        if temp_match := TEMP_PATTERN.search(line_str):
+                            pass  # Already parsed in Phase 1
+                        elif perm_match := PERM_SERIAL_PATTERN.search(line_str):
+                            pass  # Already parsed in Phase 1
+                        continue
+                    if dedup_phase_active and dedup_set is not None and not dedup_set:
+                        dedup_phase_active = False
+                        dedup_set = None
+
+                    # Publish log entry
+                    log_entry = json.dumps({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "line": line_str,
+                        "seq": seq,
+                    })
+                    await mqtt.publish(log_topic, log_entry, qos=0, retain=False)
+                    seq += 1
+
+                    # Existing enumeration parsing
                     if temp_match := TEMP_PATTERN.search(line_str):
                         node_id = int(temp_match.group(1))
                         if node_id not in temp_nodes:
                             temp_nodes.add(node_id)
                             logger.info(f"[{system}] Node {node_id} temporarily enumerated")
                             await publish_temp_nodes(mqtt, system, temp_nodes)
-
-                    # Check for permanent enumeration with serial extraction
                     elif perm_match := PERM_SERIAL_PATTERN.search(line_str):
                         node_id_str = perm_match.group(1)
                         serial = perm_match.group(2)
                         node_id_int = int(node_id_str)
-
-                        # Remove from temp nodes if present
                         if node_id_int in temp_nodes:
                             temp_nodes.discard(node_id_int)
                             logger.info(f"[{system}] Node {node_id_str} permanently enumerated")
                             await publish_temp_nodes(mqtt, system, temp_nodes)
-
-                        # Update mapping and publish
                         if node_mappings.get(node_id_str) != serial:
                             node_mappings[node_id_str] = serial
                             logger.info(f"[{system}] Node {node_id_str} -> serial {serial}")
                             await publish_node_mappings(mqtt, system, node_mappings)
 
-            # Process ended (container stopped or logs exhausted)
-            await process.wait()
-            logger.warning(f"Log stream for {container_name} ended")
+                await process.wait()
+                logger.warning(f"Log stream for {container_name} ended")
 
         except aiomqtt.MqttError as e:
             logger.error(f"MQTT connection failed for {system}: {e}")
+        except (OSError, asyncio.CancelledError):
+            raise
         except Exception as e:
             logger.error(f"Error monitoring {container_name}: {e}")
 
-        # Retry after 5s - handles both Docker and MQTT failures
         logger.warning(f"Restarting monitor for {container_name} in 5s...")
         await asyncio.sleep(5)
 
