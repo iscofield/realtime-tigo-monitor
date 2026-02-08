@@ -160,6 +160,7 @@ class LayoutConfig(BaseModel):
     aspect_ratio: Optional[float] = None
     overlay_size: int = Field(default=50, ge=20, le=200)
     image_scale: int = Field(default=100, ge=25, le=200)
+    use_blank_background: bool = False
     last_modified: Optional[str] = None
 
     @field_validator('image_scale', mode='before')
@@ -203,6 +204,7 @@ class LayoutConfigResponse(BaseModel):
     aspect_ratio: Optional[float] = None
     overlay_size: int = 50
     image_scale: int = 100
+    use_blank_background: bool = False
     last_modified: Optional[str] = None
 
 
@@ -228,6 +230,7 @@ class LayoutUpdateRequest(BaseModel):
     """
     overlay_size: int = Field(default=50, ge=20, le=200)
     image_scale: int = Field(default=100, ge=25, le=200)
+    use_blank_background: bool = False
 
 
 class Panel(BaseModel):

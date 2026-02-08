@@ -233,6 +233,7 @@ export interface LayoutConfig {
   aspect_ratio: number | null;
   overlay_size: number;
   image_scale: number;  // 25-200: background image display scale percentage
+  use_blank_background: boolean;
   last_modified: string | null;
 }
 

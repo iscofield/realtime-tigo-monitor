@@ -71,6 +71,7 @@ async def get_layout_config():
             aspect_ratio=config.aspect_ratio,
             overlay_size=config.overlay_size,
             image_scale=config.image_scale,
+            use_blank_background=config.use_blank_background,
             last_modified=config.last_modified,
         )
     except ConfigServiceError as e:
@@ -89,6 +90,7 @@ async def update_layout_config(request: LayoutUpdateRequest):
         config = service.load_layout_config()
         config.overlay_size = request.overlay_size
         config.image_scale = request.image_scale
+        config.use_blank_background = request.use_blank_background
         config.last_modified = datetime.now(timezone.utc).isoformat()
         service.save_layout_config(config)
         return SuccessResponse(message="Layout configuration saved")
@@ -142,6 +144,7 @@ async def upload_layout_image(file: UploadFile = File(...)):
         config.image_height = height
         config.image_hash = image_hash
         config.aspect_ratio = round(width / height, 4) if height > 0 else 0
+        config.use_blank_background = False
         config.last_modified = datetime.now(timezone.utc).isoformat()
         service.save_layout_config(config)
     except ConfigServiceError as e:
@@ -184,6 +187,7 @@ async def use_sample_image():
         config.image_height = height
         config.image_hash = image_hash
         config.aspect_ratio = round(width / height, 4) if height > 0 else 0
+        config.use_blank_background = False
         config.last_modified = datetime.now(timezone.utc).isoformat()
         service.save_layout_config(config)
     except ConfigServiceError as e:
