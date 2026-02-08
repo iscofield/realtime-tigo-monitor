@@ -176,7 +176,7 @@ describe('2-panel string handling', () => {
 
     const result = analyzeStringForMismatches(panels, 15);
     expect(result.warningMessage).toContain('only 2 panels');
-    expect(result.warningMessage).toContain('unable to determine');
+    expect(result.warningMessage).toContain('not all panels are outputting equally');
   });
 });
 
