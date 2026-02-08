@@ -82,6 +82,43 @@ ssh solar-assistant@<PI_HOST> "ls -la /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/
 ssh solar-assistant@<PI_HOST> "cat /mnt/nas/solar_tigo_viewer/tigo-mqtt/data/primary/taptap.state | python3 -c \"import json,sys; d=json.load(sys.stdin); print(sum(len(n) for n in d.get('gateway_node_tables',{}).values()))\""
 ```
 
+### CCA Status & Backup Script
+
+**Location:** `tigo-mqtt/cca-status.sh`
+
+A diagnostic script that connects to the Pi and reports on all taptap CCA containers. Auto-discovers containers by prefix (no hardcoded container names or counts).
+
+```bash
+# Status report only
+./tigo-mqtt/cca-status.sh
+
+# Status report + create timestamped backup
+./tigo-mqtt/cca-status.sh --backup
+
+# Use a specific env file for credentials
+./tigo-mqtt/cca-status.sh --env /path/to/env
+
+# Override container prefix (default: taptap-)
+./tigo-mqtt/cca-status.sh --prefix taptap-
+
+# Use local NAS mount for faster backup copies
+./tigo-mqtt/cca-status.sh --backup --nas-dir /path/to/nas/tigo-mqtt/data
+```
+
+**Credentials:** The script reads `PI_HOST`, `PI_USER`, `PI_PASS` from an env file. It searches for:
+1. `--env FILE` (explicit argument)
+2. `tigo-mqtt/.env.pi` (project-local, git-ignored)
+3. `.claude/env` (fallback)
+
+**What it reports:**
+- Container status and uptime
+- Enumeration status (permanent vs temporary) per CCA
+- Full panel list with node IDs and serials (from most recent startup only)
+- State file analysis: node counts, gateway details, TAP repeater detection
+- State file backups present on disk
+
+**Backups** are saved to `tigo-mqtt/backups/<timestamp>/` with state files and infra logs per CCA.
+
 ### 2. Dashboard Service (frontend + backend)
 
 **Location:** `dashboard/`

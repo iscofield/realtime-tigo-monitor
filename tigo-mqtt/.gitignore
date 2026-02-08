@@ -1,6 +1,9 @@
-# Environment file with credentials (use .env.example as template)
+# Environment files with credentials (use .env.example / .env.pi.example as templates)
 .env
 .env.test
+.env.pi
+!.env.pi.example
+!.env.example
 
 # State and runtime data
 data/
@@ -13,3 +16,6 @@ docker-compose.yml
 
 # Topology backups (user-specific state data)
 topology_backups/
+
+# CCA state file backups (contain site-specific data)
+backups/*/
