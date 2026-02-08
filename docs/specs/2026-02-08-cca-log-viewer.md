@@ -159,10 +159,10 @@ Request body:
 Response:
 - `201 Created` on success: `{"status": "ok"}`
 - `404 Not Found` when `use_mock_data` is `False`: (standard FastAPI 404)
-- `422 Unprocessable Entity` for invalid request body: (FastAPI default validation)
+- `422 Unprocessable Entity` for invalid request body (Pydantic validation: invalid system name, missing/invalid entry fields) or if `ingest()` rejects the entry: `{"detail": "Entry rejected by validation"}`
 - `503 Service Unavailable` if `log_service` is not initialized: `{"detail": "Log service not available"}`
 
-The endpoint MUST call `log_service.ingest(system, entry)` directly, bypassing MQTT. The `system` and `entry` fields are validated by the existing `LogService.ingest()` method (system name allowlist, entry schema validation). No additional validation is needed at the endpoint level beyond Pydantic request body parsing.
+The endpoint MUST call `log_service.ingest(system, entry.model_dump())` directly, bypassing MQTT. The `system` field is validated at both the Pydantic layer (regex pattern + max length) and by `LogService.ingest()` (system name allowlist). The `entry` field uses a typed `LogEntryModel` with `ts: str` (non-empty), `line: str`, and `seq: int` (non-negative) for Pydantic-level validation, returning 422 for schema violations. The endpoint MUST check `ingest()`'s boolean return value and return 422 if the entry was rejected (defensive guard — should not fire given Pydantic pre-validation, but protects against future validation additions in `ingest()`).
 
 ### FR-4: Frontend Logs Tab
 
@@ -437,12 +437,15 @@ class LogService:
         """Validate system name against allowlist to prevent path traversal."""
         return bool(VALID_SYSTEM_RE.match(system)) and len(system) <= 64
 
-    async def ingest(self, system: str, entry: dict) -> None:
-        """Ingest a log entry: persist to disk, store in memory, broadcast."""
+    async def ingest(self, system: str, entry: dict) -> bool:
+        """Ingest a log entry: persist to disk, store in memory, broadcast.
+
+        Returns True if the entry was accepted, False if validation failed.
+        """
         # Validate system name to prevent path traversal (FR-2.1)
         if not self._validate_system(system):
             logger.warning(f"Rejected log entry with invalid system name: {system!r}")
-            return
+            return False
 
         # Validate entry schema (must match FR-1.2: {ts, line, seq})
         if (
@@ -450,10 +453,11 @@ class LogService:
             or not isinstance(entry.get("ts"), str)
             or not entry.get("ts")
             or not isinstance(entry.get("line"), str)
+            # Note: empty line values are accepted (some log frameworks emit empty separator lines)
             or not isinstance(entry.get("seq"), int)
         ):
             logger.warning(f"Rejected log entry with invalid schema: {entry!r}")
-            return
+            return False
 
         # Detect seq gaps and publisher restarts (FR-1.2)
         # Note: _last_seq is intentionally NOT populated by load_from_disk() —
@@ -488,6 +492,7 @@ class LogService:
 
         # Broadcast to connected WebSocket clients
         await self._broadcast_entry(system, entry)
+        return True
 
     @staticmethod
     def _write_line(path: Path, line: str) -> None:
@@ -858,11 +863,16 @@ async def get_logs(
     }
 
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+class LogEntryModel(BaseModel):
+    ts: str = Field(min_length=1)
+    line: str
+    seq: int = Field(ge=0)
 
 class InjectLogRequest(BaseModel):
-    system: str
-    entry: dict
+    system: str = Field(pattern=r"^[a-zA-Z0-9_-]+$", max_length=64)
+    entry: LogEntryModel
 
 @app.post("/api/test/inject-log", status_code=201)
 async def inject_log(req: InjectLogRequest):
@@ -871,7 +881,9 @@ async def inject_log(req: InjectLogRequest):
         raise HTTPException(status_code=404)
     if log_service is None:
         raise HTTPException(status_code=503, detail="Log service not available")
-    await log_service.ingest(req.system, req.entry)
+    accepted = await log_service.ingest(req.system, req.entry.model_dump())
+    if not accepted:
+        raise HTTPException(status_code=422, detail="Entry rejected by validation")
     return {"status": "ok"}
 ```
 
@@ -987,7 +999,7 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 8. Verify the Logs tab shows the empty state message ("No log data available...") when no log data exists (test with mock mode)
 9. Call `GET /api/logs/systems` via fetch — assert it returns a JSON object with a `systems` array
 10. Call `GET /api/logs/primary?days=7&limit=10&offset=0` via fetch — assert response contains `entries` array, `total` integer, and `has_more` boolean (FR-3.4 pagination)
-11. Trigger a new log entry by running `docker exec taptap-primary sh -c 'echo "Playwright test line $(date)"'` (which writes to the container's stdout, picked up by the log publisher). If no live CCA container is available, use the test-only inject endpoint (FR-3.6): `POST /api/test/inject-log` with `{"system": "primary", "entry": {"ts": "<now>", "line": "Playwright test line", "seq": 0}}` — this is available when `USE_MOCK_DATA=true`. Assert the new entry appears at the visual top of the log list within 5 seconds without page refresh (FR-4.8 live delivery).
+11. Trigger a new log entry by running `docker exec taptap-primary sh -c 'echo "Playwright test line $(date)"'` (which writes to the container's stdout, picked up by the log publisher). If no live CCA container is available, use the test-only inject endpoint (FR-3.6): `POST /api/test/inject-log` with `{"system": "primary", "entry": {"ts": "<now>", "line": "Playwright test line", "seq": 0}}` — this is available when `USE_MOCK_DATA=true`. After the POST, assert the response status is 201 (not 422), then call `GET /api/logs/primary?days=1&limit=1` and assert the injected entry appears in the response (this narrows down failures to injection vs. WebSocket delivery). Finally, assert the new entry appears at the visual top of the log list within 5 seconds without page refresh (FR-4.8 live delivery).
 12. Simulate WebSocket disconnect via `page.evaluate` (e.g., close the WebSocket) — assert a reconnection indicator (e.g., "Disconnected") appears in the log viewer (FR-4.14)
 13. Navigate away from the Logs tab and back — assert the Logs tab reloads correctly
 
@@ -1013,11 +1025,22 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 
 ---
 
-**Specification Version:** 1.4
+**Specification Version:** 1.5
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
+
+### v1.5 (February 2026)
+**Summary:** Address review comments (12 comments from review round 8)
+
+**Changes:**
+- Section 2 (LogService `ingest()`): Change return type from `None` to `bool` — returns `True` if accepted, `False` if validation failed. Enables callers (especially the inject endpoint) to detect silent rejections.
+- Section 2 (LogService `ingest()`): Add inline comment noting empty `line` values are intentionally accepted (some log frameworks emit empty separator lines)
+- Section 4b (InjectLogRequest): Replace untyped `entry: dict` with typed `LogEntryModel(ts: str, line: str, seq: int)` for Pydantic-level validation. Add `system` field regex pattern and max_length constraints.
+- Section 4b (inject endpoint): Check `ingest()` return value and return 422 on rejection instead of silent 201
+- FR-3.6: Update endpoint specification to document typed `LogEntryModel`, Pydantic system validation, and `ingest()` return value checking
+- Task 5 step 11: Add intermediate assertion — after POST inject, verify 201 response and call `GET /api/logs/primary` to confirm entry was stored before checking WebSocket delivery
 
 ### v1.4 (February 2026)
 **Summary:** Address review comments (11 comments from review round 7)
