@@ -495,6 +495,7 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
     positionedPanels,
     unpositionedPanels,
     selectedPanels,
+    setSelectedPanels,
     snapEnabled,
     setSnapEnabled,
     spatialIndex,
