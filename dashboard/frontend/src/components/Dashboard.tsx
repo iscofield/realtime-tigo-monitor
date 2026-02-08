@@ -3,7 +3,7 @@
  * Shows real-time panel data in layout or table format.
  */
 
-import { useState, useRef, useCallback, useLayoutEffect, lazy, Suspense } from 'react';
+import { useState, useRef, useCallback, useLayoutEffect, useEffect, lazy, Suspense } from 'react';
 import type { CSSProperties, MutableRefObject } from 'react';
 import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -18,7 +18,8 @@ import { TableView } from './TableView';
 import { ZoomControls } from './ZoomControls';
 import { SettingsMenu } from './SettingsMenu';
 import type { DisplayMode } from './PanelOverlay';
-import type { RestoreData } from '../types/config';
+import type { RestoreData, LayoutConfig } from '../types/config';
+import { getLayoutConfig } from '../api/config';
 
 // Lazy load the Layout Editor for code splitting
 const LayoutEditor = lazy(() => import('./layout-editor/LayoutEditor'));
@@ -26,6 +27,8 @@ import {
   MOBILE_BREAKPOINT,
   LAYOUT_WIDTH,
   LAYOUT_HEIGHT,
+  BLANK_CANVAS_WIDTH,
+  BLANK_CANVAS_HEIGHT,
   CONTENT_PADDING,
   MIN_ZOOM,
   MAX_ZOOM,
@@ -126,6 +129,25 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
 
   useUrlParamsSync(activeTab, mode);
 
+  // Fetch layout config for dynamic canvas dimensions and overlay size
+  const [layoutConfig, setLayoutConfig] = useState<LayoutConfig | null>(null);
+  useEffect(() => {
+    getLayoutConfig().then(setLayoutConfig).catch(() => {});
+  }, []);
+
+  // Derive canvas dimensions from config
+  const layoutWidth = layoutConfig
+    ? layoutConfig.image_path && !layoutConfig.use_blank_background
+      ? layoutConfig.image_width ?? LAYOUT_WIDTH
+      : BLANK_CANVAS_WIDTH
+    : LAYOUT_WIDTH;
+  const layoutHeight = layoutConfig
+    ? layoutConfig.image_path && !layoutConfig.use_blank_background
+      ? layoutConfig.image_height ?? LAYOUT_HEIGHT
+      : BLANK_CANVAS_HEIGHT
+    : LAYOUT_HEIGHT;
+  const overlaySize = layoutConfig?.overlay_size || 50;
+
   const transformRef = useRef<ReactZoomPanPinchRef>(null);
   const [currentZoom, setCurrentZoom] = useState(1);
   const hasManuallyZoomed = useRef(false);
@@ -141,8 +163,8 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
       const tabHeight = mobile ? TAB_HEIGHT_MOBILE : TAB_HEIGHT_DESKTOP;
       const viewportHeight = window.innerHeight - HEADER_HEIGHT - tabHeight;
 
-      const contentWidth = LAYOUT_WIDTH + CONTENT_PADDING * 2;
-      const contentHeight = LAYOUT_HEIGHT + CONTENT_PADDING * 2;
+      const contentWidth = layoutWidth + CONTENT_PADDING * 2;
+      const contentHeight = layoutHeight + CONTENT_PADDING * 2;
 
       const fitViewportZoom = Math.min(
         viewportWidth / contentWidth,
@@ -156,7 +178,7 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
         fitWidthZoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitWidthZoom)),
       };
     },
-    []
+    [layoutWidth, layoutHeight]
   );
 
   // Calculate initial fit zoom synchronously to avoid flash of zoomed-in content
@@ -189,8 +211,22 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
   const [fitZooms, setFitZooms] = useState(getInitialFitZooms);
 
   useLayoutEffect(() => {
-    setFitZooms(calculateFitZooms(isMobile));
-  }, [calculateFitZooms, isMobile]);
+    const newFitZooms = calculateFitZooms(isMobile);
+    setFitZooms(newFitZooms);
+
+    // Re-center transform when layout dimensions change (e.g., config loads)
+    if (!hasManuallyZoomed.current && transformRef.current) {
+      const wrapperBounds =
+        transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
+      if (wrapperBounds) {
+        const contentWidth = (layoutWidth + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
+        const contentHeight = (layoutHeight + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
+        const centerX = (wrapperBounds.width - contentWidth) / 2;
+        const centerY = Math.max(0, (wrapperBounds.height - contentHeight) / 2);
+        transformRef.current.setTransform(centerX, centerY, newFitZooms.fitViewportZoom, 0);
+      }
+    }
+  }, [calculateFitZooms, isMobile, layoutWidth, layoutHeight]);
 
   const handleTransformed = useCallback(
     (
@@ -221,8 +257,8 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
         const wrapperBounds =
           transformRef.current.instance.wrapperComponent?.getBoundingClientRect();
         if (wrapperBounds) {
-          const contentWidth = (LAYOUT_WIDTH + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
-          const contentHeight = (LAYOUT_HEIGHT + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
+          const contentWidth = (layoutWidth + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
+          const contentHeight = (layoutHeight + CONTENT_PADDING * 2) * newFitZooms.fitViewportZoom;
           const centerX = (wrapperBounds.width - contentWidth) / 2;
           const centerY = Math.max(0, (wrapperBounds.height - contentHeight) / 2);
           transformRef.current.setTransform(centerX, centerY, newFitZooms.fitViewportZoom, 0);
@@ -232,7 +268,7 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [calculateFitZooms, isMobile]);
+  }, [calculateFitZooms, isMobile, layoutWidth, layoutHeight]);
 
   return (
     <div style={appStyle}>
@@ -268,6 +304,9 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
               initialScale={fitZooms.fitViewportZoom}
               onTransformed={handleTransformed}
               onManualZoom={handleManualZoom}
+              layoutWidth={layoutWidth}
+              layoutHeight={layoutHeight}
+              overlaySize={overlaySize}
             />
           </div>
         ) : activeTab === 'table' ? (

@@ -8,30 +8,37 @@ interface PanelOverlayProps {
   panel: PanelData;
   mode: DisplayMode;
   isMobile?: boolean;
+  overlaySize?: number;
 }
 
 const baseStyle: CSSProperties = {
   position: 'absolute',
   transform: 'translate(-50%, -50%)',
-  padding: '3px 6px',
   borderRadius: '4px',
-  fontSize: 'clamp(10px, 2vw, 18px)',
   textAlign: 'center',
   lineHeight: '1.2',
   whiteSpace: 'nowrap',
   color: 'white',
   textShadow: '1px 1px 2px rgba(0,0,0,0.8)',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  boxSizing: 'border-box',
 };
 
-const mobileBaseStyle: CSSProperties = {
-  ...baseStyle,
-  padding: '6px 10px',
-  fontSize: '16px',
-  borderRadius: '6px',
-};
-
-export function PanelOverlay({ panel, mode, isMobile = false }: PanelOverlayProps) {
-  const styleBase = isMobile ? mobileBaseStyle : baseStyle;
+export function PanelOverlay({ panel, mode, isMobile = false, overlaySize = 50 }: PanelOverlayProps) {
+  const size = overlaySize || 50;
+  const fontSize = Math.max(10, size / 4);
+  const sizeStyle: CSSProperties = {
+    width: `${size}px`,
+    height: `${size}px`,
+    fontSize: `${fontSize}px`,
+  };
+  if (isMobile) {
+    sizeStyle.borderRadius = '6px';
+  }
+  const styleBase = { ...baseStyle, ...sizeStyle };
 
   const positionStyle: CSSProperties = {
     left: `${panel.position.x_percent}%`,
