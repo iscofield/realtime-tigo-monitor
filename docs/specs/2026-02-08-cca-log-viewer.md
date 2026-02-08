@@ -455,6 +455,7 @@ class LogService:
             or not isinstance(entry.get("line"), str)
             # Note: empty line values are accepted (some log frameworks emit empty separator lines)
             or not isinstance(entry.get("seq"), int)
+            or entry.get("seq") < 0  # Consistent with LogEntryModel(ge=0)
         ):
             logger.warning(f"Rejected log entry with invalid schema: {entry!r}")
             return False
@@ -681,6 +682,7 @@ class LogService:
                             and data.get("ts")
                             and isinstance(data.get("line"), str)
                             and isinstance(data.get("seq"), int)
+                            and data.get("seq") >= 0
                         ):
                             entries.append(data)
                         else:
@@ -867,7 +869,7 @@ from pydantic import BaseModel, Field
 
 class LogEntryModel(BaseModel):
     ts: str = Field(min_length=1)
-    line: str
+    line: str = Field(max_length=10300)  # 10 KB + room for " [truncated]" suffix
     seq: int = Field(ge=0)
 
 class InjectLogRequest(BaseModel):
@@ -1000,8 +1002,9 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 9. Call `GET /api/logs/systems` via fetch — assert it returns a JSON object with a `systems` array
 10. Call `GET /api/logs/primary?days=7&limit=10&offset=0` via fetch — assert response contains `entries` array, `total` integer, and `has_more` boolean (FR-3.4 pagination)
 11. Trigger a new log entry by running `docker exec taptap-primary sh -c 'echo "Playwright test line $(date)"'` (which writes to the container's stdout, picked up by the log publisher). If no live CCA container is available, use the test-only inject endpoint (FR-3.6): `POST /api/test/inject-log` with `{"system": "primary", "entry": {"ts": "<now>", "line": "Playwright test line", "seq": 0}}` — this is available when `USE_MOCK_DATA=true`. After the POST, assert the response status is 201 (not 422), then call `GET /api/logs/primary?days=1&limit=1` and assert the injected entry appears in the response (this narrows down failures to injection vs. WebSocket delivery). Finally, assert the new entry appears at the visual top of the log list within 5 seconds without page refresh (FR-4.8 live delivery).
-12. Simulate WebSocket disconnect via `page.evaluate` (e.g., close the WebSocket) — assert a reconnection indicator (e.g., "Disconnected") appears in the log viewer (FR-4.14)
-13. Navigate away from the Logs tab and back — assert the Logs tab reloads correctly
+12. **Negative validation tests for inject endpoint (FR-3.6):** POST `/api/test/inject-log` with an invalid system name (e.g., `{"system": "../../etc", "entry": {"ts": "2026-02-08T00:00:00", "line": "test", "seq": 0}}`) -- assert 422 response. POST with a negative seq value (`{"system": "primary", "entry": {"ts": "2026-02-08T00:00:00", "line": "test", "seq": -1}}`) -- assert 422 response. POST with an empty `ts` (`{"system": "primary", "entry": {"ts": "", "line": "test", "seq": 0}}`) -- assert 422 response. POST with a line exceeding 10,300 characters -- assert 422 response. These verify both Pydantic-layer and `ingest()`-layer validation.
+13. Simulate WebSocket disconnect via `page.evaluate` (e.g., close the WebSocket) — assert a reconnection indicator (e.g., "Disconnected") appears in the log viewer (FR-4.14)
+14. Navigate away from the Logs tab and back — assert the Logs tab reloads correctly
 
 ## Related Specifications
 
@@ -1025,14 +1028,24 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
 
+### v1.6 (February 2026)
+**Summary:** Address review comments from round 9 (4 comments)
+
+**Changes:**
+- Section 2 (LogService `ingest()`): Add `entry.get("seq") >= 0` check to validation, consistent with `LogEntryModel(ge=0)` — closes gap where negative seq values from MQTT were accepted but rejected by the inject endpoint
+- Section 2 (LogService `load_from_disk()`): Add `data.get("seq") >= 0` check to schema validation, consistent with updated `ingest()` validation
+- Section 4b (LogEntryModel): Add `max_length=10300` to `line` field — enforces same 10 KB bound the publisher applies (FR-1.7), preventing oversized injections via the test endpoint
+- Changelog v1.5: Clarify review round numbering mapping across all versions
+- Task 5: Add step 12 with negative validation tests for inject endpoint (invalid system name, negative seq, empty ts, oversized line) — verifies both Pydantic-layer and `ingest()`-layer validation; renumber subsequent steps
+
 ### v1.5 (February 2026)
-**Summary:** Address review comments (12 comments from review round 8)
+**Summary:** Address review comments from round 8 (review round numbering: v1.1=rounds 1-3, v1.2=rounds 4-5, v1.3=round 6, v1.4=round 7, v1.5=round 8)
 
 **Changes:**
 - Section 2 (LogService `ingest()`): Change return type from `None` to `bool` — returns `True` if accepted, `False` if validation failed. Enables callers (especially the inject endpoint) to detect silent rejections.
