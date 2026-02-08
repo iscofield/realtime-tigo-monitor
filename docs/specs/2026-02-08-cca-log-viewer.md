@@ -22,7 +22,7 @@ Currently, CCA logs are only accessible by SSH-ing into the Raspberry Pi and run
 ```
 - `ts`: ISO 8601 timestamp (UTC). For real-time logs, this is the capture time (`datetime.now(timezone.utc)`). For historical replay on startup, the publisher MUST assign monotonically incrementing timestamps by adding a microsecond offset per line (e.g., `base_ts + timedelta(microseconds=i)` for line `i`). This preserves the original ordering of historical log lines while making it clear they are replay timestamps (all clustered within the same second). The `seq` field provides a secondary sort key for entries with identical timestamps.
 - `line`: The raw log line text from the taptap container, truncated to a maximum of 10,240 bytes (10 KB). Lines exceeding this limit MUST be truncated with a `[truncated]` suffix. This prevents oversized MQTT messages, unbounded memory usage, and rendering issues in the frontend.
-- `seq`: Monotonically incrementing sequence number per system, starting from 0 on publisher startup. Used as a tiebreaker for sorting entries with identical timestamps, and enables gap detection on the backend (non-contiguous sequence numbers indicate dropped messages).
+- `seq`: Monotonically incrementing sequence number per system, starting from 0 on publisher startup. Used as a tiebreaker for sorting entries with identical timestamps, and enables gap detection on the backend (non-contiguous sequence numbers indicate dropped messages). A `seq` value lower than the previous value for the same system indicates a publisher restart, not dropped messages — the backend SHOULD detect and log this condition separately from gap detection.
 
 **FR-1.3:** Log messages MUST be published with QoS 0 (fire-and-forget) and `retain=false`. Logs are ephemeral and MUST NOT be retained at the broker. QoS 0 means messages may be silently dropped during broker congestion or network hiccups — this is acceptable for log data since the backend persists to disk and the `seq` field enables gap detection. The backend SHOULD NOT attempt to request retransmission of missed messages.
 
@@ -34,6 +34,8 @@ Currently, CCA logs are only accessible by SSH-ing into the Raspberry Pi and run
 1. Track the last 100 lines seen during Phase 1 in a dedup set, with a `dedup_phase_active` flag to control the transition lifecycle
 2. When Phase 2 starts with `--since`, skip any lines that match the dedup set (via `discard()` to drain naturally). Once the set is empty, clear the flag and free memory.
 3. Use a `--since` timestamp captured *before* Phase 1 begins (not after), then rely on the deduplication set to filter already-published lines. The natural drain approach (vs. clearing on first non-match) prevents premature clearing when Phase 2 lines interleave with overlap lines.
+
+Note: Content-based dedup may suppress a genuine new line if its text is identical to an unseen historical line still in the dedup set (e.g., a repeated status message like "Waiting for enumeration..."). This is acceptable given the short overlap window and the ephemeral nature of log data.
 
 **FR-1.7:** The publisher MUST truncate individual log lines to a maximum of 10,240 bytes (10 KB) before publishing. Lines exceeding this limit MUST be truncated and suffixed with ` [truncated]`.
 
@@ -146,7 +148,7 @@ The `days` parameter means "entries with timestamps within the last N×24 hours 
 
 **FR-4.2:** When only one CCA system has log data, the Logs tab MUST display logs directly without sub-tabs.
 
-**FR-4.3:** When multiple CCA systems have log data, the Logs tab MUST display sub-tabs (e.g., "Primary", "Secondary") allowing the user to switch between systems. Sub-tab labels MUST be the capitalized system name. The list of available systems is determined from the initial WebSocket payload's `systems` array and updated when new systems appear in live log messages. If the currently selected sub-tab's system disappears (e.g., only one system remains), the view MUST fall back to showing the remaining system without sub-tabs. If a new system appears, a new sub-tab MUST be added without disrupting the current view.
+**FR-4.3:** When multiple CCA systems have log data, the Logs tab MUST display sub-tabs (e.g., "Primary", "Secondary") allowing the user to switch between systems. Sub-tab labels MUST be the capitalized system name. The list of available systems is determined from the initial WebSocket payload's `systems` array and updated when new systems appear in live log messages. If the currently selected sub-tab's system disappears (e.g., only one system remains), the view MUST fall back to showing the remaining system without sub-tabs. If a new system appears, a new sub-tab MUST be added without disrupting the current view. The frontend MUST treat any `system` value in a `type: "log"` message as a valid system, even if it was not present in the initial `systems` array. A new system appearing in a live message MUST trigger the same sub-tab addition behavior.
 
 **FR-4.4:** Log entries MUST be displayed in descending order by timestamp (most recent at top).
 
@@ -181,7 +183,7 @@ The `days` parameter means "entries with timestamps within the last N×24 hours 
 - The entry count display MUST use `aria-live="polite"` to announce filter result counts to screen readers
 - Log entries are not individually focusable or interactive (they are read-only text), so keyboard navigation within the log list is not required. Standard browser scrolling (arrow keys, Page Up/Down) provides navigation.
 
-**FR-4.14:** The `useLogWebSocket` hook MUST implement reconnection logic following the same pattern as the existing `useWebSocket` hook: automatic reconnect on connection loss with exponential backoff. On reconnect, the hook MUST request a fresh initial payload from the backend, replacing the stale in-memory entries. A connection status indicator (e.g., "Disconnected — reconnecting...") SHOULD be shown in the log viewer when the WebSocket is not connected.
+**FR-4.14:** The `useLogWebSocket` hook MUST implement reconnection logic following the same pattern as the existing `useWebSocket` hook: automatic reconnect on connection loss with exponential backoff. On reconnect, the hook MUST receive a fresh initial payload from the backend, replacing the stale in-memory entries. A connection status indicator (e.g., "Disconnected — reconnecting...") SHOULD be shown in the log viewer when the WebSocket is not connected.
 
 ### FR-5: Configuration
 
@@ -235,7 +237,7 @@ sequenceDiagram
     loop Real-time streaming
         Backend->>WS: New log entry arrives
         WS->>Frontend: Push log entry
-        Frontend->>Frontend: Prepend to display list
+        Frontend->>Frontend: Append to entry list (column-reverse renders newest-first)
     end
 
     Note over Frontend: Client-side search
@@ -452,7 +454,7 @@ class LogService:
 
     @staticmethod
     def _write_line(path: Path, line: str) -> None:
-        """Write a single line to a log file (sync, runs in thread)."""
+        """Write a single line to a log file (synchronous, inline on event loop)."""
         with open(path, "a") as f:
             f.write(line)
             f.flush()
@@ -615,6 +617,8 @@ class LogService:
                             isinstance(data, dict)
                             and "ts" in data
                             and "line" in data
+                            and "seq" in data
+                            and isinstance(data.get("seq"), int)
                         ):
                             entries.append(data)
                         else:
@@ -703,7 +707,14 @@ async def logs_websocket(websocket: WebSocket):
     log_service.add_connection(websocket)
 
     try:
-        # Send all logs within retention window
+        # Send all logs within retention window.
+        # Note: add_connection() is called before send_json(), so a broadcast
+        # could theoretically interleave if send_json() yields. In practice,
+        # the single-threaded event loop and buffered WebSocket writes make
+        # this extremely unlikely for the expected ~700 KB payload. This
+        # matches the existing /ws/panels pattern. If this becomes an issue,
+        # move add_connection() after send_json() (accepting that entries
+        # during the initial send are missed — they'll arrive on next reconnect).
         initial = {
             "type": "initial",
             "systems": log_service.get_systems(),
@@ -900,7 +911,10 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 7. Assert log entries are displayed in monospace font and each entry has a timestamp matching `HH:mm:ss.SSS` format
 8. Verify the Logs tab shows the empty state message ("No log data available...") when no log data exists (test with mock mode)
 9. Call `GET /api/logs/systems` via fetch — assert it returns a JSON object with a `systems` array
-10. Navigate away from the Logs tab and back — assert the Logs tab reloads correctly
+10. Call `GET /api/logs/primary?days=7&limit=10&offset=0` via fetch — assert response contains `entries` array, `total` integer, and `has_more` boolean (FR-3.4 pagination)
+11. Wait for a new log entry to appear (or trigger one via CCA activity) — assert it appears at the visual top of the log list without page refresh (FR-4.8 live delivery)
+12. Simulate WebSocket disconnect via `page.evaluate` (e.g., close the WebSocket) — assert a reconnection indicator (e.g., "Disconnected") appears in the log viewer (FR-4.14)
+13. Navigate away from the Logs tab and back — assert the Logs tab reloads correctly
 
 ## Related Specifications
 
@@ -931,22 +945,27 @@ The `useLogWebSocket` hook MUST implement the same reconnection pattern as the e
 ## Changelog
 
 ### v1.2 (February 2026)
-**Summary:** Address review comments (38 comments across review round 4)
+**Summary:** Address review comments (38 + 9 comments across review rounds 4 and 5)
 
 **Changes:**
-- FR-1.6: Replace dedup set eager-clear with flag-based natural drain approach to prevent premature clearing when Phase 2 lines interleave; specify constant 100 instead of generic "N"
+- FR-1.2: Document `seq` reset behavior on publisher restart (not a gap detection indication)
+- FR-1.6: Replace dedup set eager-clear with flag-based natural drain approach to prevent premature clearing when Phase 2 lines interleave; specify constant 100 instead of generic "N"; add note documenting content-based dedup trade-off (may suppress genuine duplicate-text lines during overlap window)
 - FR-2.2: Fix incorrect concurrency reasoning — remove `asyncio.to_thread` in favor of synchronous writes (single-threaded event loop guarantees serialization)
 - FR-3.1: Document `/ws/logs` as unidirectional server-push protocol
 - FR-3.2: Add `seq` field to initial payload JSON example entries (consistent with FR-1.2 schema)
 - FR-3.3: Add `seq` field to live entry JSON example (consistent with FR-1.2 schema)
 - FR-3.4: Fix `days` parameter max from `log_retention_days` to `30` (hardcoded); document that values exceeding retention window return less data; add 503 error response documentation
+- FR-4.3: Add explicit requirement that frontend MUST handle unknown systems in live `type: "log"` messages
 - FR-4.8: Rewrite scroll position behavior for `column-reverse` layout (no manual scrollTop compensation needed)
 - FR-4.13: Fix `role="log"` to use ascending DOM order with CSS `flex-direction: column-reverse` for WAI-ARIA compliance
+- FR-4.14: Fix "request" to "receive" for consistency with unidirectional server-push protocol
 - Section 1 (Publisher): Replace dedup set clearing with flag-based approach; fix "rate limiting" language to "cooperative yielding"
-- Section 2 (LogService): Remove `asyncio.to_thread` for synchronous writes; add `get_logs_for_system()` public method; add `seq` validation to `ingest()` schema check; add schema validation to `load_from_disk()`; document ISO string comparison assumption in `_prune_memory`; document off-by-one safety margin in `prune_old_logs`; switch `_broadcast_entry` to `asyncio.gather` for parallel sends; add mutation warning to `get_all_logs` docstring
-- Section 4 (WebSocket): Add `WebSocketDisconnect` import
+- Section 2 (LogService): Remove `asyncio.to_thread` for synchronous writes; add `get_logs_for_system()` public method; add `seq` validation to `ingest()` schema check; add `seq` validation to `load_from_disk()` schema check (consistent with `ingest()`); fix `_write_line` docstring from "runs in thread" to "synchronous, inline on event loop"; document ISO string comparison assumption in `_prune_memory`; document off-by-one safety margin in `prune_old_logs`; switch `_broadcast_entry` to `asyncio.gather` for parallel sends; add mutation warning to `get_all_logs` docstring
+- Section 4 (WebSocket): Add `WebSocketDisconnect` import; add note documenting `add_connection()` ordering relative to initial payload send (race condition analysis)
 - Section 4b (REST): Add missing `datetime` imports; use `get_logs_for_system()` instead of private `_logs` access
 - Section 5 (Frontend): Fix VITE_WS_URL trailing slash handling
+- High Level Design: Fix sequence diagram "Prepend to display list" to "Append to entry list (column-reverse renders newest-first)"
+- Task 5: Add REST pagination test step (FR-3.4), live log delivery test step (FR-4.8), WebSocket reconnection indicator test step (FR-4.14)
 
 ### v1.1 (February 2026)
 **Summary:** Address review comments (98 comments across 3 review rounds)
