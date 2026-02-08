@@ -18,6 +18,7 @@ import type { AlignmentGuide, PanelPosition } from '../../types/config';
 import type { EditorPanel } from './types';
 import { Info } from 'lucide-react';
 import { calculateSnap, pixelToPercent, buildSpatialIndex, getStringColor } from './types';
+import { BLANK_CANVAS_WIDTH, BLANK_CANVAS_HEIGHT } from '../../constants';
 import { useLayoutEditor } from './useLayoutEditor';
 import { EditorToolbar } from './EditorToolbar';
 import { DraggablePanel } from './DraggablePanel';
@@ -199,9 +200,10 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
 
   const sensors = useSensors(mouseSensor, touchSensor);
 
-  // Image dimensions from config
-  const imageWidth = editor.layoutConfig?.image_width || 800;
-  const imageHeight = editor.layoutConfig?.image_height || 600;
+  // Image dimensions from config — use blank canvas defaults when no image is active
+  const useBlankCanvas = !editor.layoutConfig?.image_path || editor.layoutConfig?.use_blank_background;
+  const imageWidth = useBlankCanvas ? BLANK_CANVAS_WIDTH : (editor.layoutConfig?.image_width || BLANK_CANVAS_WIDTH);
+  const imageHeight = useBlankCanvas ? BLANK_CANVAS_HEIGHT : (editor.layoutConfig?.image_height || BLANK_CANVAS_HEIGHT);
   const hasImage = !!editor.layoutConfig?.image_path;
 
   // Calculate scaled dimensions for canvas display
