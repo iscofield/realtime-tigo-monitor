@@ -1,6 +1,10 @@
-// Layout image dimensions (from assets/layout.png)
+// Layout image dimensions (from assets/layout.png) — used as fallback
 export const LAYOUT_WIDTH = 1526;
 export const LAYOUT_HEIGHT = 2131;
+
+// Default canvas dimensions for blank backgrounds (landscape 3:2)
+export const BLANK_CANVAS_WIDTH = 1200;
+export const BLANK_CANVAS_HEIGHT = 800;
 
 // Zoom configuration
 export const MIN_ZOOM = 0.25;  // 25%

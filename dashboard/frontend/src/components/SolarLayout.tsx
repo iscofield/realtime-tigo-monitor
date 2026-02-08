@@ -8,8 +8,6 @@ import type { DisplayMode } from './PanelOverlay';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { getLayoutImageUrl, getLayoutConfig } from '../api/config';
 import {
-  LAYOUT_WIDTH,
-  LAYOUT_HEIGHT,
   MOBILE_BREAKPOINT,
   MIN_ZOOM,
   MAX_ZOOM,
@@ -30,6 +28,9 @@ interface SolarLayoutProps {
     state: { scale: number; positionX: number; positionY: number }
   ) => void;
   onManualZoom: () => void;
+  layoutWidth: number;
+  layoutHeight: number;
+  overlaySize: number;
 }
 
 const errorContainerStyle: CSSProperties = {
@@ -56,6 +57,9 @@ export function SolarLayout({
   initialScale,
   onTransformed,
   onManualZoom,
+  layoutWidth,
+  layoutHeight,
+  overlaySize,
 }: SolarLayoutProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -156,7 +160,7 @@ export function SolarLayout({
   // Check if layout has an image configured
   useEffect(() => {
     getLayoutConfig().then(config => {
-      if (!config.image_path) {
+      if (!config.image_path || config.use_blank_background) {
         setNoImageConfigured(true);
         setImageLoaded(true); // Allow panels to render
       }
@@ -207,8 +211,8 @@ export function SolarLayout({
 
   // Content wrapper - fixed size matching layout for percentage-based overlay positioning
   const contentWrapperStyle: CSSProperties = {
-    width: `${LAYOUT_WIDTH}px`,
-    height: `${LAYOUT_HEIGHT}px`,
+    width: `${layoutWidth}px`,
+    height: `${layoutHeight}px`,
     position: 'relative',
   };
 
@@ -276,6 +280,7 @@ export function SolarLayout({
                     panel={panel}
                     mode={mode}
                     isMobile={isMobile}
+                    overlaySize={overlaySize}
                   />
                 ))}
             </div>
