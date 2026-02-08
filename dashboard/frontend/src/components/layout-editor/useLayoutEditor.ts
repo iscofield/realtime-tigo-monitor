@@ -344,10 +344,11 @@ export function useLayoutEditor(options: UseLayoutEditorOptions = {}) {
       // Save panel positions first
       await updatePanelPositions(positions);
 
-      // Save layout config (overlay size and image scale)
+      // Save layout config (overlay size, image scale, and blank background flag)
       await updateLayoutConfig({
         overlay_size: overlaySize,
         image_scale: effectiveImageScale,
+        use_blank_background: layoutConfig?.use_blank_background ?? false,
       });
 
       // Update initial refs for potential future discard

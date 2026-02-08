@@ -300,6 +300,7 @@ export async function getLayoutConfig(): Promise<LayoutConfig> {
 export interface LayoutUpdatePayload {
   overlay_size: number;
   image_scale: number;
+  use_blank_background: boolean;
 }
 
 /**

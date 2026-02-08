@@ -3,7 +3,7 @@
  */
 
 import type { CSSProperties } from 'react';
-import { Undo2, Redo2, Grid3X3, Save, X, Trash2, Upload, ImageMinus } from 'lucide-react';
+import { Undo2, Redo2, Grid3X3, Save, X, Trash2, Image } from 'lucide-react';
 
 interface EditorToolbarProps {
   hasUnsavedChanges: boolean;
@@ -23,9 +23,7 @@ interface EditorToolbarProps {
   onUndo: () => void;
   onRedo: () => void;
   onDeselectAll: () => void;
-  onImageUpload: () => void;
-  onImageDelete?: () => void;
-  hasImage?: boolean;
+  onChangeBackground: () => void;
 }
 
 const toolbarStyle: CSSProperties = {
@@ -157,9 +155,7 @@ export function EditorToolbar({
   onUndo,
   onRedo,
   onDeselectAll,
-  onImageUpload,
-  onImageDelete,
-  hasImage,
+  onChangeBackground,
 }: EditorToolbarProps) {
   return (
     <div style={toolbarStyle}>
@@ -334,27 +330,15 @@ export function EditorToolbar({
         </>
       )}
 
-      {/* 10. Upload image */}
+      {/* 10. Change background */}
       <button
         style={secondaryButtonStyle}
-        onClick={onImageUpload}
-        title="Upload new layout image"
+        onClick={onChangeBackground}
+        title="Change background image"
       >
-        <Upload size={16} />
-        Upload Image
+        <Image size={16} />
+        Change Background
       </button>
-
-      {/* 10b. Delete image */}
-      {hasImage && onImageDelete && (
-        <button
-          style={secondaryButtonStyle}
-          onClick={onImageDelete}
-          title="Delete layout image"
-        >
-          <ImageMinus size={16} />
-          Delete Image
-        </button>
-      )}
 
       {/* 11. Spacer */}
       <div style={{ flexGrow: 1 }} />
