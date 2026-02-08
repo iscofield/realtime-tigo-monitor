@@ -3,14 +3,17 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import List
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field as PydanticField
 
 from . import VERSION
 from .config import get_settings
+from .log_service import LogService
 from .panel_service import PanelService
 from .websocket_manager import ConnectionManager
 from .mqtt_client import MQTTClient
@@ -37,6 +40,7 @@ ws_manager = ConnectionManager(
     heartbeat_interval=settings.ws_heartbeat_interval,
 )
 mqtt_client: MQTTClient | None = None
+log_service: LogService | None = None
 
 
 async def handle_mqtt_message(data: dict) -> None:
@@ -129,7 +133,7 @@ async def mock_panel_loop(sn: str, string: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global mqtt_client, mock_panel_tasks, temp_image_cleanup_task
+    global mqtt_client, mock_panel_tasks, temp_image_cleanup_task, log_service
 
     # Load panel configuration (FR-1.5)
     # Allow startup without config for setup wizard
@@ -144,6 +148,12 @@ async def lifespan(app: FastAPI):
     # Start WebSocket background tasks
     ws_manager.start_background_tasks()
 
+    # Initialize log service
+    log_service = LogService(settings.log_dir, settings.log_retention_days)
+    log_service.prune_old_logs()
+    log_service.load_from_disk()
+    pruning_task = asyncio.create_task(log_service._pruning_loop())
+
     # Apply mock data if enabled (FR-2.3)
     if settings.use_mock_data:
         panel_service.apply_mock_data()
@@ -154,11 +164,12 @@ async def lifespan(app: FastAPI):
                 task = asyncio.create_task(mock_panel_loop(panel.sn, panel.string))
                 mock_panel_tasks.append(task)
     else:
-        # Start MQTT client with state, temp_nodes, and node_mappings handlers
+        # Start MQTT client with state, temp_nodes, node_mappings, and log handlers
         mqtt_client = MQTTClient(
             on_message=handle_mqtt_message,
             on_temp_nodes=handle_temp_nodes,
             on_node_mappings=handle_node_mappings,
+            on_log=log_service.ingest,
         )
         await mqtt_client.start()
         logger.info("MQTT client started")
@@ -170,6 +181,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    pruning_task.cancel()
+    try:
+        await pruning_task
+    except asyncio.CancelledError:
+        pass
     await ws_manager.stop_background_tasks()
     for task in mock_panel_tasks:
         task.cancel()
@@ -365,3 +381,86 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         ws_manager.disconnect(websocket)
+
+
+@app.websocket("/ws/logs")
+async def logs_websocket(websocket: WebSocket):
+    if log_service is None:
+        await websocket.close(code=1011, reason="Log service not available")
+        return
+    await websocket.accept()
+    log_service.add_connection(websocket)
+    try:
+        initial = {
+            "type": "initial",
+            "systems": log_service.get_systems(),
+            "logs": log_service.get_all_logs(),
+        }
+        await websocket.send_json(initial)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception("Log WebSocket error")
+    finally:
+        log_service.remove_connection(websocket)
+
+
+@app.get("/api/logs/systems")
+async def get_log_systems():
+    if log_service is None:
+        raise HTTPException(status_code=503, detail="Log service not available")
+    return {"systems": log_service.get_systems()}
+
+
+@app.get("/api/logs/{system}")
+async def get_logs(
+    system: str,
+    days: int = Query(default=7, ge=1, le=30),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+):
+    if log_service is None:
+        raise HTTPException(status_code=503, detail="Log service not available")
+    if not LogService._validate_system(system):
+        raise HTTPException(status_code=404, detail="System not found")
+    systems = log_service.get_systems()
+    if system not in systems:
+        raise HTTPException(status_code=404, detail="System not found")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_str = cutoff.isoformat()
+    all_entries = log_service.get_logs_for_system(system)
+    filtered = [e for e in all_entries if e.get("ts", "") >= cutoff_str]
+    filtered.sort(key=lambda e: e.get("ts", ""), reverse=True)
+    total = len(filtered)
+    entries = filtered[offset : offset + limit]
+    return {
+        "system": system,
+        "entries": entries,
+        "total": total,
+        "has_more": offset + limit < total,
+    }
+
+
+class LogEntryModel(BaseModel):
+    ts: str = PydanticField(min_length=1)
+    line: str = PydanticField(max_length=10300)
+    seq: int = PydanticField(ge=0)
+
+
+class InjectLogRequest(BaseModel):
+    system: str = PydanticField(pattern=r"^[a-zA-Z0-9_-]+$", max_length=64)
+    entry: LogEntryModel
+
+
+@app.post("/api/test/inject-log", status_code=201)
+async def inject_log(req: InjectLogRequest):
+    if not settings.use_mock_data:
+        raise HTTPException(status_code=404)
+    if log_service is None:
+        raise HTTPException(status_code=503, detail="Log service not available")
+    accepted = await log_service.ingest(req.system, req.entry.model_dump())
+    if not accepted:
+        raise HTTPException(status_code=422, detail="Entry rejected by validation")
+    return {"status": "ok"}

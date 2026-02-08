@@ -33,6 +33,8 @@ services:
       - ../config:/app/config
       # Assets directory for layout images (writable for layout editor uploads)
       - ./backend/assets:/app/assets
+      # Log directory for CCA log persistence
+      - ./backend/logs:/app/logs
       # Mount taptap state files for status checking (read-only)
       # Update these paths if your tigo-mqtt data directory is elsewhere
       - ../tigo-mqtt/data/primary:/app/state/primary:ro
