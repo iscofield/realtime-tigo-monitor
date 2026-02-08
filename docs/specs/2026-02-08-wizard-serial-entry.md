@@ -12,9 +12,9 @@ By allowing serial entry in the wizard, users who have their serial numbers avai
 
 ### FR-1: Serial Entry Step
 
-**FR-1.1:** A new wizard step "Panel Serials" SHALL be inserted between "System Topology" (step 2) and "Generate & Download" (step 3), making it step 3 of 7.
+**FR-1.1:** A new wizard step "Panel Serials" SHALL be inserted between "System Topology" (step 2) and "Generate & Download" (previously step 3, now step 4), making it step 3 of 7. All subsequent steps shift by one: Generate & Download becomes step 4, Discovery becomes step 5, Validation becomes step 6, and Review & Save becomes step 7. No hardcoded step indices are used — all step navigation is driven by `STEP_ORDER` array lookups. The Backup & Restore spec's `RESTORE_SKIP_STEPS`, step indicator filtering, and `goNext`/`goBack` skip logic (FR-5.3 of that spec) must also be updated to account for 3 skipped steps instead of 2.
 
-**FR-1.2:** The step SHALL display a heading "Panel Serial Numbers" with explanatory text: "Enter the serial numbers for each panel. These are printed on the back of each Tigo optimizer and are typically 8-10 digit numbers."
+**FR-1.2:** The step SHALL display a heading "Panel Serial Numbers" with explanatory text: "Enter the serial numbers for each panel. These are printed on the back of each Tigo optimizer. Serials are typically 8-10 characters and may contain letters and numbers."
 
 **FR-1.3:** The step SHALL be optional — the user MAY skip it via a "Skip — Use Placeholders" button. If skipped, the existing placeholder behavior is preserved.
 
@@ -28,55 +28,84 @@ By allowing serial entry in the wizard, users who have their serial numbers avai
 - **Position** — read-only, showing the label (e.g., "A1", "A2")
 - **Serial Number** — editable text input field
 
-**FR-2.3:** Serial number inputs SHALL accept alphanumeric characters (uppercase letters and digits). Input SHALL be auto-uppercased. Maximum length SHALL be 20 characters (`maxLength={20}`).
+**FR-2.3:** Serial number inputs SHALL accept alphanumeric characters. Lowercase letters SHALL be accepted as input and auto-uppercased on every keystroke via a controlled input pattern (`onChange` handler applies `.toUpperCase()` before setting state). The `input` element SHALL additionally have `style={{ textTransform: 'uppercase' }}` as a CSS-level visual hint so the field always appears uppercase even before the React re-render. The stored and validated value contains only uppercase letters and digits. Maximum length SHALL be 20 characters (`maxLength={20}`). The validation regex applied after uppercasing is: `const SERIAL_PATTERN = /^[A-Z0-9]{4,20}$/;`
 
-**FR-2.4:** Serial number inputs SHALL validate that the value is non-empty and at least 4 characters long when filled. Invalid entries SHALL show inline validation (red border + message).
+**Security note:** The backend `generate_ini_config` function SHOULD validate that panel serials are alphanumeric (`/^[A-Z0-9]+$/`) before writing to INI, as a defense-in-depth measure against client-side validation bypass. Serial numbers are written into the `MODULES` line of the INI config; INI metacharacters (`;`, `=`, `[`, `]`, newlines) could corrupt the file if not validated server-side.
+
+**FR-2.4:** Serial number inputs SHALL validate that the value is non-empty and at least 4 characters long when filled. Validation SHALL trigger on blur (when the field loses focus) and on Next button press. While the user is actively typing, no min-length or format errors SHALL be shown — only the `maxLength` attribute constrains live input. Fields that have never been focused and blurred SHALL NOT show validation errors.
+
+A serial field has three states:
+- **Empty** (0 characters): Counts as "not entered" for FR-4.1/FR-4.2 all-or-nothing tracking. No validation error shown.
+- **Incomplete** (1-3 characters after blur): Shows inline validation error. Counts as "entered" for FR-4.1 (blocks skip).
+- **Valid** (4-20 alphanumeric characters after uppercase): No error. Counts as "entered."
+
+Invalid entries SHALL show inline validation with a red border and specific error message text:
+- Too short: "Serial must be at least 4 characters"
+- Non-alphanumeric: "Only letters and numbers allowed"
+- Duplicate: See FR-2.6 for duplicate-specific message format
 
 **FR-2.5:** The table SHALL show a per-string completion count (e.g., "3 of 8 entered").
 
-**FR-2.6:** Serial numbers MUST be unique across all panels globally (not just within a single CCA or string). If a duplicate is detected, the input field SHALL show an inline validation error: "Duplicate — this serial is already entered for {other_label}" (e.g., "Duplicate — this serial is already entered for A3"). The "Next" button SHALL be disabled while any duplicates exist.
+**FR-2.6:** Serial numbers MUST be unique across all panels globally (not just within a single CCA or string). Duplicate detection SHALL be case-insensitive (all comparisons performed on uppercased values), ensuring consistent behavior regardless of when uppercasing occurs in the pipeline.
+
+When a duplicate is detected, **both** fields with the same serial SHALL show a validation error. The message for each field SHALL reference the other label. When the duplicate is within the same CCA, the simple label suffices: "Duplicate — also entered for A3". When the duplicate is in a different CCA, the label SHALL be CCA-qualified: "Duplicate — also entered for primary/A3". When either field is changed to resolve the duplicate, the error on the remaining field SHALL be immediately cleared.
+
+The "Next" button SHALL be disabled while any duplicates exist.
+
+**Implementation:** Global duplicate detection SHALL use a `Map<string, string>` (uppercased serial to CCA-qualified label, e.g., `"12345678" -> "primary/A3"`) built once on step mount and updated incrementally on each input change. Lookup is O(1) per field change. The map SHALL be rebuilt when bulk import populates values.
 
 ### FR-3: Bulk Import
 
 **FR-3.1:** Below each CCA card's table UI, a collapsible section labeled "Bulk Import" SHALL be available. When expanded, it SHALL show a textarea and an "Import" button.
 
-**FR-3.2:** The textarea SHALL accept serial numbers in CSV format (comma-separated) or TSV format (tab-separated, for spreadsheet paste). Newline-separated values SHALL also be accepted. The parser SHALL auto-detect the delimiter by checking for tabs first, then commas, then treating each line as a single value. Serial numbers are alphanumeric-only (per FR-2.3), so they cannot contain delimiter characters (commas, tabs, newlines). If a parsed value contains a delimiter character after splitting, it is treated as-is and will fail the alphanumeric validation in FR-3.7.
+**FR-3.2:** The textarea SHALL accept serial numbers in CSV format (comma-separated), TSV format (tab-separated, for spreadsheet paste), or newline-separated values. The parser SHALL use a combined split approach: split on any delimiter character (tabs, commas, or newlines) in a single pass using the regex `/[\t,\r\n]+/`, then trim and filter empty values. This handles the common "paste from spreadsheet grid" case where input contains both row separators (newlines) and column separators (tabs or commas). Serial numbers are alphanumeric-only (per FR-2.3), so they cannot contain delimiter characters. Quoted fields with internal delimiters (e.g., `"123,456"`) are NOT supported — the comma inside quotes will be treated as a delimiter. The help text in the bulk import UI SHALL state: "Paste serial numbers separated by commas, tabs, or newlines (one per line)."
 
-**FR-3.3:** On clicking "Import", the system SHALL parse the input and validate:
-- The number of parsed values MUST exactly match the total panel count for that CCA (sum of all string panel counts). If the count does not match, the import SHALL fail with an error message: "Expected {expected} serial numbers for CCA '{name}', but found {actual}. Please check your input — every panel must have exactly one serial number."
-- Each parsed value MUST be non-empty after trimming whitespace. Blank entries SHALL cause a failure: "Found blank entry at position {n}. All values must be non-empty."
+**FR-3.3:** On clicking "Import", the system SHALL first check if the textarea is empty or contains only whitespace. If so, show: "Please paste or type serial numbers before importing." This check occurs before any delimiter detection or parsing.
+
+If the textarea has content, the system SHALL parse the input and validate:
 - Empty lines at the end of the input SHALL be trimmed before parsing (to handle trailing newlines from copy-paste).
+- The number of parsed values MUST exactly match the total panel count for that CCA (sum of all string panel counts). If the count does not match, the import SHALL fail with an error message: "Expected {expected} serial numbers for CCA '{name}', but found {actual}. Please check your input — every panel must have exactly one serial number."
+- All validation errors (blanks, non-alphanumeric, too short, too long) SHALL be collected and reported together rather than fail-fast on the first error. The combined error message SHALL list all issues: "{N} invalid entries found:" followed by each error (e.g., "Position 3: blank entry", "Position 7: 'AB@C' is not alphanumeric", "Position 12: too short (2 chars)"). Error values displayed in messages SHALL be truncated to 30 characters with an ellipsis to prevent UI-breaking input.
+- The bulk import textarea SHALL have a `maxLength={10000}` attribute to prevent excessively large pastes.
+- The Import button SHALL show a brief loading state (disabled with spinner) during parsing. For imports completing under 100ms, the loading state may be imperceptible, which is acceptable.
 
 **FR-3.4:** On successful bulk import, the parsed serials SHALL immediately populate the table view above in order: filling string A positions first (A1, A2, ...), then string B positions, etc., following the string order defined in topology. After populating, the global duplicate detection (FR-2.6) SHALL run across all panels (including other CCAs already filled). Any duplicates introduced by the import will be shown as inline validation errors in the table.
 
-**FR-3.5:** If a bulk import overwrites existing manually-entered serials, no confirmation is needed — the import replaces all values for that CCA.
+Additionally, `parseBulkSerials` SHALL check for duplicates within the imported batch itself before returning success. If duplicate serials exist within the batch, the import SHALL fail with: "Duplicate serial '{value}' found at positions {n} and {m}." This provides fail-fast feedback consistent with the other import validations, rather than requiring the user to hunt through the table for duplicates.
 
-**FR-3.6:** A successful bulk import SHALL collapse the bulk import section and show a brief success message (e.g., "Imported 24 serial numbers").
+**FR-3.5:** If a bulk import would overwrite existing non-empty serial values for the CCA, a confirmation SHALL be shown: "This will replace {n} existing serial numbers for CCA '{name}'. Continue?" with "Replace" (primary) and "Cancel" (secondary) buttons. If no existing values are populated (all fields empty), no confirmation is needed. This protects against accidental loss of manually-entered data, since there is no undo mechanism.
 
-**FR-3.7:** Each parsed value from bulk import SHALL be validated against the same format rules as manual entry: alphanumeric only (FR-2.3), at least 4 characters (FR-2.4), maximum 20 characters (FR-2.3). Surrounding double-quote characters SHALL be stripped before validation (to handle spreadsheet copy-paste of quoted fields). Values failing format validation SHALL cause the import to fail with a descriptive error (e.g., "Invalid serial at position 5: 'AB@C'. Serials must be alphanumeric only.").
+**FR-3.6:** A successful bulk import SHALL collapse the bulk import section and show a brief success message (e.g., "Imported 24 serial numbers"). If the import passed all count/format validation but introduced cross-CCA duplicates detected by global duplicate detection (FR-2.6), the bulk import section SHALL NOT collapse. Instead, display a warning: "Imported {n} serial numbers. {d} duplicates detected with other CCAs — see highlighted fields above." The success/warning message SHALL use `role="alert"` for screen reader announcement.
+
+**FR-3.7:** Each parsed value from bulk import SHALL be validated against the same format rules as manual entry: alphanumeric only (FR-2.3), at least 4 characters (FR-2.4), maximum 20 characters (FR-2.3). Surrounding double-quote characters SHALL be stripped iteratively before validation: `while (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);`. This handles both single-quoted (`"SER001"`) and double-quoted (`""SER001""`) spreadsheet exports. Partial or mismatched quotes (e.g., `"SER001` without closing quote) are treated as literal characters and will fail the alphanumeric validation. Values failing format validation SHALL be included in the aggregated error report (per FR-3.3). Error messages SHALL render as React text nodes (not `dangerouslySetInnerHTML`) to prevent XSS.
 
 ### FR-4: All-or-Nothing Validation
 
 **FR-4.1:** Serial entry SHALL be all-or-nothing globally. Either every panel across all CCAs has a serial entered, or no panels have serials (skip entirely).
 
-**FR-4.2:** If the user has entered serials for some but not all panels and attempts to proceed, the step SHALL display a validation error: "Serial numbers must be entered for all {total} panels, or skipped entirely. Currently {entered} of {total} are filled."
+If the topology defines zero total panels (all CCAs have zero strings or all strings have zero panels), the Serial Entry step SHALL be automatically skipped — the wizard proceeds directly from Topology to Generate & Download. The step SHALL NOT be rendered in this case.
 
-**FR-4.3:** The "Skip — Use Placeholders" button SHALL be disabled if any serials have been entered. A tooltip or hint SHALL explain: "Clear all entered serials to use placeholder mode."
+If the user navigates back and returns to the Serial Entry step with partial data, the state is preserved. The user must either complete all serials, or click "Clear All" before they can skip.
 
-**FR-4.4:** A "Clear All" button SHALL be provided to reset all serial fields across all CCAs, re-enabling the skip option.
+**FR-4.2:** When the step is in a partial-fill state (some but not all panels have serials entered), a persistent inline status banner SHALL be displayed: "Serial numbers must be entered for all {total} panels, or skipped entirely. Currently {entered} of {total} are filled." This banner is informational (not error-gated on a button click) since the Next button is already disabled (FR-1.4) and the Skip button is already disabled (FR-4.3) in this state. The banner helps the user understand why neither action is available.
+
+**FR-4.3:** The "Skip — Use Placeholders" button SHALL be disabled if any serials have been entered. A static helper text SHALL appear below the disabled Skip button: "Clear all entered serials to use placeholder mode." This text SHALL be associated with the button via `aria-describedby`.
+
+**FR-4.4:** A "Clear All" button SHALL be provided at the top of the Serial Entry step (after the heading and before the first CCA card) to reset all serial fields across all CCAs, re-enabling the skip option. The button SHALL have `aria-label="Clear all serial numbers for all CCAs"`. Clicking it SHALL show a confirmation dialog: "Clear all {n} entered serial numbers? This cannot be undone." with "Clear All" (destructive, red) and "Cancel" buttons. The confirmation modal SHALL trap focus and be dismissible via Escape (equivalent to Cancel). There is no undo mechanism for this action.
 
 ### FR-5: Skip Warning
 
 **FR-5.1:** When the user clicks "Skip — Use Placeholders", a confirmation modal SHALL appear with:
 - **Title:** "Config Will Require Manual Editing"
-- **Body:** "The downloaded config files will contain placeholder serial numbers (PLACEHOLDER_A1, PLACEHOLDER_A2, etc.) instead of real panel serials. You will need to manually edit each config-{name}.ini file to replace placeholders with actual serial numbers before the system will function correctly."
+- **Body:** "The downloaded config files will contain placeholder serial numbers (PLACEHOLDER_A1, PLACEHOLDER_A2, etc.) instead of real panel serials. You will need to manually edit each config-\<name\>.ini file to replace placeholders with actual serial numbers before the system will function correctly." (The `<name>` is a generic pattern showing the CCA name substitution, not a template variable — it is rendered as static text.)
 - **Buttons:** "Continue with Placeholders" (primary) and "Go Back" (secondary)
+- **Dismiss behavior:** Pressing Escape or clicking outside the modal SHALL dismiss it (equivalent to "Go Back"). The modal SHALL use a semi-transparent backdrop overlay and trap focus per NFR-1.5.
 
 **FR-5.2:** If the user confirms the skip, the wizard SHALL proceed to the Generate & Download step with no serial data (existing placeholder behavior).
 
 ### FR-6: Placeholder Logging
 
-**FR-6.1:** When the backend generates a config ZIP with placeholder serials (no panels provided or empty panels list), it SHALL log a warning-level message: `"Generated tigo-mqtt config with placeholder serials for CCA '{cca_name}'. Config requires manual serial number entry before deployment."`
+**FR-6.1:** The log SHALL be emitted in the existing `except TigoMQTTGeneratorError` handler in `generate_tigo_mqtt_zip` when `generate_ini_config` fails due to missing panel data for a CCA. The warning-level message SHALL be: `logger.warning("Generated tigo-mqtt config with placeholder serials for CCA '%s'. Config requires manual serial number entry before deployment.", cca_name)`. This uses the `tigo_mqtt_generator` module logger and %-style formatting for structured logging compatibility.
 
 **FR-6.2:** This log message SHALL be emitted once per CCA that uses placeholders.
 
@@ -84,9 +113,13 @@ By allowing serial entry in the wizard, users who have their serial numbers avai
 
 **FR-7.1:** Serial number entries SHALL be stored in the wizard state and persisted to localStorage alongside existing wizard state.
 
-**FR-7.2:** The serial data SHALL be stored as a `Record<string, string>` mapping panel labels (e.g., "A1", "B3") to serial numbers, namespaced by CCA name. The structure SHALL be: `Record<string, Record<string, string>>` where the outer key is CCA name and inner key is panel label.
+**FR-7.2:** The serial data SHALL be stored as a `Record<string, string>` mapping panel labels (e.g., "A1", "B3") to serial numbers, namespaced by CCA name. The structure SHALL be: `Record<string, Record<string, string>>` where the outer key is CCA name and inner key is panel label. `Record` (plain object) is used intentionally rather than `Map<string, T>` because `Map` does not serialize with `JSON.stringify()` — a known project pitfall.
 
-**FR-7.3:** If the user navigates back to the Topology step and submits any change (including CCA name, serial device, string names, or panel counts), the serial data SHALL be invalidated (cleared). This is by design: since CCA names are used as keys in the serial data structure, any topology change may invalidate the mapping. The existing `invalidateDownstream` mechanism is reused — it clears all downstream state when any prior step changes. Users should finalize topology before entering serial numbers.
+**Precondition:** CCA names MUST be unique, as enforced by the System Topology step's validation. This uniqueness guarantee is relied upon for the serial data key structure. CCA name comparison is case-sensitive (the topology step stores names as-entered).
+
+**FR-7.3:** If the user navigates back to the Topology step and clicks Next (submitting the step), the existing `invalidateDownstream` mechanism clears all downstream step state, including `serialEntries`. The explicit `serialEntries = null` in the invalidation code is shown for clarity but is handled automatically by the downstream cascade. The `invalidateDownstream` mechanism fires on any forward navigation from an earlier step, regardless of whether data actually changed. This is a known UX tradeoff: navigating back to topology and proceeding will clear all entered serial numbers even if no topology changes were made. Users should finalize topology before entering serial numbers.
+
+**Note:** This is intentionally unconditional (no shallow comparison of topology data). Implementing change detection would add complexity for a marginal UX improvement. This tradeoff is acceptable because the serial entry step supports bulk import, making re-entry faster.
 
 **FR-7.4:** If the user navigates back to the Serial Entry step after having previously filled it, the previously entered values SHALL be preserved (unless invalidated by topology changes per FR-7.3).
 
@@ -97,35 +130,55 @@ By allowing serial entry in the wizard, users who have their serial numbers avai
 {
   serial: enteredSerial,
   cca: ccaName,
-  string: stringName,       // e.g., "A"
-  tigo_label: label,        // e.g., "A1"
+  string: stringName,       // Short identifier, e.g., "A" — NOT a display name
+  tigo_label: label,        // e.g., "A1" — constructed as `${str.name}${i}`
   display_label: label,     // Same as tigo_label (no translation needed)
+  // position is OMITTED — it is Optional in both the TS type and Pydantic model
 }
 ```
+
+**Important:** The `string` field value comes from `StringConfig.name` in the topology data, which is a short identifier (e.g., "A", "B"), not a display name. The `tigo_label` is constructed as `${str.name}${i}` (e.g., "A1", "A2"). Verify that `StringConfig.name` in `types/config.ts` matches this assumption. See the `SystemConfig` cross-reference in Component Architecture for the type shape.
+
+**Note on field naming:** The HTTP request body uses camelCase keys (`tigoLabel`, `displayLabel`) due to the Pydantic model's `alias_generator=to_camel` configuration. The TypeScript API layer handles this conversion. The snake_case names shown above are the logical field names.
 
 **FR-8.2:** When panels are provided to the backend, the existing `generate_ini_config` function SHALL be used (not `generate_placeholder_ini`), producing a fully functional `MODULES` line with real serial numbers.
 
 **FR-8.3:** The generated INI SHALL NOT contain the placeholder comment header ("NOTE: This is a PLACEHOLDER configuration.") when real serials are provided.
 
-**FR-8.4:** If the config generation API returns an error (network failure or backend validation error), the error message SHALL be displayed on the Generate & Download step. Serial data SHALL be preserved in wizard state so the user can navigate back to the Serial Entry step to correct issues without re-entering all serials. The "Download" button SHALL remain available for retry after transient errors.
+**FR-8.4:** If the config generation API returns an error, the error SHALL be handled based on type:
+- **Network errors / HTTP 5xx:** Display "Download failed. Please try again." with a "Retry Download" button.
+- **HTTP 422 validation errors:** Display the backend error message (from the standard `{detail: string}` response format) and show a "Go Back to Fix" button that navigates to the Serial Entry step.
+- **Other HTTP errors (400, 404, etc.):** Display the error status and message with a "Retry Download" button.
+
+In all cases, serial data SHALL be preserved in wizard state so the user can navigate back to the Serial Entry step to correct issues without re-entering all serials.
 
 ### FR-9: Step Indicator Updates
 
 **FR-9.1:** The `WizardStepIndicator` component SHALL be updated to display the new step. The step sequence SHALL be: MQTT Config → System Topology → Panel Serials → Generate & Download → Discovery → Validation → Review & Save.
 
-**FR-9.2:** The step names in the indicator SHALL use short labels for space efficiency. The new step SHALL be labeled "Panel Serials".
+**FR-9.2:** The step names in the indicator SHALL use short labels for space efficiency. The new step SHALL be labeled "Panel Serials" (the step heading per FR-1.2 uses the full "Panel Serial Numbers"). The `WizardStepIndicator` SHALL accommodate 7 steps without horizontal overflow or label truncation at viewport widths >= 768px. On narrower viewports, the indicator MAY use abbreviated labels or a horizontally scrollable container.
 
 ## Non-Functional Requirements
 
-**NFR-1.1:** The serial entry step SHALL handle up to 100 panels per CCA with input latency under 100ms when typing in any serial field.
+**NFR-1.1:** The serial entry step SHALL handle up to 100 panels per CCA with input latency under 100ms when typing in any serial field. Input latency is defined as the React render cycle time from `onChange` to paint — the component re-render triggered by a serial field change SHALL complete in under 100ms with 100 panels mounted, as measured by React DevTools Profiler on a mid-range device (4-core CPU).
+
+**Implementation constraint:** The serial entry component SHALL NOT trigger re-renders of all input fields when a single field changes. Each serial input row SHALL be memoized (`React.memo`) to prevent O(n) re-renders. The duplicate detection map (FR-2.6) enables O(1) lookups per keystroke.
 
 **NFR-1.2:** Bulk import parsing SHALL complete in under 100ms for up to 200 serial numbers.
 
 **NFR-1.3:** The serial entry UI SHALL follow the same visual style (inline CSSProperties objects, same color palette, card layout) as the existing Topology and Generate steps.
 
-**NFR-1.4:** The serial entry step state SHALL be included in the 7-day localStorage persistence. Serial data SHALL NOT exceed 50KB of storage (sufficient for hundreds of serials). If localStorage persistence fails (quota exceeded, private browsing, or disabled), the existing silent-failure behavior (console warning) is acceptable. Serial data will still be available in the current session's memory but will not survive page reload.
+**NFR-1.4:** The serial entry step state SHALL be included in the 7-day localStorage persistence. The 50KB storage estimate is for planning purposes only — no runtime enforcement is needed. At ~50 bytes per panel entry (key + value + JSON overhead), 50KB supports approximately 1,000 panels, which far exceeds any real-world deployment. The practical upper bound is constrained by the topology step (which limits CCA and string count). If localStorage persistence fails (quota exceeded, private browsing, or disabled), the existing silent-failure behavior (console warning) is acceptable. Serial data will still be available in the current session's memory but will not survive page reload.
 
-**NFR-1.5:** Serial number input fields SHALL have `aria-label` attributes in the format "Serial number for panel {label}" (e.g., "Serial number for panel A1"). Validation error messages SHALL use `aria-describedby` to associate errors with their input fields. The skip confirmation modal (FR-5.1) SHALL trap focus and be dismissible via Escape key. The bulk import textarea SHALL have an `aria-label` of "Paste serial numbers for CCA {name}".
+**NFR-1.5:** Accessibility requirements:
+
+- **Input labels:** Serial number input fields SHALL have `aria-label` attributes in the format "Serial number for panel {label}" (e.g., "Serial number for panel A1").
+- **Error association:** Validation error messages SHALL use `aria-describedby` to associate errors with their input fields. When a field with a validation error receives focus, the error SHALL be announced by screen readers.
+- **Keyboard navigation:** Serial input fields SHALL be focusable in DOM order (A1, A2, ... per string, then next string within the CCA card). Tab order SHALL follow the visual layout. Standard Tab/Shift+Tab navigation between fields is sufficient.
+- **Error announcements:** Duplicate detection errors (FR-2.6) that appear asynchronously SHALL use `aria-live="polite"` to announce to screen readers. Bulk import success and error messages SHALL use `role="alert"` for immediate announcement.
+- **Modals:** The skip confirmation modal (FR-5.1) and Clear All confirmation (FR-4.4) SHALL trap focus and be dismissible via Escape key.
+- **Bulk import:** The bulk import textarea SHALL have an `aria-label` of "Paste serial numbers for CCA {name}".
+- **Status banner:** The partial-fill status banner (FR-4.2) SHALL use `role="status"` for screen reader awareness.
 
 ## High Level Design
 
@@ -189,7 +242,7 @@ serialEntries: Record<string, Record<string, string>> | null;
 **SerialEntryStep component props:**
 ```typescript
 interface SerialEntryStepProps {
-  topology: SystemConfig;
+  topology: SystemConfig;  // See SystemConfig type in types/config.ts (Phase 1 spec)
   serialEntries: Record<string, Record<string, string>> | null;
   onNext: (serials: Record<string, Record<string, string>> | null) => void;
   onBack: () => void;
@@ -200,21 +253,24 @@ interface SerialEntryStepProps {
 ```typescript
 function parseBulkSerials(input: string, expectedCount: number, ccaName: string):
   { serials: string[] } | { error: string } {
+  // 0. Empty input check
+  if (!input.trim()) {
+    return { error: 'Please paste or type serial numbers before importing.' };
+  }
+
   // 1. Trim trailing empty lines
   const trimmed = input.replace(/[\r\n]+$/, '');
 
-  // 2. Auto-detect delimiter: tabs > commas > newlines
-  let values: string[];
-  if (trimmed.includes('\t')) {
-    values = trimmed.split(/\t/).map(v => v.trim());
-  } else if (trimmed.includes(',')) {
-    values = trimmed.split(',').map(v => v.trim());
-  } else {
-    values = trimmed.split(/\r?\n/).map(v => v.trim());
-  }
+  // 2. Combined split: handle any mix of tabs, commas, and newlines
+  let values = trimmed.split(/[\t,\r\n]+/).map(v => v.trim()).filter(v => v !== '');
 
-  // 3. Strip surrounding quotes (handles spreadsheet copy-paste)
-  values = values.map(v => v.replace(/^"(.*)"$/, '$1'));
+  // 3. Strip surrounding quotes iteratively (handles double-quoted spreadsheet exports)
+  values = values.map(v => {
+    while (v.startsWith('"') && v.endsWith('"') && v.length >= 2) {
+      v = v.slice(1, -1);
+    }
+    return v;
+  });
 
   // 4. Validate count (must match exactly — prevents off-by-one errors)
   if (values.length !== expectedCount) {
@@ -223,33 +279,40 @@ function parseBulkSerials(input: string, expectedCount: number, ccaName: string)
     };
   }
 
-  // 5. Check for blanks
-  const blankIndex = values.findIndex(v => v === '');
-  if (blankIndex !== -1) {
-    return { error: `Found blank entry at position ${blankIndex + 1}. All values must be non-empty.` };
+  // 5. Collect ALL validation errors (blanks, format, length) — not fail-fast
+  const errors: string[] = [];
+  values.forEach((v, i) => {
+    if (v === '') {
+      errors.push(`Position ${i + 1}: blank entry`);
+    } else if (!/^[A-Za-z0-9]+$/.test(v)) {
+      const display = v.length > 30 ? v.substring(0, 30) + '...' : v;
+      errors.push(`Position ${i + 1}: '${display}' is not alphanumeric`);
+    } else if (v.length < 4) {
+      errors.push(`Position ${i + 1}: too short (${v.length} chars)`);
+    } else if (v.length > 20) {
+      errors.push(`Position ${i + 1}: too long (${v.length} chars)`);
+    }
+  });
+  if (errors.length > 0) {
+    return { error: `${errors.length} invalid entries found:\n${errors.join('\n')}` };
   }
 
-  // 6. Validate alphanumeric format (FR-2.3) and min length (FR-2.4)
-  const invalidIndex = values.findIndex(v => !/^[A-Za-z0-9]+$/.test(v));
-  if (invalidIndex !== -1) {
-    return {
-      error: `Invalid serial at position ${invalidIndex + 1}: "${values[invalidIndex]}". Serials must be alphanumeric only.`
-    };
-  }
-  const shortIndex = values.findIndex(v => v.length < 4);
-  if (shortIndex !== -1) {
-    return {
-      error: `Serial at position ${shortIndex + 1} is too short (${values[shortIndex].length} chars). Minimum length is 4 characters.`
-    };
-  }
-  const longIndex = values.findIndex(v => v.length > 20);
-  if (longIndex !== -1) {
-    return {
-      error: `Serial at position ${longIndex + 1} is too long (${values[longIndex].length} chars). Maximum length is 20 characters.`
-    };
+  // 6. Uppercase all values
+  const uppercased = values.map(v => v.toUpperCase());
+
+  // 7. Check for duplicates within the batch
+  const seen = new Map<string, number>();
+  for (let i = 0; i < uppercased.length; i++) {
+    const prev = seen.get(uppercased[i]);
+    if (prev !== undefined) {
+      return {
+        error: `Duplicate serial '${uppercased[i]}' found at positions ${prev + 1} and ${i + 1}.`
+      };
+    }
+    seen.set(uppercased[i], i);
   }
 
-  return { serials: values.map(v => v.toUpperCase()) };
+  return { serials: uppercased };
 }
 ```
 
@@ -266,21 +329,53 @@ function serialEntriesToPanels(
       for (let i = 1; i <= str.panel_count; i++) {
         const label = `${str.name}${i}`;
         const serial = ccaSerials[label];
-        if (serial) {
-          panels.push({
-            serial,
-            cca: cca.name,
-            string: str.name,
-            tigo_label: label,
-            display_label: label,
-          });
+        if (!serial) {
+          throw new Error(
+            `Missing serial for panel ${label} in CCA ${cca.name}. ` +
+            `This indicates a validation bug — FR-4.1 should prevent partial data.`
+          );
         }
+        panels.push({
+          serial,
+          cca: cca.name,
+          string: str.name,
+          tigo_label: label,
+          display_label: label,
+        });
       }
     }
   }
+
+  // Post-loop assertion: verify count matches topology
+  const expectedCount = topology.ccas.reduce((sum, cca) =>
+    sum + cca.strings.reduce((s, str) => s + str.panel_count, 0), 0);
+  if (panels.length !== expectedCount) {
+    throw new Error(
+      `Panel count mismatch: expected ${expectedCount}, got ${panels.length}`
+    );
+  }
+
   return panels;
 }
 ```
+
+**`SystemConfig` type reference:** The `topology` parameter uses `SystemConfig` defined in `types/config.ts` (from the Multi-User Config Phase 1 spec). The relevant subset used by this function:
+```typescript
+interface StringConfig {
+  name: string;        // Short identifier, e.g., "A", "B" — NOT a display name
+  panel_count: number;
+}
+interface CCAConfig {
+  name: string;        // User-entered CCA name, e.g., "primary"
+  serial_device: string;
+  strings: StringConfig[];
+}
+interface SystemConfig {
+  ccas: CCAConfig[];
+}
+```
+
+**`Panel` type:** Uses the existing `Panel` interface from `types/config.ts`. The `position` field is `Optional` (`position?: Position | null`) so omitting it from the object literal is type-safe. Downstream steps (Discovery, Validation) handle `position: null` gracefully — they do not depend on position data from wizard-created panels.
 
 ### Wizard State Flow Changes
 
@@ -313,7 +408,7 @@ const STEP_ORDER: WizardStep[] = [
 // Location: SetupWizard.tsx, handleGoNext callback (~line 183)
 ```
 
-The invalidation logic in `invalidateDownstream` must clear `serialEntries` when topology changes:
+The invalidation logic in `invalidateDownstream` must clear `serialEntries` when topology changes, and clear download state when serials change:
 
 ```typescript
 if (changedStep === 'system-topology' || changedStep === 'mqtt-config') {
@@ -322,7 +417,13 @@ if (changedStep === 'system-topology' || changedStep === 'mqtt-config') {
   newState.discoveredPanels = {};
   newState.validationResults = null;
 }
+
+if (changedStep === 'panel-serials') {
+  newState.configDownloaded = false;  // Invalidate download since serials changed
+}
 ```
+
+**Note:** The `invalidateDownstream` mechanism clears ALL downstream step state automatically. The explicit `serialEntries = null` assignment above is shown for clarity — it is redundant with the cascade but documents the intent. Verify that `invalidateDownstream` includes `serialEntries` in the state fields it clears for the `system-topology` and `mqtt-config` branches.
 
 ### Restore-from-Backup Handling
 
@@ -332,13 +433,44 @@ The `panel-serials` step SHALL be added to `RESTORE_SKIP_STEPS` since backup res
 const RESTORE_SKIP_STEPS: WizardStep[] = ['panel-serials', 'discovery', 'validation'];
 ```
 
+**Assumption:** Backup restore assumes the INI files in the backup already contain the desired serial numbers (real or placeholder). During restore-from-backup, the serial entry step is skipped because the backup's panel data is used as-is. If the user needs to change serials after restore, they should run the wizard fresh rather than restoring from backup. Older backups created before this feature existed will not have `serialEntries` in wizard state — this is handled gracefully since `serialEntries` defaults to `null` and the step is skipped during restore regardless.
+
 ### Backend Changes
 
 The backend requires minimal changes:
 
-1. **Logging in `generate_tigo_mqtt_zip`:** The `except TigoMQTTGeneratorError` branch in `generate_tigo_mqtt_zip` (line 377) already has `logger.warning(f"Generating placeholder INI for {cca.name}: {e}")`. Replace this message with the user-friendly version specified in FR-6.1: `logger.warning(f"Generated tigo-mqtt config with placeholder serials for CCA '{cca.name}'. Config requires manual serial number entry before deployment.")`. The original exception message (`{e}`) is the technical "CCA has no panels configured" message — the new message is more helpful for operators reviewing logs.
+1. **Logging in `generate_tigo_mqtt_zip`:** The `except TigoMQTTGeneratorError` branch in `generate_tigo_mqtt_zip` (line 377) already has `logger.warning(f"Generating placeholder INI for {cca.name}: {e}")`. Replace this message with the user-friendly version specified in FR-6.1: `logger.warning("Generated tigo-mqtt config with placeholder serials for CCA '%s'. Config requires manual serial number entry before deployment.", cca_name)`. The original exception message (`{e}`) is the technical "CCA has no panels configured" message — the new message is more helpful for operators reviewing logs.
 
-2. No API contract changes — the `GenerateConfigRequest` model already accepts optional `panels`, and the generator already handles both paths (panels present → `generate_ini_config`, panels absent → `generate_placeholder_ini`). The existing `Panel` model in `config_models.py` is used as-is for serial entry panels. No new model is needed. The `position` field should be omitted (defaults to `null`) since layout positions are not set during wizard serial entry.
+2. **Defense-in-depth validation:** Add an alphanumeric check on panel serials in `generate_ini_config` (per FR-2.3 security note): `if not re.match(r'^[A-Z0-9]+$', panel.serial): raise TigoMQTTGeneratorError(f"Invalid serial format: {panel.serial}")`. This prevents INI file corruption if client-side validation is bypassed.
+
+3. No API contract changes — the `GenerateConfigRequest` model already accepts optional `panels`, and the generator already handles both paths (panels present → `generate_ini_config`, panels absent → `generate_placeholder_ini`). The existing `Panel` model in `config_models.py` is used as-is for serial entry panels. No new model is needed.
+
+### API Contract Reference
+
+The existing `POST /api/config/generate-tigo-mqtt` endpoint is reused without changes. For reference, the relevant models:
+
+**Request body** (`GenerateConfigRequest`):
+```python
+class GenerateConfigRequest(BaseModel):
+    config: SystemConfig
+    panels: list[Panel] = []  # Optional — empty list triggers placeholder generation
+```
+
+**`Panel` model** (existing in `config_models.py`):
+```python
+class Panel(BaseModel):
+    serial: str               # Alphanumeric, 4-20 chars (validated client-side per FR-2.3/FR-2.4)
+    cca: str                  # CCA name, e.g., "primary"
+    string: str               # String identifier, e.g., "A"
+    tigo_label: str           # Position label, e.g., "A1"
+    display_label: str        # Display label (same as tigo_label for wizard-created panels)
+    position: Position | None = None  # Optional — null for wizard serial entry panels
+
+    class Config:
+        alias_generator = to_camel  # HTTP body uses camelCase keys
+```
+
+**Response:** Binary ZIP file on success (`application/zip`). On validation error: HTTP 422 with `{"detail": "error message"}`. On server error: HTTP 500 with standard error response.
 
 ## Task Breakdown
 
@@ -378,29 +510,43 @@ The backend requires minimal changes:
    - Add "Panel Serials" label for the new step
    - Verify step count and layout handles 7 steps without overflow
 
-7. **Add placeholder logging to backend**
-   - Add `logger.warning()` in `generate_tigo_mqtt_zip` when placeholder INI is generated
+7. **Add placeholder logging and validation to backend**
+   - Update `logger.warning()` message in `generate_tigo_mqtt_zip` placeholder path
+   - Add defense-in-depth alphanumeric validation on panel serials in `generate_ini_config`
 
 8. **Testing via Playwright MCP**
    - Test full serial entry flow (table input → generate → verify INI has real serials)
-   - Test bulk import (CSV, TSV, newline-separated)
+   - Test bulk import (CSV, TSV, newline-separated, multi-row TSV from spreadsheet)
    - Test bulk import error cases (wrong count, blank entries, values with quotes, non-alphanumeric characters, too-short serials, too-long serials exceeding 20 chars)
+   - Test bulk import reports ALL errors at once (not just the first)
+   - Test bulk import with empty textarea shows "Please paste or type..." message
    - Test bulk import auto-uppercases all parsed values
-   - Test duplicate serial detection (inline error shown, Next disabled)
-   - Test skip flow (modal appears, placeholders generated)
-   - Test all-or-nothing validation (partial fill blocked)
-   - Test "Clear All" button resets all serial fields and re-enables Skip
+   - Test bulk import within-batch duplicate detection
+   - Test bulk import overwrite confirmation when existing values are present
+   - Test bulk import cross-CCA duplicate warning (import succeeds but section stays open)
+   - Test duplicate serial detection (both fields show error, cross-CCA labels are CCA-qualified, Next disabled)
+   - Test duplicate detection is case-insensitive
+   - Test skip flow (modal appears, Escape dismisses, click-outside dismisses, placeholders generated)
+   - Test all-or-nothing validation (partial fill shows status banner, Next disabled, Skip disabled)
+   - Test "Clear All" button shows confirmation, resets all serial fields, re-enables Skip
    - Test serial data persists in localStorage across page reload
-   - Test step indicator displays 7 steps with correct labels including "Panel Serials"
+   - Test step indicator displays 7 steps with correct labels including "Panel Serials" at >= 768px width
    - Test Tab key moves focus between serial input fields within a string table
-   - Test topology change invalidates serials
+   - Test topology change invalidates serials (even without actual data change)
    - Test restore-from-backup skips serial entry step
+   - Test zero-panels topology skips serial entry step automatically
+   - Test single-panel CCA (degenerate case: 1 string, 1 panel)
+   - Test validation fires on blur, not on keystroke (no "too short" error while typing)
+   - Test error handling: network error shows "Retry", 422 error shows "Go Back to Fix"
+   - Test `serialEntriesToPanels` throws on missing serial (validation bug detection)
 
 ## Related Specifications
 
 | Spec | Relationship | Notes |
 |------|--------------|-------|
-| None | — | This is a standalone enhancement to the existing setup wizard |
+| Multi-User Configuration - Phase 1 | Modifies | Adds step to wizard, extends `WizardStep`/`WizardState` types, modifies `invalidateDownstream`, uses `Panel` model and `downloadTigoMqttConfig` API |
+| Backup & Restore | Modifies | Adds `'panel-serials'` to `RESTORE_SKIP_STEPS`. Restore skip logic (FR-5.3 of that spec) and step indicator filtering must be updated for 3 skipped steps instead of 2 |
+| Multi-User Configuration - Phase 2 | Sibling | Layout Editor uses same `Panel` model — verify `position: null` compatibility for wizard-created panels |
 
 ## Context / Documentation
 
@@ -416,11 +562,63 @@ The backend requires minimal changes:
 
 ---
 
-**Specification Version:** 1.2
+**Specification Version:** 1.3
 **Last Updated:** February 2026
 **Authors:** Claude, Ian
 
 ## Changelog
+
+### v1.3 (February 2026)
+**Summary:** Address review iteration 3 findings — comprehensive clarifications, bug fixes, and completeness improvements
+
+**Changes:**
+- Clarified step numbering: explicitly stated all step renumbering and Backup & Restore spec impact (FR-1.1)
+- Fixed help text: "8-10 digit numbers" changed to "8-10 characters, may contain letters and numbers" (FR-1.2)
+- Specified auto-uppercase timing: on every keystroke via controlled input with CSS visual hint (FR-2.3)
+- Added backend defense-in-depth alphanumeric validation for INI file safety (FR-2.3 security note)
+- Added explicit validation regex `SERIAL_PATTERN = /^[A-Z0-9]{4,20}$/` for manual input (FR-2.3)
+- Defined validation timing: on blur and on Next press, not on keystroke (FR-2.4)
+- Defined three field states (empty, incomplete, valid) and their all-or-nothing implications (FR-2.4)
+- Specified inline error message text for too-short and non-alphanumeric errors (FR-2.4)
+- Made duplicate detection show errors on BOTH fields with CCA-qualified labels for cross-CCA duplicates (FR-2.6)
+- Specified case-insensitive duplicate detection (FR-2.6)
+- Added O(1) `Map<string, string>` implementation for duplicate detection performance (FR-2.6)
+- Replaced delimiter auto-detection with combined split on `/[\t,\r\n]+/` to handle multi-row pastes (FR-3.2)
+- Documented that quoted fields with internal delimiters are not supported (FR-3.2)
+- Added empty textarea check before parsing (FR-3.3)
+- Changed to aggregate all validation errors instead of fail-fast (FR-3.3)
+- Added `maxLength={10000}` on bulk import textarea (FR-3.3)
+- Added error value truncation to 30 chars in error messages (FR-3.3)
+- Added within-batch duplicate detection to `parseBulkSerials` (FR-3.4)
+- Added overwrite confirmation when bulk import replaces existing values (FR-3.5)
+- Added cross-CCA duplicate warning: import section stays open with warning (FR-3.6)
+- Changed quote stripping to iterative loop for double-quoted exports (FR-3.7)
+- Specified error messages render as React text nodes, not dangerouslySetInnerHTML (FR-3.7)
+- Added zero-panels auto-skip behavior (FR-4.1)
+- Added back-navigation UX note for partial data (FR-4.1)
+- Changed FR-4.2 from button-click error to persistent inline status banner (resolves FR-1.4 contradiction)
+- Changed Skip button hint from tooltip to static helper text with aria-describedby (FR-4.3)
+- Added Clear All placement, confirmation dialog, and no-undo documentation (FR-4.4)
+- Clarified skip modal body text: `<name>` is generic pattern, not template variable (FR-5.1)
+- Added Escape and click-outside dismiss behavior for skip modal (FR-5.1)
+- Aligned FR-6.1 with backend code path (except TigoMQTTGeneratorError handler) and logger format (FR-6.1)
+- Added CCA name uniqueness precondition and Record vs Map design note (FR-7.2)
+- Documented unconditional invalidation behavior and design tradeoff rationale (FR-7.3)
+- Added camelCase/snake_case field naming note for API requests (FR-8.1)
+- Added SystemConfig/StringConfig/CCAConfig type definitions (FR-8.1)
+- Specified error handling by type: network/5xx vs 422 vs other (FR-8.4)
+- Added step indicator label distinction note and viewport overflow handling (FR-9.2)
+- Defined input latency measurement method and memoization constraint (NFR-1.1)
+- Clarified 50KB is planning estimate, not enforced limit (NFR-1.4)
+- Expanded NFR-1.5 with keyboard nav, aria-live announcements, error focus, modal parity (NFR-1.5)
+- Updated parseBulkSerials code sample: combined delimiter split, iterative quote strip, aggregate errors, batch duplicates, empty input check
+- Updated serialEntriesToPanels: assertion instead of silent skip, count verification, SystemConfig type reference
+- Added panel-serials invalidation branch for configDownloaded
+- Added restore-from-backup assumption documentation
+- Added API Contract Reference section with Panel model and response schemas
+- Added backend defense-in-depth validation
+- Updated Related Specifications: now references Phase 1, Backup & Restore, and Phase 2 specs
+- Expanded test matrix: 25 test cases (was 13)
 
 ### v1.2 (February 2026)
 **Summary:** Address review iteration 2 findings — bulk import validation completeness
