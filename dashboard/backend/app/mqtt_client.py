@@ -16,10 +16,12 @@ class MQTTClient:
         on_message: Callable[[dict], Awaitable[None]],
         on_temp_nodes: Optional[Callable[[str, List[int]], Awaitable[None]]] = None,
         on_node_mappings: Optional[Callable[[str, dict], Awaitable[None]]] = None,
+        on_log: Optional[Callable[[str, dict], Awaitable[bool]]] = None,
     ):
         self.on_message = on_message
         self.on_temp_nodes = on_temp_nodes  # Callback for temp_nodes updates (FR-5.4)
         self.on_node_mappings = on_node_mappings  # Callback for node_id → serial mappings
+        self.on_log = on_log  # Callback for CCA log entries
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._retry_delay = 1  # Initial retry delay in seconds
@@ -77,6 +79,11 @@ class MQTTClient:
                     await client.subscribe(mappings_topic)
                     logger.info(f"Subscribed to topic: {mappings_topic}")
 
+                    # Subscribe to log topics for CCA log entries
+                    logs_topic = f"{settings.mqtt_topic_prefix}/+/logs"
+                    await client.subscribe(logs_topic)
+                    logger.info(f"Subscribed to topic: {logs_topic}")
+
                     async for message in client.messages:
                         if not self._running:
                             break
@@ -89,6 +96,17 @@ class MQTTClient:
                                 await self._process_temp_nodes(topic_str, payload)
                             elif topic_str.endswith("/node_mappings"):
                                 await self._process_node_mappings(topic_str, payload)
+                            elif topic_str.endswith("/logs"):
+                                prefix = settings.mqtt_topic_prefix + "/"
+                                if topic_str.startswith(prefix):
+                                    remainder = topic_str[len(prefix):]
+                                    parts = remainder.split("/")
+                                    if len(parts) == 2 and parts[1] == "logs":
+                                        system = parts[0]
+                                        if isinstance(payload, dict) and self.on_log:
+                                            await self.on_log(system, payload)
+                                        elif not isinstance(payload, dict):
+                                            logger.warning(f"Non-dict payload on log topic: {type(payload)}")
                             elif topic_str.endswith("/state"):
                                 # Extract system from topic (e.g., "taptap/primary/state" -> "primary")
                                 parts = topic_str.split("/")

@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
@@ -22,6 +23,10 @@ class Settings(BaseSettings):
 
     # Staleness Configuration
     staleness_threshold_seconds: int = 300  # 5 minutes to match Tigo reporting interval
+
+    # Log Configuration
+    log_retention_days: int = Field(default=7, ge=1, le=30)
+    log_dir: str = "/app/logs"
 
     # TapTap State File Paths (for bootstrapping status check)
     # These should be mounted from the taptap container data directories
