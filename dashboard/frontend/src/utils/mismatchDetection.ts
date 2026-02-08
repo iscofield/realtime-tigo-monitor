@@ -35,7 +35,7 @@ function calculateMedian(values: number[]): number {
 
 export function analyzeStringForMismatches(
   panels: PanelData[],
-  thresholdPercent: number = 15
+  thresholdPercent: number = 30
 ): StringAnalysis {
   // Filter to valid panels for analysis (FR-6.6: online, non-null, > 50W)
   const validPanels = panels.filter(p =>
@@ -91,7 +91,7 @@ export function analyzeStringForMismatches(
         })),
         hasMismatch: true,
         mismatchedPanels: validPanels.map(p => p.display_label),
-        warningMessage: "String has only 2 panels - unable to determine which may be misconfigured",
+        warningMessage: "String has only 2 panels — not all panels are outputting equally. This may be due to shading or panel degradation, or in some cases a wiring issue.",
       };
     }
 
@@ -143,9 +143,9 @@ export function analyzeStringForMismatches(
   let warningMessage: string | undefined;
   if (mismatchedPanels.length === 1) {
     const m = results.find(r => r.isMismatched)!;
-    warningMessage = `String may be misconfigured. Panel ${m.panelId} shows ${Math.round(m.power)}W while median is ${Math.round(median)}W.`;
+    warningMessage = `Not all panels are outputting equally. Panel ${m.panelId} shows ${Math.round(m.power)}W while median is ${Math.round(median)}W. This may be due to shading or panel degradation, or in some cases a wiring issue.`;
   } else if (mismatchedPanels.length > 1) {
-    warningMessage = `String may be misconfigured. Panels ${mismatchedPanels.join(', ')} show significant variance from median (${Math.round(median)}W).`;
+    warningMessage = `Not all panels are outputting equally. Panels ${mismatchedPanels.join(', ')} show significant variance from median (${Math.round(median)}W). This may be due to shading or panel degradation, or in some cases a wiring issue.`;
   }
 
   return {

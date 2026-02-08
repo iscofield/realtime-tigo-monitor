@@ -23,7 +23,7 @@ const STORAGE_KEYS = {
 
 // Valid values
 export const VALID_THRESHOLDS = [5, 10, 15, 20, 30];
-export const DEFAULT_THRESHOLD = 15;
+export const DEFAULT_THRESHOLD = 30;
 const CURRENT_VERSION = '1';
 
 export type Density = 'compact' | 'standard';
