@@ -524,6 +524,14 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
       }
       return;
     }
+    // Space: Deselect all
+    if (e.key === ' ') {
+      if (editor.selectedPanels.size > 0) {
+        e.preventDefault();
+        editor.deselectAll();
+      }
+      return;
+    }
     // Delete: Remove position from selected panels
     if (e.key === 'Delete' || e.key === 'Backspace') {
       if (editor.selectedPanels.size > 0) {
@@ -859,7 +867,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
               {editor.selectedPanels.size} panel{editor.selectedPanels.size > 1 ? 's' : ''} selected
               {typeof window !== 'undefined' && window.innerWidth < 768
                 ? ' · Hold to drag · Tap to deselect · Tap empty to clear'
-                : ' · Arrow keys to nudge · Drag to reposition · Click panel to deselect · Click empty space to deselect all'
+                : ' · Arrow keys to nudge · Drag to reposition · Space to deselect all · Click panel to toggle'
               }
             </span>
           </div>
