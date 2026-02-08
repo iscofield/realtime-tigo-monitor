@@ -1,8 +1,8 @@
 import type { CSSProperties } from 'react';
-import { LayoutGrid, Table, Settings2 } from 'lucide-react';
+import { LayoutGrid, Table, Settings2, ScrollText } from 'lucide-react';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 
-export type TabType = 'layout' | 'table' | 'editor';
+export type TabType = 'layout' | 'table' | 'editor' | 'logs';
 
 interface TabNavigationProps {
   activeTab: TabType;
@@ -96,6 +96,18 @@ export function TabNavigation({ activeTab, onTabChange }: TabNavigationProps) {
           <Settings2 size={20} />
           <span>Editor</span>
         </button>
+        <button
+          data-testid="logs-tab"
+          onClick={() => onTabChange('logs')}
+          style={{
+            ...mobileButtonBaseStyle,
+            backgroundColor: activeTab === 'logs' ? '#444' : 'transparent',
+          }}
+          aria-current={activeTab === 'logs' ? 'page' : undefined}
+        >
+          <ScrollText size={20} />
+          <span>Logs</span>
+        </button>
       </nav>
     );
   }
@@ -140,6 +152,19 @@ export function TabNavigation({ activeTab, onTabChange }: TabNavigationProps) {
       >
         <Settings2 size={18} />
         Layout Editor
+      </button>
+      <button
+        data-testid="logs-tab"
+        onClick={() => onTabChange('logs')}
+        style={{
+          ...desktopButtonBaseStyle,
+          backgroundColor: activeTab === 'logs' ? '#555' : 'transparent',
+          borderBottom: activeTab === 'logs' ? '2px solid #4CAF50' : '2px solid transparent',
+        }}
+        aria-current={activeTab === 'logs' ? 'page' : undefined}
+      >
+        <ScrollText size={18} />
+        Logs
       </button>
     </nav>
   );

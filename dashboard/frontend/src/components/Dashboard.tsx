@@ -21,8 +21,9 @@ import type { DisplayMode } from './PanelOverlay';
 import type { RestoreData, LayoutConfig } from '../types/config';
 import { getLayoutConfig } from '../api/config';
 
-// Lazy load the Layout Editor for code splitting
+// Lazy load the Layout Editor and LogViewer for code splitting
 const LayoutEditor = lazy(() => import('./layout-editor/LayoutEditor'));
+const LogViewer = lazy(() => import('./LogViewer'));
 import {
   MOBILE_BREAKPOINT,
   LAYOUT_WIDTH,
@@ -313,11 +314,15 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
           <div style={tableContainerStyle}>
             <TableView panels={panels} />
           </div>
-        ) : (
+        ) : activeTab === 'editor' ? (
           <Suspense fallback={<div style={editorLoadingStyle}>Loading editor...</div>}>
             <LayoutEditor onClose={() => setActiveTab('layout')} />
           </Suspense>
-        )}
+        ) : activeTab === 'logs' ? (
+          <Suspense fallback={<div style={editorLoadingStyle}>Loading logs...</div>}>
+            <LogViewer />
+          </Suspense>
+        ) : null}
       </main>
 
       {activeTab === 'layout' && (
