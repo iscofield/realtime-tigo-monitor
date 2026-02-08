@@ -43,6 +43,9 @@ config/layout.yaml
 config/*.bak
 config/.layout-history/
 
+# User-specific docker-compose (use docker-compose.example.yml as template)
+dashboard/docker-compose.yml
+
 # Layout editor assets (Phase 2)
 # Main layout.png is tracked as sample image for new clones
 # Backup files created during uploads are ignored

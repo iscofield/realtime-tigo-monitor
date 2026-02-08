@@ -1,3 +1,14 @@
+# ============================================================================
+# DASHBOARD DOCKER COMPOSE - EXAMPLE CONFIGURATION
+# ============================================================================
+# Copy this file to docker-compose.yml and adjust to your environment:
+#
+#   cp docker-compose.example.yml docker-compose.yml
+#
+# Then edit docker-compose.yml with your specific settings (ports, paths, etc.)
+# The docker-compose.yml file is git-ignored so your local config won't conflict.
+# ============================================================================
+
 services:
   backend:
     build:
@@ -8,8 +19,10 @@ services:
         # See: https://github.com/docker/for-mac/issues/7341
         - BUILDKIT_INLINE_CACHE=1
     ports:
+      # Backend API port — change the left side if 3050 is in use
       - "3050:8000"
     env_file:
+      # Copy backend/.env.example to backend/.env and set your MQTT broker details
       - ./backend/.env
     environment:
       # State file paths for bootstrapping status check
@@ -21,6 +34,7 @@ services:
       # Assets directory for layout images (writable for layout editor uploads)
       - ./backend/assets:/app/assets
       # Mount taptap state files for status checking (read-only)
+      # Update these paths if your tigo-mqtt data directory is elsewhere
       - ../tigo-mqtt/data/primary:/app/state/primary:ro
       - ../tigo-mqtt/data/secondary:/app/state/secondary:ro
     networks:
@@ -32,12 +46,14 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        # Leave empty for same-origin WebSocket/API (nginx proxies to backend)
         - VITE_WS_URL=
         - VITE_API_BASE=
         # Enable inline cache to fix docker compose build caching issues
         # See: https://github.com/docker/for-mac/issues/7341
         - BUILDKIT_INLINE_CACHE=1
     ports:
+      # Dashboard UI port — change the left side if 5174 is in use
       - "5174:80"
     depends_on:
       - backend
