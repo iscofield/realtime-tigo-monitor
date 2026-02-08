@@ -181,6 +181,12 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
+  // Marquee (rubber-band) selection state
+  const [marqueeRect, setMarqueeRect] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
+  const marqueeStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const marqueeActiveRef = useRef(false); // tracks whether threshold was exceeded
+  const marqueeJustFinishedRef = useRef(false);
+
   // Ref to track held arrow keys for undo coalescing (persists across renders)
   const heldArrowKeys = useRef<Set<string>>(new Set());
 
@@ -476,11 +482,121 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
 
   // Canvas click handler - deselects all when clicking empty space
   const handleCanvasClick = useCallback((e: React.MouseEvent) => {
-    // Only deselect if click target is the canvas itself, not a child element
-    if (e.target === e.currentTarget) {
+    // Skip if marquee just completed (pointerUp already handled selection)
+    if (marqueeJustFinishedRef.current) return;
+    // Only deselect if click is on empty canvas space (not on a panel)
+    const target = e.target as HTMLElement;
+    if (!target.closest('button, [role="button"]')) {
       editor.deselectAll();
     }
   }, [editor]);
+
+  // Marquee selection: pointerdown on canvas starts tracking, window-level
+  // mousemove/mouseup handle the drag (avoids pointer capture + React issues)
+  const handleMarqueePointerDown = useCallback((e: React.PointerEvent) => {
+    // Only activate for mouse (not touch — touch uses panning)
+    if (e.pointerType !== 'mouse') return;
+    // Only in edit mode
+    if (!editor.isEditMode) return;
+
+    // Only activate on empty canvas space — skip if target is inside a panel
+    const target = e.target as HTMLElement;
+    if (target.closest('button, [role="button"]')) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    marqueeStartRef.current = { x, y, pointerId: e.pointerId };
+    marqueeActiveRef.current = false;
+    // Prevent DndKit's MouseSensor from intercepting subsequent pointer events
+    e.preventDefault();
+  }, [editor.isEditMode]);
+
+  // Window-level mousemove/mouseup for marquee tracking (avoids pointer capture issues)
+  useEffect(() => {
+    const handleMouseMove = (e: PointerEvent) => {
+      if (!marqueeStartRef.current) return;
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      const dx = x - marqueeStartRef.current.x;
+      const dy = y - marqueeStartRef.current.y;
+
+      // Minimum drag threshold of 5px before showing marquee
+      if (!marqueeActiveRef.current && Math.sqrt(dx * dx + dy * dy) < 5) return;
+      marqueeActiveRef.current = true;
+
+      setMarqueeRect({
+        startX: marqueeStartRef.current.x,
+        startY: marqueeStartRef.current.y,
+        endX: x,
+        endY: y,
+      });
+    };
+
+    const handleMouseUp = (e: PointerEvent) => {
+      if (!marqueeStartRef.current) return;
+
+      const hadMarquee = marqueeActiveRef.current;
+      const start = marqueeStartRef.current;
+      marqueeStartRef.current = null;
+      marqueeActiveRef.current = false;
+      setMarqueeRect(null);
+
+      if (!hadMarquee) return; // Was below threshold — let click handler deal with it
+
+      // Set flag to prevent handleCanvasClick from also deselecting
+      marqueeJustFinishedRef.current = true;
+      requestAnimationFrame(() => { marqueeJustFinishedRef.current = false; });
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const endX = e.clientX - rect.left;
+      const endY = e.clientY - rect.top;
+
+      // Normalized rectangle
+      const minX = Math.min(start.x, endX);
+      const maxX = Math.max(start.x, endX);
+      const minY = Math.min(start.y, endY);
+      const maxY = Math.max(start.y, endY);
+
+      // Find panels whose center falls within the rectangle
+      const matching = new Set<string>();
+      for (const panel of editor.panels) {
+        const pos = editor.positions[panel.serial];
+        if (!pos) continue;
+        const panelCenterX = (pos.x_percent / 100) * scaledWidth;
+        const panelCenterY = (pos.y_percent / 100) * scaledHeight;
+        if (panelCenterX >= minX && panelCenterX <= maxX && panelCenterY >= minY && panelCenterY <= maxY) {
+          matching.add(panel.serial);
+        }
+      }
+
+      if (matching.size > 0) {
+        editor.setSelectedPanels(matching);
+      } else {
+        editor.deselectAll();
+      }
+    };
+
+    window.addEventListener('pointermove', handleMouseMove);
+    window.addEventListener('pointerup', handleMouseUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMouseMove);
+      window.removeEventListener('pointerup', handleMouseUp);
+    };
+  }, [editor, scaledWidth, scaledHeight]);
 
   // Keyboard shortcuts - now as a regular function for canvas onKeyDown
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -857,17 +973,22 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
               fontSize: '13px',
               borderBottom: editor.selectedPanels.size > 0 ? '1px solid #2a4a6f' : '1px solid transparent',
               minHeight: typeof window !== 'undefined' && window.innerWidth < 768 ? '44px' : '36px',
-              visibility: editor.selectedPanels.size > 0 ? 'visible' : 'hidden',
+              visibility: editor.selectedPanels.size > 0 || (editor.isEditMode && typeof window !== 'undefined' && window.innerWidth >= 768) ? 'visible' : 'hidden',
             }}
             role="status"
             aria-live="polite"
           >
-            <Info size={16} color="#ffffff" />
+            <Info size={16} color={editor.selectedPanels.size > 0 ? '#ffffff' : '#888888'} />
             <span>
-              {editor.selectedPanels.size} panel{editor.selectedPanels.size > 1 ? 's' : ''} selected
-              {typeof window !== 'undefined' && window.innerWidth < 768
-                ? ' · Hold to drag · Tap to deselect · Tap empty to clear'
-                : ' · Arrow keys to nudge · Drag to reposition · Space to deselect all · Click panel to toggle'
+              {editor.selectedPanels.size > 0
+                ? <>
+                    {editor.selectedPanels.size} panel{editor.selectedPanels.size > 1 ? 's' : ''} selected
+                    {typeof window !== 'undefined' && window.innerWidth < 768
+                      ? ' · Hold to drag · Tap to deselect · Tap empty to clear'
+                      : ' · Arrow keys to nudge · Drag to reposition · Space to deselect all · Click panel to toggle'
+                    }
+                  </>
+                : 'Drag to select · Click panel to toggle · Ctrl+A to select all'
               }
             </span>
           </div>
@@ -915,6 +1036,7 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
                 }}
                 onClick={handleCanvasClick}
                 onKeyDown={handleKeyDown}
+                onPointerDown={handleMarqueePointerDown}
                 onFocus={() => setCanvasFocused(true)}
                 onBlur={() => setCanvasFocused(false)}
               >
@@ -954,6 +1076,21 @@ export function LayoutEditor({ onClose }: LayoutEditorProps) {
                 {/* Alignment guides */}
                 {editor.isEditMode && activeGuides.length > 0 && (
                   <AlignmentGuides guides={activeGuides} />
+                )}
+
+                {/* Marquee selection rectangle */}
+                {marqueeRect && (
+                  <div style={{
+                    position: 'absolute',
+                    left: Math.min(marqueeRect.startX, marqueeRect.endX),
+                    top: Math.min(marqueeRect.startY, marqueeRect.endY),
+                    width: Math.abs(marqueeRect.endX - marqueeRect.startX),
+                    height: Math.abs(marqueeRect.endY - marqueeRect.startY),
+                    border: '2px dashed #4a90d9',
+                    backgroundColor: 'rgba(74, 144, 217, 0.15)',
+                    pointerEvents: 'none',
+                    zIndex: 999,
+                  }} />
                 )}
               </div>
             </div>
