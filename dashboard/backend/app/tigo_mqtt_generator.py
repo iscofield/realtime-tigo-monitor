@@ -10,6 +10,7 @@ Generates deployment files for tigo-mqtt service:
 
 import io
 import logging
+import re
 import zipfile
 from typing import Optional
 
@@ -137,6 +138,11 @@ def generate_ini_config(
     modules = []
     for panel in panels:
         if panel.cca == cca.name:
+            # Defense-in-depth: validate serial format before writing to INI
+            if not re.match(r'^[A-Z0-9]{4,20}$', panel.serial):
+                raise TigoMQTTGeneratorError(
+                    "Invalid serial format: %s" % (panel.serial[:30],)
+                )
             # Format: STRING:POSITION:SERIAL
             parsed = parse_tigo_label(panel.tigo_label)
             if parsed is None:
@@ -373,10 +379,17 @@ def generate_tigo_mqtt_zip(
                 ini_content = generate_ini_config(cca, panels, system_config.mqtt)
                 zf.writestr(f"config-{cca.name}.ini", ini_content)
             except TigoMQTTGeneratorError as e:
-                # If no panels yet, generate placeholder INI
-                logger.warning(f"Generating placeholder INI for {cca.name}: {e}")
-                placeholder = generate_placeholder_ini(cca, system_config.mqtt)
-                zf.writestr(f"config-{cca.name}.ini", placeholder)
+                error_msg = str(e)
+                if "has no panels configured" in error_msg:
+                    logger.warning(
+                        "Generated tigo-mqtt config with placeholder serials for CCA '%s'. "
+                        "Config requires manual serial number entry before deployment.",
+                        cca.name
+                    )
+                    placeholder = generate_placeholder_ini(cca, system_config.mqtt)
+                    zf.writestr(f"config-{cca.name}.ini", placeholder)
+                else:
+                    raise
 
         # .env (with credentials and timezone from wizard)
         env_content = generate_env(system_config.mqtt, timezone=timezone)
