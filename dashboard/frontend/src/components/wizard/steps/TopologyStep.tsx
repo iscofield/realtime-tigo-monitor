@@ -157,7 +157,7 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     const existingNames = cca.strings.map(s => s.name);
     // Find next available letter
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-    const nextName = alphabet.find(l => !existingNames.includes(l)) || 'AA';
+    const nextName = alphabet.find(l => !existingNames.includes(l)) || 'Z';
 
     updateCca(ccaIndex, {
       strings: [...cca.strings, { name: nextName, panel_count: 8 }],
@@ -267,9 +267,9 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
                     onChange={(e) => updateString(ccaIndex, stringIndex, { name: e.target.value.toUpperCase() })}
                     placeholder="A"
                     style={smallInputStyle}
-                    pattern="^[A-Z]{1,2}$"
-                    title="1-2 uppercase letters"
-                    maxLength={2}
+                    pattern="^[A-Z]$"
+                    title="Single uppercase letter (A-Z)"
+                    maxLength={1}
                     required
                   />
                 </div>
