@@ -1080,7 +1080,7 @@ export function SerialEntryStep({
       })}
 
       {/* Button group */}
-      <div style={buttonGroupStyle}>
+      <div style={{ ...buttonGroupStyle, alignItems: 'flex-start' }}>
         <button type="button" onClick={onBack} style={secondaryButtonStyle}>
           Back
         </button>
@@ -1098,7 +1098,7 @@ export function SerialEntryStep({
             type="button"
             onClick={() => setShowSkipModal(true)}
             disabled={skipDisabled}
-            style={skipDisabled ? { ...disabledButtonStyle, fontSize: '13px', padding: '8px 16px' } : { ...secondaryButtonStyle, fontSize: '13px', padding: '8px 16px' }}
+            style={skipDisabled ? disabledButtonStyle : secondaryButtonStyle}
             aria-describedby={skipDisabled ? skipHelperId : undefined}
           >
             Skip — Use Placeholders
