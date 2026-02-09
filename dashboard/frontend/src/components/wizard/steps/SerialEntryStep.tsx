@@ -1098,7 +1098,7 @@ export function SerialEntryStep({
             type="button"
             onClick={() => setShowSkipModal(true)}
             disabled={skipDisabled}
-            style={skipDisabled ? disabledButtonStyle : secondaryButtonStyle}
+            style={skipDisabled ? { ...disabledButtonStyle, fontStyle: 'italic' } : { ...secondaryButtonStyle, fontStyle: 'italic' }}
             aria-describedby={skipDisabled ? skipHelperId : undefined}
           >
             Skip — Use Placeholders
