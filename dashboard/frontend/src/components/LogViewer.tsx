@@ -365,7 +365,7 @@ function LogViewer() {
             aria-label="Log level filter"
             style={levelSelectStyle}
           >
-            <option value="info">Info+</option>
+            <option value="info">Info</option>
             <option value="debug">Debug</option>
           </select>
         )}
