@@ -124,7 +124,6 @@ const logEntryStyle: CSSProperties = {
 const timestampStyle: CSSProperties = {
   color: '#6A9955',
   marginRight: '8px',
-  userSelect: 'none',
 };
 
 const levelBadgeBaseStyle: CSSProperties = {
@@ -157,21 +156,6 @@ const disconnectedStyle: CSSProperties = {
   fontSize: '12px',
   textAlign: 'center',
   flexShrink: 0,
-};
-
-const newEntriesBadgeStyle: CSSProperties = {
-  position: 'absolute',
-  top: '8px',
-  left: '50%',
-  transform: 'translateX(-50%)',
-  padding: '4px 12px',
-  backgroundColor: '#4CAF50',
-  color: '#fff',
-  borderRadius: '12px',
-  fontSize: '12px',
-  cursor: 'pointer',
-  zIndex: 10,
-  boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
 };
 
 const filterBarStyle: CSSProperties = {
@@ -222,6 +206,7 @@ function LogViewer() {
   const [newEntryCount, setNewEntryCount] = useState(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const isAtNewestRef = useRef(true);
+  const [isScrolledAway, setIsScrolledAway] = useState(false);
 
   // Initialize excluded categories from server-provided defaults (once)
   useEffect(() => {
@@ -275,8 +260,10 @@ function LogViewer() {
     const el = logContainerRef.current;
     if (!el) return;
     // scrollTop=0 means we're at the top (newest entries)
-    isAtNewestRef.current = el.scrollTop <= 1;
-    if (isAtNewestRef.current) {
+    const atNewest = el.scrollTop <= 1;
+    isAtNewestRef.current = atNewest;
+    setIsScrolledAway(!atNewest);
+    if (atNewest) {
       setNewEntryCount(0);
     }
     // Detect scroll near bottom (oldest entries) for lazy loading
@@ -408,10 +395,32 @@ function LogViewer() {
           aria-live="polite"
           onScroll={handleScroll}
         >
-          {newEntryCount > 0 && (
-            <div style={newEntriesBadgeStyle} onClick={scrollToNewest}>
-              {newEntryCount} new {newEntryCount === 1 ? 'entry' : 'entries'}
-            </div>
+          {isScrolledAway && (
+            <button
+              onClick={scrollToNewest}
+              aria-label="Scroll to top (latest logs)"
+              style={{
+                position: 'sticky',
+                top: '8px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                display: 'block',
+                margin: '0 auto',
+                padding: '4px 12px',
+                backgroundColor: newEntryCount > 0 ? '#4CAF50' : '#3c3c3c',
+                color: newEntryCount > 0 ? '#fff' : '#d4d4d4',
+                border: newEntryCount > 0 ? 'none' : '1px solid #555',
+                borderRadius: '12px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                zIndex: 10,
+                boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+              }}
+            >
+              {newEntryCount > 0
+                ? `${newEntryCount} new ${newEntryCount === 1 ? 'entry' : 'entries'}`
+                : 'Top'}
+            </button>
           )}
           {/* Reverse so newest entries render at the top */}
           {reversedFiltered.map((entry: LogEntry) => (
