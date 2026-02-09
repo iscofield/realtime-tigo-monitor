@@ -1080,16 +1080,25 @@ export function SerialEntryStep({
       })}
 
       {/* Button group */}
-      <div style={{ ...buttonGroupStyle, alignItems: 'flex-start' }}>
+      <div style={buttonGroupStyle}>
         <button type="button" onClick={onBack} style={secondaryButtonStyle}>
           Back
         </button>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end' }}>
+          <button
+            ref={nextButtonRef}
+            type="button"
+            onClick={handleNext}
+            disabled={!allValid}
+            style={allValid ? primaryButtonStyle : disabledButtonStyle}
+          >
+            Next: Generate & Download
+          </button>
           <button
             type="button"
             onClick={() => setShowSkipModal(true)}
             disabled={skipDisabled}
-            style={skipDisabled ? disabledButtonStyle : secondaryButtonStyle}
+            style={skipDisabled ? { ...disabledButtonStyle, fontSize: '13px', padding: '8px 16px' } : { ...secondaryButtonStyle, fontSize: '13px', padding: '8px 16px' }}
             aria-describedby={skipDisabled ? skipHelperId : undefined}
           >
             Skip — Use Placeholders
@@ -1100,15 +1109,6 @@ export function SerialEntryStep({
             </span>
           )}
         </div>
-        <button
-          ref={nextButtonRef}
-          type="button"
-          onClick={handleNext}
-          disabled={!allValid}
-          style={allValid ? primaryButtonStyle : disabledButtonStyle}
-        >
-          Next: Generate & Download
-        </button>
       </div>
 
       {/* Skip confirmation modal */}
