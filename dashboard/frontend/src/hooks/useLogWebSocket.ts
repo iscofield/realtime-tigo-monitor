@@ -63,7 +63,6 @@ export function useLogWebSocket(
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelayRef = useRef(1000);
-  const intentionalCloseRef = useRef(false);
   const loadingOlderRef = useRef(false);
 
   // Stabilize excludedCategories for useEffect deps
@@ -73,7 +72,11 @@ export function useLogWebSocket(
   );
 
   useEffect(() => {
-    intentionalCloseRef.current = false;
+    // Track whether this effect invocation is still current. Using a local
+    // variable (not a ref) ensures the old WS's async onclose handler won't
+    // set status to 'disconnected' after the effect has been cleaned up and
+    // a new WS is being created.
+    let isCurrent = true;
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -93,11 +96,13 @@ export function useLogWebSocket(
         wsRef.current = ws;
 
         ws.onopen = () => {
+          if (!isCurrent) return;
           setStatus('connected');
           reconnectDelayRef.current = 1000;
         };
 
         ws.onmessage = (event) => {
+          if (!isCurrent) return;
           try {
             const data = JSON.parse(event.data);
 
@@ -148,7 +153,7 @@ export function useLogWebSocket(
         };
 
         ws.onclose = () => {
-          if (intentionalCloseRef.current) return;
+          if (!isCurrent) return;
           setStatus('disconnected');
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30000);
@@ -157,6 +162,7 @@ export function useLogWebSocket(
         };
 
         ws.onerror = () => {
+          if (!isCurrent) return;
           setStatus('error');
         };
       } catch (e) {
@@ -167,7 +173,7 @@ export function useLogWebSocket(
     connect();
 
     return () => {
-      intentionalCloseRef.current = true;
+      isCurrent = false;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
