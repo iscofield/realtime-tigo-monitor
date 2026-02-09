@@ -31,6 +31,13 @@ MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "taptap")
 
 MAX_LINE_LENGTH = 10240
 
+# asyncio StreamReader line buffer limit for `docker logs -f` output.
+# Taptap telemetry JSON dumps are ~460 bytes/panel. At 1MB limit this
+# supports ~2,200 panels. If you run more panels than that and see
+# "Separator is not found, and chunk exceed the limit" errors, increase
+# this value.
+STREAM_LINE_LIMIT = 1024 * 1024  # 1MB
+
 # Log patterns for enumeration events
 # Pattern: "Temporary enumerated node id: 42 to node name: A7"
 TEMP_PATTERN = re.compile(r"Temporary enumerated node id: (\d+)")
@@ -172,6 +179,7 @@ async def monitor_container(container_name: str, system: str):
                     "docker", "logs", "-f", "--since", since_ts, container_name,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=STREAM_LINE_LIMIT,
                 )
 
                 async for line in process.stdout:
