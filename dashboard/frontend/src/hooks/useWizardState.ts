@@ -22,6 +22,7 @@ const STATE_EXPIRY_DAYS = 7;
 const STEP_ORDER: WizardStep[] = [
   'mqtt-config',
   'system-topology',
+  'panel-serials',
   'generate-download',
   'discovery',
   'validation',
@@ -39,6 +40,7 @@ const createInitialState = (): WizardState => ({
   discoveredPanels: {},
   translations: {},
   validationResults: null,
+  serialEntries: null,
   configDownloaded: false,
   restoredFromBackup: false,
   restoreImageToken: undefined,
@@ -131,6 +133,7 @@ export interface UseWizardStateReturn {
   setMqttConfig: (config: MQTTConfig) => void;
   setSystemTopology: (topology: SystemConfig) => void;
   setConfigDownloaded: (downloaded: boolean) => void;
+  setSerialEntries: (entries: Record<string, Record<string, string>> | null) => void;
   addDiscoveredPanel: (panel: DiscoveredPanel) => void;
   updateDiscoveredPanel: (serial: string, updates: Partial<DiscoveredPanel>) => void;
   clearDiscoveredPanels: () => void;
@@ -213,6 +216,7 @@ export function useWizardState(): UseWizardStateReturn {
 
       // MQTT config changes affect everything downstream
       if (changedStep === 'mqtt-config') {
+        newState.serialEntries = null;
         newState.configDownloaded = false;
         newState.discoveredPanels = {};
         newState.validationResults = null;
@@ -220,9 +224,15 @@ export function useWizardState(): UseWizardStateReturn {
 
       // Topology changes affect download, discovery, and validation
       if (changedStep === 'system-topology' || changedStep === 'mqtt-config') {
+        newState.serialEntries = null;
         newState.configDownloaded = false;
         newState.discoveredPanels = {};
         newState.validationResults = null;
+      }
+
+      // Serial entry changes affect download
+      if (changedStep === 'panel-serials') {
+        newState.configDownloaded = false;
       }
 
       // Update furthestStep to not exceed the changed step
@@ -256,6 +266,13 @@ export function useWizardState(): UseWizardStateReturn {
     setState(prev => ({
       ...prev,
       configDownloaded: downloaded,
+    }));
+  }, []);
+
+  const setSerialEntries = useCallback((entries: Record<string, Record<string, string>> | null) => {
+    setState(prev => ({
+      ...prev,
+      serialEntries: entries,
     }));
   }, []);
 
@@ -393,6 +410,7 @@ export function useWizardState(): UseWizardStateReturn {
       discoveredPanels,
       translations,
       validationResults,
+      serialEntries: null,
       configDownloaded: false, // User needs to re-download tigo-mqtt config
       restoredFromBackup: true,
       restoreImageToken: data.image_token,
@@ -416,6 +434,7 @@ export function useWizardState(): UseWizardStateReturn {
     setMqttConfig,
     setSystemTopology,
     setConfigDownloaded,
+    setSerialEntries,
     addDiscoveredPanel,
     updateDiscoveredPanel,
     clearDiscoveredPanels,
