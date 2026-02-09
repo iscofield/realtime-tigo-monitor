@@ -14,7 +14,7 @@ By allowing serial entry in the wizard, users who have their serial numbers avai
 
 **FR-1.1:** A new wizard step "Panel Serials" SHALL be inserted between "System Topology" (step 2) and "Generate & Download" (previously step 3, now step 4), making it step 3 of 7 (index 2 in the zero-indexed `STEP_ORDER` array). All subsequent steps shift by one: Generate & Download becomes step 4, Discovery becomes step 5, Validation becomes step 6, and Review & Save becomes step 7. No hardcoded step indices are used — all step navigation is driven by `STEP_ORDER` array lookups. The Backup & Restore spec's `RESTORE_SKIP_STEPS`, step indicator filtering, and `goNext`/`goBack` skip logic (FR-5.3 of that spec) must also be updated to account for 3 skipped steps instead of 2.
 
-**FR-1.2:** The step SHALL display a heading "Panel Serial Numbers" with explanatory text: "Enter the serial numbers for each panel. These are printed on the back of each Tigo optimizer. Serials are typically 8-10 characters (minimum 4) and may contain letters and numbers."
+**FR-1.2:** The step SHALL display a heading "Panel Serial Numbers" with explanatory text: "Enter the serial numbers for each panel. These are printed on the back of each Tigo optimizer. Serials are typically 8-10 characters (minimum 4, maximum 20) and may contain letters and numbers."
 
 **FR-1.3:** The step SHALL be optional — the user MAY skip it via a "Skip — Use Placeholders" button. If skipped, the existing placeholder behavior is preserved.
 
@@ -28,7 +28,7 @@ By allowing serial entry in the wizard, users who have their serial numbers avai
 - **Position** — read-only, showing the label (e.g., "A1", "A2")
 - **Serial Number** — editable text input field
 
-**FR-2.3:** Serial number inputs SHALL accept alphanumeric characters. Lowercase letters SHALL be accepted as input and auto-uppercased on every keystroke via a controlled input pattern (`onChange` handler applies `.toUpperCase()` before setting state). The `input` element SHALL additionally have `style={{ textTransform: 'uppercase' }}` as a CSS-level visual hint so the field always appears uppercase even before the React re-render. The stored and validated value contains only uppercase letters and digits. Maximum length SHALL be 20 characters (`maxLength={20}`). The validation regex applied after uppercasing is: `const SERIAL_PATTERN = /^[A-Z0-9]{4,20}$/;` — this pattern is applied only to non-empty values; empty fields are handled by the all-or-nothing logic (FR-4).
+**FR-2.3:** Serial number inputs SHALL accept alphanumeric characters. Lowercase letters SHALL be accepted as input and auto-uppercased on every keystroke via a controlled input pattern (`onChange` handler applies `.toUpperCase()` before setting state). The `input` element SHALL additionally have `style={{ textTransform: 'uppercase' }}` as a CSS-level visual hint so the field always appears uppercase even before the React re-render. The stored and validated value contains only uppercase letters and digits. Maximum length SHALL be 20 characters (`maxLength={20}`). **Note:** The HTML `maxLength` attribute silently truncates pasted values longer than 20 characters with no visual indication. A user pasting a 25-character string will see only the first 20 characters, and the truncated value may still pass validation while representing the wrong serial. This contrasts with the bulk import path, which catches too-long values with an explicit error message. This is accepted as a standard browser behavior — adding a truncation indicator is not required but MAY be implemented as a UX enhancement. The validation regex applied after uppercasing is: `const SERIAL_PATTERN = /^[A-Z0-9]{4,20}$/;` — this pattern is applied only to non-empty values; empty fields are handled by the all-or-nothing logic (FR-4).
 
 **Paste behavior note:** React's `onChange` fires for clipboard paste events in controlled inputs, so the `.toUpperCase()` conversion applies automatically to pasted text. No separate `onPaste` handler is needed. The `textTransform: 'uppercase'` CSS ensures the field displays as uppercase even during the brief window before React re-renders with the uppercased value.
 
@@ -48,7 +48,7 @@ Invalid entries SHALL show inline validation with a red border, an error icon (v
 - Non-alphanumeric: "Only letters and numbers allowed"
 - Duplicate: See FR-2.6 for duplicate-specific message format
 
-**FR-2.5:** The table SHALL show a per-string completion count (e.g., "3 of 8 entered").
+**FR-2.5:** The table SHALL show a per-string completion count (e.g., "3 of 8 entered"). Note: the count uses the "entered" definition from FR-2.4 (any non-empty value), so fields with too-short or invalid values still count toward "entered." This means "8 of 8 entered" can display while the Next button is disabled due to validation errors. This is intentional — the completion count tracks data entry progress, not validity. The status banner (FR-4.2) and inline field errors provide the validation feedback.
 
 **FR-2.6:** Serial numbers MUST be unique across all panels globally (not just within a single CCA or string). Duplicate detection SHALL be case-insensitive (all comparisons performed on uppercased values), ensuring consistent behavior regardless of when uppercasing occurs in the pipeline.
 
@@ -56,7 +56,7 @@ When a duplicate is detected, **all** fields with the same serial SHALL show a v
 
 The "Next" button SHALL be disabled while any duplicates exist.
 
-**Implementation:** Global duplicate detection SHALL use a `Map<string, string[]>` (uppercased serial to array of CCA-qualified labels, e.g., `"12345678" -> ["primary/A1", "primary/A3", "secondary/B2"]`) built once on step mount and updated incrementally on each input change. Lookup is O(1) per field change. When rendering the error message for a given field, filter out the current field's own label from the array. The display logic strips the CCA prefix when both the current field and the referenced field are in the same CCA (e.g., "primary/A3" renders as "A3" if the current field is also in "primary"). The map SHALL be rebuilt when bulk import populates values.
+**Implementation:** Global duplicate detection SHALL use a `Map<string, string[]>` (uppercased serial to array of CCA-qualified labels, e.g., `"12345678" -> ["primary/A1", "primary/A3", "secondary/B2"]`) built once on step mount and updated incrementally on each input change. Lookup is O(1) per field change. **Implementation note:** The duplicate map update SHOULD use React's functional state updater pattern (`setDupMap(prev => ...)`) or a ref-based approach to prevent stale-closure issues under rapid input. Since React 18+ batches all state updates (including event handlers), two `onChange` events in the same microtask could both read stale map state if using a direct closure reference. When rendering the error message for a given field, filter out the current field's own label from the array. The display logic strips the CCA prefix when both the current field and the referenced field are in the same CCA (e.g., "primary/A3" renders as "A3" if the current field is also in "primary"). The map SHALL be rebuilt when bulk import populates values.
 
 ### FR-3: Bulk Import
 
@@ -71,7 +71,7 @@ If the textarea has content, the system SHALL parse the input and validate:
 - The number of parsed values MUST exactly match the total panel count for that CCA (sum of all string panel counts). If the count does not match, the import SHALL fail with an error message: "Expected {expected} serial numbers for CCA '{name}', but found {actual}. Please check your input — every panel must have exactly one serial number."
 - All validation errors (blanks, non-alphanumeric, too short, too long) SHALL be collected and reported together rather than fail-fast on the first error. The combined error message SHALL list all issues: "{N} invalid entries found:" followed by each error (e.g., "Position 3: blank entry", "Position 7: 'AB@C' is not alphanumeric", "Position 12: too short (2 chars)"). Error values displayed in messages SHALL be truncated to 30 characters with an ellipsis to prevent UI-breaking input.
 - The bulk import textarea SHALL have a `maxLength={10000}` attribute to prevent excessively large pastes.
-- The Import button SHALL show a brief loading state (disabled with spinner) during parsing. For imports completing under 100ms, the loading state may be imperceptible, which is acceptable.
+- The Import button SHALL remain disabled from click until the entire import pipeline completes (parse, validate, confirm if needed, populate) or the user cancels. A spinner MAY be shown during parsing. For imports completing under 100ms, the loading state may be imperceptible, which is acceptable. This prevents double-click race conditions — a second click during parsing or during the overwrite confirmation dialog is blocked by the disabled state.
 
 **FR-3.4:** On successful bulk import, the parsed serials SHALL immediately populate the table view above in order: filling string A positions first (A1, A2, ...), then string B positions, etc., following the string order defined in topology. After populating, the global duplicate detection (FR-2.6) SHALL run across all panels (including other CCAs already filled). Any duplicates introduced by the import will be shown as inline validation errors in the table.
 
@@ -79,7 +79,7 @@ Additionally, `parseBulkSerials` SHALL check for duplicates within the imported 
 
 **FR-3.5:** The bulk import pipeline order SHALL be: parse → validate (format + duplicates) → confirm overwrite (if needed) → populate. If a bulk import would overwrite existing non-empty serial values for the CCA, a confirmation SHALL be shown **after** all validation passes: "This will replace {n} existing serial numbers for CCA '{name}'. Continue?" with "Replace" (primary) and "Cancel" (secondary) buttons. Showing confirmation only for valid input avoids wasting the user's confirmation on data that would fail validation anyway. If the user clicks "Cancel", existing values are preserved unchanged. If no existing values are populated (all fields empty), no confirmation is needed. This protects against accidental loss of manually-entered data, since there is no undo mechanism.
 
-**FR-3.6:** A successful bulk import SHALL collapse the bulk import section and show a brief success message (e.g., "Imported 24 serial numbers"). After collapse, focus SHALL move to the first serial input field of the CCA card (since the Import button inside the collapsed section is no longer in the DOM). If the import passed all count/format validation but introduced cross-CCA duplicates detected by global duplicate detection (FR-2.6), the bulk import section SHALL NOT collapse. Instead, display a warning: "Imported {n} serial numbers. {d} duplicates detected with other CCAs — see highlighted fields above." After bulk import triggers global duplicate detection, all CCA cards SHALL re-evaluate their fields against the updated duplicate map, highlighting newly-detected cross-CCA duplicates in previously-valid fields. The success/warning message SHALL use `role="alert"` for screen reader announcement.
+**FR-3.6:** A successful bulk import SHALL collapse the bulk import section and show a brief success message (e.g., "Imported 24 serial numbers"). After collapse, focus SHALL move to the first serial input field of the CCA card (since the Import button inside the collapsed section is no longer in the DOM). Since the success message uses `role="status"` (polite), the focus change announcement ("Serial number for panel A1") takes priority, and the success message is queued — avoiding the disorienting rapid-fire announcements that would occur with `role="alert"` (assertive) plus a simultaneous focus change. If the import passed all count/format validation but introduced cross-CCA duplicates detected by global duplicate detection (FR-2.6), the bulk import section SHALL NOT collapse. Instead, display a warning: "Imported {n} serial numbers. {d} duplicates detected with other CCAs — see highlighted fields above." After bulk import triggers global duplicate detection, all CCA cards SHALL re-evaluate their fields against the updated duplicate map, highlighting newly-detected cross-CCA duplicates in previously-valid fields. Focus SHALL move to the first serial input field of the CCA card (same as the success path), since the user needs to review the highlighted duplicate fields in the table above. The pure success message (no duplicates) SHALL use `role="status"` (polite announcement — lower urgency). The warning variant that includes duplicate information SHALL use `role="alert"` (assertive announcement — warrants interruption).
 
 **FR-3.7:** Each parsed value from bulk import SHALL be validated against the same format rules as manual entry: alphanumeric only (FR-2.3), at least 4 characters (FR-2.4), maximum 20 characters (FR-2.3). Surrounding double-quote characters SHALL be stripped iteratively before validation: `while (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);`. This handles both single-quoted (`"SER001"`) and double-quoted (`""SER001""`) spreadsheet exports. Only double-quote (`"`) stripping is supported — single quotes (`'`) are treated as literal characters and will fail the alphanumeric validation (e.g., `'SER001'` is rejected). Partial or mismatched double quotes (e.g., `"SER001` without closing quote) are also treated as literal characters and will fail the alphanumeric validation. Note that quote stripping can produce confusing error values in edge cases: input `"""SER001"` strips to `""SER001` which fails alphanumeric validation with the stripped form shown in the error — this is accepted as a rare edge case. Values failing format validation SHALL be included in the aggregated error report (per FR-3.3). Error messages SHALL render as React text nodes (not `dangerouslySetInnerHTML`) to prevent XSS.
 
@@ -91,13 +91,15 @@ If the topology defines zero total panels (all CCAs have zero strings or all str
 
 In the mixed case where some CCAs have panels and others have zero panels (e.g., CCA "primary" has 24 panels, CCA "secondary" has 0 panels), the total is non-zero so the step renders. CCA cards with zero total panels across all their strings SHALL NOT be rendered in the Serial Entry step UI — they contribute nothing to the serial entry workflow and would display as confusing empty cards. The bulk import section is also hidden for zero-panel CCAs.
 
+Similarly, within a CCA card, string sections with `panel_count === 0` SHALL NOT be rendered. For example, if CCA "primary" has string A with 8 panels and string B with 0 panels, only string A's table is shown. The bulk import expected count for this CCA is 8 (not 16) — only non-zero strings contribute to the count. The inner loop in `serialEntriesToPanels` (`for (let i = 1; i <= str.panel_count; i++)`) correctly produces zero iterations for zero-count strings, so no panels are created for them.
+
 If the user navigates back and returns to the Serial Entry step with partial data, the state is preserved. The user must either complete all serials, or click "Clear All" before they can skip.
 
 **FR-4.2:** When the step is in a partial-fill state (some but not all panels have serials entered), a persistent inline status banner SHALL be displayed: "Serial numbers must be entered for all {total} panels, or skipped entirely. Currently {entered} of {total} entered." This banner is informational (not error-gated on a button click) since the Next button is already disabled (FR-1.4) and the Skip button is already disabled (FR-4.3) in this state. The banner helps the user understand why neither action is available.
 
 **FR-4.3:** The "Skip — Use Placeholders" button SHALL be disabled if any serials have been entered. A static helper text SHALL appear below the disabled Skip button: "Clear all entered serials to use placeholder mode." This text SHALL be associated with the button via `aria-describedby`.
 
-**FR-4.4:** A "Clear All" button SHALL be provided at the top of the Serial Entry step (after the heading and before the first CCA card) to reset all serial fields across all CCAs, re-enabling the skip option. The button SHALL have `aria-label="Clear all serial numbers for all CCAs"`. Clicking it SHALL show a confirmation dialog: "Clear all {n} entered serial numbers? This cannot be undone." with "Clear All" (destructive, red) and "Cancel" buttons. The confirmation dialog SHALL have `aria-labelledby` referencing its heading text (or `aria-label="Confirm clear all serial numbers"` if no heading element is used). The confirmation modal SHALL trap focus and be dismissible via Escape (equivalent to Cancel). After confirming Clear All, focus SHALL return to the Clear All button (standard modal return-focus pattern). Clear All SHALL also collapse any expanded bulk import sections, resetting the step to its initial visual state. There is no undo mechanism for this action. **Note:** The "cannot be undone" warning is intentionally asymmetric with the skip confirmation (FR-5.1) which has no such warning — skipping preserves serial data in wizard state (FR-7.4), allowing the user to navigate back and find their serials intact, whereas Clear All permanently destroys entered data.
+**FR-4.4:** A "Clear All" button SHALL be provided at the top of the Serial Entry step (after the heading and before the first CCA card) to reset all serial fields across all CCAs, re-enabling the skip option. The button SHALL have `aria-label="Clear all serial numbers for all CCAs"`. Clicking it SHALL show a confirmation dialog: "Clear all {n} entered serial numbers? This cannot be undone." with "Clear All" (destructive, red) and "Cancel" buttons. The confirmation dialog SHALL have `aria-labelledby` referencing its heading text (or `aria-label="Confirm clear all serial numbers"` if no heading element is used). The confirmation modal SHALL trap focus and be dismissible via Escape (equivalent to Cancel). After confirming Clear All, focus SHALL return to the Clear All button (standard modal return-focus pattern). Clear All SHALL also collapse any expanded bulk import sections, resetting the step to its initial visual state. There is no undo mechanism for this action. **State scope:** Clear All SHALL reset all serial fields in the local component state only. The wizard-level `serialEntries` is only updated when the user subsequently clicks Skip (`onNext(null)`) or Next (`onNext(serials)`). This means Clear All does not directly mutate wizard state — it clears the component's working copy. If the user navigates away without clicking Skip or Next (e.g., via the Back button), the wizard state retains the previous `serialEntries` value from the last `onNext` call. This is consistent with the existing pattern where wizard state is committed on step transitions, not on every field change. **Note:** The "cannot be undone" warning is intentionally asymmetric with the skip confirmation (FR-5.1) which has no such warning — skipping preserves serial data in wizard state (FR-7.4), allowing the user to navigate back and find their serials intact, whereas Clear All permanently destroys the component's entered data.
 
 ### FR-5: Skip Warning
 
@@ -145,7 +147,7 @@ If the user navigates back and returns to the Serial Entry step with partial dat
 
 **Important:** The `string` field value comes from `StringConfig.name` in the topology data, which is a short identifier (e.g., "A", "B"), not a display name. The `tigo_label` is constructed as `${str.name}${i}` (e.g., "A1", "A2"). Verify that `StringConfig.name` in `types/config.ts` matches this assumption. See the `SystemConfig` cross-reference in Component Architecture for the type shape.
 
-**Precondition:** `StringConfig.name` MUST be constrained to single uppercase letters (A-Z) by the Topology step's validation. This is required to prevent label collisions: if string names could be multi-character or numeric (e.g., "A1"), labels would be ambiguous ("A1" + panel 2 = "A12" vs "A" + panel 12 = "A12"), corrupting the `serialEntries` map. If the Topology step does not currently enforce this constraint, it MUST be added as part of this feature's implementation. The `serialEntriesToPanels` function SHALL include a defensive check: `if (!/^[A-Z]$/.test(str.name)) throw new Error(...)` to guard against malformed topology data.
+**Precondition:** `StringConfig.name` MUST be constrained to single uppercase letters (A-Z) by the Topology step's validation. This constrains each CCA to a maximum of 26 strings (A-Z), which exceeds any practical solar deployment. This is required to prevent label collisions: if string names could be multi-character or numeric (e.g., "A1"), labels would be ambiguous ("A1" + panel 2 = "A12" vs "A" + panel 12 = "A12"), corrupting the `serialEntries` map. If the Topology step does not currently enforce this constraint, it MUST be added as part of this feature's implementation. The `serialEntriesToPanels` function SHALL include a defensive check: `if (!/^[A-Z]$/.test(str.name)) throw new Error(...)` to guard against malformed topology data.
 
 **Note on field naming:** The HTTP request body uses camelCase keys (`tigoLabel`, `displayLabel`) due to the Pydantic model's `alias_generator=to_camel` configuration. The TypeScript API layer handles this conversion. The snake_case names shown above are the logical field names used in the `serialEntriesToPanels` code sample. The API client function (`downloadTigoMqttConfig`) is responsible for converting these to the camelCase wire format before sending the HTTP request.
 
@@ -182,7 +184,7 @@ In all cases, serial data SHALL be preserved in wizard state so the user can nav
 
 ### FR-10: Keyboard Behavior
 
-**FR-10.1:** Enter key in a serial input field SHALL advance focus to the next serial input field (same behavior as Tab). In the last field of the step, Enter SHALL NOT trigger form submission — it SHALL be a no-op or advance focus to the Next button. This prevents accidental form submission when fields are incomplete. Implementation: use `event.preventDefault()` in the `onKeyDown` handler when `event.key === 'Enter'`, then programmatically focus the next input.
+**FR-10.1:** Enter key in a serial **number input** field (not the bulk import textarea) SHALL advance focus to the next serial input field (same behavior as Tab). In the last serial input field of the entire step (i.e., the last panel of the last string of the last CCA), Enter SHALL advance focus to the Next button. This is consistent with the Enter-to-advance pattern used throughout the serial fields, and the Next button's validation gate (FR-1.4) prevents accidental submission. Enter SHALL NOT trigger form submission in any serial input field. Implementation: use `event.preventDefault()` in the `onKeyDown` handler when `event.key === 'Enter'`, then programmatically focus the next input (or the Next button if this is the last field). Modifier combinations (Shift+Enter, Ctrl+Enter, Meta+Enter) SHALL NOT be intercepted — they SHALL propagate with default browser behavior.
 
 ## Non-Functional Requirements
 
@@ -207,6 +209,7 @@ In all cases, serial data SHALL be preserved in wizard state so the user can nav
 - **Modals:** The skip confirmation modal (FR-5.1) and Clear All confirmation (FR-4.4) SHALL trap focus and be dismissible via Escape key.
 - **Bulk import:** The bulk import textarea SHALL have an `aria-label` of "Paste serial numbers for CCA {name}". The bulk import section SHALL be collapsed by default to reduce visual clutter.
 - **Status banner:** The partial-fill status banner (FR-4.2) SHALL use `role="status"` for screen reader awareness.
+- **Initial focus:** On step entry (navigating to the Serial Entry step from Topology via Next), focus SHALL move to the step heading element ("Panel Serial Numbers"), which SHALL have `tabIndex={-1}` to be programmatically focusable. This ensures screen reader users hear the step context before interacting with input fields. This is the standard wizard step-entry pattern.
 
 ## High Level Design
 
@@ -233,7 +236,7 @@ sequenceDiagram
         Serials->>Wizard: onNext(serialData)
         Wizard->>GenDL: Render with serialData available
         User->>GenDL: Clicks Download
-        GenDL->>API: POST /generate-tigo-mqtt (with panels[])
+        GenDL->>API: POST /api/config/generate-tigo-mqtt (with panels[])
         API->>Gen: generate_tigo_mqtt_zip(config, panels)
         Gen-->>API: ZIP with real serials in MODULES
         API-->>GenDL: ZIP blob
@@ -245,7 +248,7 @@ sequenceDiagram
         Serials->>Wizard: onNext(null)
         Wizard->>GenDL: Render without serialData
         User->>GenDL: Clicks Download
-        GenDL->>API: POST /generate-tigo-mqtt (no panels)
+        GenDL->>API: POST /api/config/generate-tigo-mqtt (no panels)
         API->>Gen: generate_tigo_mqtt_zip(config, [])
         Note over Gen: Logs placeholder warning per CCA
         Gen-->>API: ZIP with PLACEHOLDER_XX in MODULES
@@ -303,7 +306,7 @@ function parseBulkSerials(input: string, expectedCount: number, ccaName: string)
   // 3. Strip surrounding quotes iteratively (handles double-quoted spreadsheet exports).
   //    Note: this can produce empty strings from values like '""' — these are intentionally
   //    NOT filtered here so they count toward the expected count and are caught as
-  //    "blank entry" errors in step 5.
+  //    "blank entry" errors in step 6.
   values = values.map(v => {
     while (v.startsWith('"') && v.endsWith('"') && v.length >= 2) {
       v = v.slice(1, -1);
@@ -341,7 +344,7 @@ function parseBulkSerials(input: string, expectedCount: number, ccaName: string)
     }
   });
   if (errors.length > 0) {
-    return { error: `${errors.length} invalid entries found:\n${errors.join('\n')}` };
+    return { error: `${errors.length} invalid ${errors.length === 1 ? 'entry' : 'entries'} found:\n${errors.join('\n')}` };
   }
 
   // 7. Check for duplicates within the batch — collect ALL duplicates (not fail-fast).
@@ -359,7 +362,10 @@ function parseBulkSerials(input: string, expectedCount: number, ccaName: string)
   const dupErrors: string[] = [];
   for (const [serial, positions] of seen) {
     if (positions.length > 1) {
-      dupErrors.push(`Duplicate serial '${serial}' found at positions ${positions.join(', ')}.`);
+      const posStr = positions.length === 2
+        ? positions.join(' and ')
+        : positions.slice(0, -1).join(', ') + ', and ' + positions[positions.length - 1];
+      dupErrors.push(`Duplicate serial '${serial}' found at positions ${posStr}.`);
     }
   }
   if (dupErrors.length > 0) {
@@ -441,6 +447,8 @@ interface SystemConfig {
   ccas: CCAConfig[];
 }
 ```
+
+**Note on field naming for SystemConfig types:** Unlike the `Panel` model which uses `alias_generator = to_camel`, the `SystemConfig`/`CCAConfig`/`StringConfig` types shown above use snake_case field names (`panel_count`, `serial_device`) as their canonical TypeScript representation. The existing Phase 1 implementation stores these as snake_case in both TypeScript and the Pydantic models. If the backend Pydantic models for these types also use `alias_generator = to_camel`, the HTTP wire format would use camelCase (`panelCount`, `serialDevice`), and the frontend API layer would need to handle the conversion. Verify the actual field naming convention used in the existing `types/config.ts` implementation before coding — the code sample above uses snake_case to match the logical field names used in `serialEntriesToPanels`, consistent with how `Panel` fields are documented (snake_case in TS, camelCase on wire).
 
 **`Panel` type:** Uses the existing `Panel` interface from `types/config.ts`. The `position` field is `Optional` (`position?: Position | null`) so omitting it from the object literal is type-safe. Downstream steps (Discovery, Validation) handle `position: null` gracefully — they do not depend on position data from wizard-created panels.
 
@@ -623,6 +631,19 @@ class Panel(BaseModel):
    - Test focus management: after successful bulk import collapse, focus moves to first serial input
    - Test focus management: after Clear All confirmation, focus returns to Clear All button
    - Test `serialEntriesToPanels` throws on invalid `str.name` (non-single-letter)
+   - Test bulk import section defaults to collapsed state (FR-3.1)
+   - Test navigate forward past Serials to Generate, then back to Serials — verify entered values preserved (FR-7.4)
+   - Test generated INI with real serials omits the "PLACEHOLDER configuration" header comment (FR-8.3)
+   - Test Enter key in serial field advances focus to the next serial input (FR-10.1)
+   - Test Enter key in the last serial field of the step advances focus to Next button (FR-10.1)
+   - Test Enter key does not submit the form when fields are incomplete (FR-10.1)
+   - Test Enter key in bulk import textarea inserts newline, does not advance focus (FR-10.1)
+   - Test Shift+Enter and Ctrl+Enter are not intercepted in serial fields (FR-10.1)
+   - Test typing lowercase in a serial input field auto-uppercases on keystroke (FR-2.3)
+   - Test per-string completion count displays "3 of 8 entered" correctly (FR-2.5)
+   - Test on step entry, focus moves to the step heading (NFR-1.5)
+   - Test CCA with zero-panel strings alongside non-zero strings: only non-zero string sections rendered (FR-4.1)
+   - Test grammar: single validation error shows "1 invalid entry found" (not "entries")
 
 ## Related Specifications
 
@@ -646,11 +667,38 @@ class Panel(BaseModel):
 
 ---
 
-**Specification Version:** 1.4
+**Specification Version:** 1.5
 **Last Updated:** February 2026
 **Authors:** Claude, Ian
 
 ## Changelog
+
+### v1.5 (February 2026)
+**Summary:** Address review iteration 5 findings — code/prose consistency, accessibility refinements, missing edge cases, state management clarifications, and comprehensive test coverage expansion
+
+**Changes:**
+- Added maximum length ("maximum 20") to user-facing help text (FR-1.2)
+- Documented silent paste truncation from `maxLength={20}` as accepted limitation (FR-2.3)
+- Documented that per-string completion count includes invalid "entered" values, with rationale (FR-2.5)
+- Added implementation note for duplicate map: functional state updater or ref to prevent stale closures (FR-2.6)
+- Import button stays disabled through entire pipeline (parse, validate, confirm, populate), not just parsing (FR-3.3)
+- Fixed bulk import success message from `role="alert"` to `role="status"` for polite announcement; warning variant keeps `role="alert"` (FR-3.6)
+- Added screen reader interaction note: `role="status"` avoids disorienting rapid-fire announcements on focus change after collapse (FR-3.6)
+- Added explicit focus target for cross-CCA duplicate warning path: first serial input of CCA card (FR-3.6)
+- Added zero-panel string rendering rule: strings with `panel_count === 0` not rendered within CCA card (FR-4.1)
+- Clarified Clear All state scope: resets local component state only, wizard state updated on next step transition (FR-4.4)
+- Scoped FR-10.1 to serial number input fields only, explicitly excluding bulk import textarea (FR-10.1)
+- Changed last-field Enter behavior from ambiguous "no-op or advance" to definitive "advance to Next button" (FR-10.1)
+- Clarified "last field of the step" means last panel of last string of last CCA (FR-10.1)
+- Added Shift+Enter, Ctrl+Enter, Meta+Enter pass-through: modifier combinations not intercepted (FR-10.1)
+- Added 26-string-per-CCA ceiling note on single-letter constraint (FR-8.1)
+- Added SystemConfig/CCAConfig/StringConfig field naming note: snake_case vs camelCase wire format (component architecture)
+- Added initial step focus: heading receives focus on step entry with `tabIndex={-1}` (NFR-1.5)
+- Fixed code: `positions.join(', ')` replaced with Oxford comma helper matching FR-3.4 prose (parseBulkSerials)
+- Fixed code comment: "step 5" corrected to "step 6" for blank-entry error reference (parseBulkSerials)
+- Fixed code: singular grammar for "1 invalid entry found" vs "N invalid entries found" (parseBulkSerials)
+- Fixed sequence diagram: `POST /generate-tigo-mqtt` changed to full path `/api/config/generate-tigo-mqtt` (diagram)
+- Expanded test matrix: 51 test cases (was 37) — added 14 new cases for FR-3.1, FR-7.4, FR-8.3, FR-10.1 keyboard behavior, FR-2.3 auto-uppercase, FR-2.5 count display, initial focus, zero-panel strings, and grammar
 
 ### v1.4 (February 2026)
 **Summary:** Address review iteration 4 findings — critical code bug fixes, multi-way duplicate support, aggregate error consistency, accessibility gaps, and comprehensive edge case documentation
@@ -705,7 +753,7 @@ class Panel(BaseModel):
 - Updated backend regex to `r'^[A-Z0-9]{4,20}$'` with truncated error values and %-style formatting
 - Updated Related Specifications: clarified Phase 2 uses distinct Panel schema, not same model
 - Updated API Contract Reference: Panel model shows server-side validation, 422 format clarified
-- Expanded test matrix: 39 test cases (was 25) — added 14 new cases for multi-way duplicates, keyboard flows, focus management, edge cases, and backend validation
+- Expanded test matrix: 37 test cases (was 25) — added 12 new cases for multi-way duplicates, keyboard flows, focus management, edge cases, and backend validation
 
 ### v1.3 (February 2026)
 **Summary:** Address review iteration 3 findings — comprehensive clarifications, bug fixes, and completeness improvements
