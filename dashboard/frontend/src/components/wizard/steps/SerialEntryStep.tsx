@@ -573,8 +573,8 @@ export function SerialEntryStep({
   // Check if all fields are valid and filled
   const allValid = useMemo(() => {
     if (enteredCount !== totalPanels) return false;
-    for (const [ccaName, ccaVals] of Object.entries(values)) {
-      for (const [label, val] of Object.entries(ccaVals)) {
+    for (const [, ccaVals] of Object.entries(values)) {
+      for (const [, val] of Object.entries(ccaVals)) {
         if (!SERIAL_PATTERN.test(val.toUpperCase())) return false;
         // Check duplicates
         const upper = val.toUpperCase();
