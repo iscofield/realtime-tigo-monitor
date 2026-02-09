@@ -121,7 +121,15 @@ export async function downloadTigoMqttConfig(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.message || `Download failed: ${response.status}`);
+    const detail = typeof errorData.detail === 'string'
+      ? errorData.detail
+      : Array.isArray(errorData.detail)
+        ? errorData.detail[0]?.msg || 'Validation error'
+        : null;
+    const message = detail || errorData.message || `Download failed: ${response.status}`;
+    const error = new Error(message);
+    (error as { status?: number }).status = response.status;
+    throw error;
   }
 
   return response.blob();
