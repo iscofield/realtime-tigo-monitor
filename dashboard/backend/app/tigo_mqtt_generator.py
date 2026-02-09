@@ -139,7 +139,7 @@ def generate_ini_config(
     for panel in panels:
         if panel.cca == cca.name:
             # Defense-in-depth: validate serial format before writing to INI
-            if not re.match(r'^[A-Z0-9]{4,20}$', panel.serial):
+            if not re.match(r'^[A-Z0-9][A-Z0-9\-]{2,19}$', panel.serial):
                 raise TigoMQTTGeneratorError(
                     "Invalid serial format: %s" % (panel.serial[:30],)
                 )

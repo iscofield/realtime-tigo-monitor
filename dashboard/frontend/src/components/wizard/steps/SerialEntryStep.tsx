@@ -188,7 +188,7 @@ const hintStyle: CSSProperties = {
 // Constants
 // ---------------------------------------------------------------------------
 
-const SERIAL_PATTERN = /^[A-Z0-9]{4,20}$/;
+const SERIAL_PATTERN = /^[A-Z0-9][A-Z0-9\-]{2,19}$/;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -215,19 +215,88 @@ interface SerialInputRowProps {
 // parseBulkSerials
 // ---------------------------------------------------------------------------
 
+/**
+ * Parses bulk serial input. Supports two formats:
+ *
+ * 1. **TSV label-serial pairs** (preferred): Each line is `label\tserial`.
+ *    The label (e.g., "F1", "B4") maps the serial to that panel position.
+ *
+ * 2. **Plain serial list**: One serial per line (or comma-separated).
+ *    Serials are assigned sequentially to slots.
+ *
+ * Returns either a map of label->serial, a flat serial array, or an error.
+ */
 export function parseBulkSerials(
   input: string,
   expectedCount: number,
-  ccaName: string
-): { serials: string[] } | { error: string } {
-  // Split on commas, tabs, or newlines; trim whitespace; filter empty entries
-  const tokens = input
-    .split(/[,\t\n\r]+/)
+  ccaName: string,
+  validLabels?: Set<string>
+): { serialMap: Record<string, string> } | { serials: string[] } | { error: string } {
+  const lines = input.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+  if (lines.length === 0) {
+    return { error: 'No serial numbers found. Paste label-serial pairs (one per line, tab-separated) or a plain serial list.' };
+  }
+
+  // Detect format: if the first non-empty line contains a tab, treat as TSV
+  const isTSV = lines.some(l => l.includes('\t'));
+
+  if (isTSV) {
+    // TSV mode: each line is "label\tserial"
+    const serialMap: Record<string, string> = {};
+    const seenSerials = new Map<string, string>(); // serial -> label (for dup detection)
+
+    for (let i = 0; i < lines.length; i++) {
+      const parts = lines[i].split('\t').map(p => p.trim());
+      if (parts.length < 2 || !parts[1]) {
+        return { error: `Line ${i + 1}: expected "label<tab>serial" but got "${lines[i]}".` };
+      }
+
+      const label = parts[0].toUpperCase();
+      const serial = parts[1].toUpperCase();
+
+      // Validate label if we have valid labels
+      if (validLabels && !validLabels.has(label)) {
+        return { error: `Line ${i + 1}: unknown panel label "${label}". Valid labels for CCA "${ccaName}": ${[...validLabels].sort().join(', ')}.` };
+      }
+
+      // Validate serial format
+      if (!SERIAL_PATTERN.test(serial)) {
+        return { error: `Line ${i + 1}: invalid serial "${serial}". Expected format like 4-C3F2CCZ.` };
+      }
+
+      // Check for duplicate labels
+      if (serialMap[label] !== undefined) {
+        return { error: `Duplicate label "${label}" at lines ${Object.keys(serialMap).indexOf(label) + 1} and ${i + 1}.` };
+      }
+
+      // Check for duplicate serials
+      const prevLabel = seenSerials.get(serial);
+      if (prevLabel !== undefined) {
+        return { error: `Duplicate serial "${serial}" for labels "${prevLabel}" and "${label}".` };
+      }
+
+      serialMap[label] = serial;
+      seenSerials.set(serial, label);
+    }
+
+    if (Object.keys(serialMap).length !== expectedCount) {
+      return {
+        error: `Expected ${expectedCount} serial entries for CCA "${ccaName}", but found ${Object.keys(serialMap).length}.`,
+      };
+    }
+
+    return { serialMap };
+  }
+
+  // Plain list mode: split on commas or newlines
+  const tokens = lines
+    .flatMap(l => l.split(','))
     .map(s => s.trim().toUpperCase())
     .filter(s => s.length > 0);
 
   if (tokens.length === 0) {
-    return { error: 'No serial numbers found. Paste serials separated by commas, tabs, or newlines.' };
+    return { error: 'No serial numbers found.' };
   }
 
   if (tokens.length !== expectedCount) {
@@ -240,7 +309,7 @@ export function parseBulkSerials(
   for (let i = 0; i < tokens.length; i++) {
     if (!SERIAL_PATTERN.test(tokens[i])) {
       return {
-        error: `Invalid serial at position ${i + 1}: "${tokens[i]}". Must be 4-20 alphanumeric characters.`,
+        error: `Invalid serial at position ${i + 1}: "${tokens[i]}". Expected format like 4-C3F2CCZ.`,
       };
     }
   }
@@ -552,8 +621,8 @@ export function SerialEntryStep({
     }
 
     // Pattern check
-    if (!(/^[A-Z0-9]*$/).test(value.toUpperCase())) {
-      return 'Only letters and numbers allowed';
+    if (!(/^[A-Z0-9\-]*$/).test(value.toUpperCase())) {
+      return 'Only letters, numbers, and hyphens allowed';
     }
 
     return null;
@@ -630,6 +699,21 @@ export function SerialEntryStep({
     };
   }, []);
 
+  // Build valid labels set per CCA
+  const validLabelsByCca = useMemo(() => {
+    const map: Record<string, Set<string>> = {};
+    for (const cca of topology.ccas) {
+      const labels = new Set<string>();
+      for (const str of cca.strings) {
+        for (let i = 1; i <= str.panel_count; i++) {
+          labels.add(`${str.name}${i}`);
+        }
+      }
+      map[cca.name] = labels;
+    }
+    return map;
+  }, [topology]);
+
   // Bulk import handling
   const handleBulkImport = useCallback((ccaName: string) => {
     setBulkImporting(prev => ({ ...prev, [ccaName]: true }));
@@ -645,12 +729,27 @@ export function SerialEntryStep({
     }
 
     const expectedCount = cca.strings.reduce((sum, s) => sum + s.panel_count, 0);
-    const result = parseBulkSerials(text, expectedCount, ccaName);
+    const result = parseBulkSerials(text, expectedCount, ccaName, validLabelsByCca[ccaName]);
 
     if ('error' in result) {
       setBulkError(prev => ({ ...prev, [ccaName]: result.error }));
       setBulkImporting(prev => ({ ...prev, [ccaName]: false }));
       return;
+    }
+
+    // Normalize to a flat serial array (ordered by panel slots) for applyBulkSerials
+    let serials: string[];
+    if ('serialMap' in result) {
+      // TSV mode: map labels to their slot order
+      serials = [];
+      for (const str of cca.strings) {
+        for (let i = 1; i <= str.panel_count; i++) {
+          const label = `${str.name}${i}`;
+          serials.push(result.serialMap[label] || '');
+        }
+      }
+    } else {
+      serials = result.serials;
     }
 
     // Check if any existing values will be overwritten
@@ -659,14 +758,14 @@ export function SerialEntryStep({
 
     if (hasExisting) {
       // Show confirmation
-      setShowBulkConfirm({ ccaName, serials: result.serials });
+      setShowBulkConfirm({ ccaName, serials });
       setBulkImporting(prev => ({ ...prev, [ccaName]: false }));
       return;
     }
 
     // Apply directly
-    applyBulkSerials(ccaName, result.serials);
-  }, [bulkText, topology, values]);
+    applyBulkSerials(ccaName, serials);
+  }, [bulkText, topology, values, validLabelsByCca]);
 
   const applyBulkSerials = useCallback((ccaName: string, serials: string[]) => {
     const cca = topology.ccas.find(c => c.name === ccaName);
@@ -797,7 +896,7 @@ export function SerialEntryStep({
       </h2>
       <p style={{ margin: '0', color: '#666' }}>
         Enter the serial number for each panel position. Serial numbers are printed on the
-        back of each Tigo optimizer (4-20 alphanumeric characters).
+        back of each Tigo optimizer (e.g., 4-C3F2CCZ).
       </p>
 
       {/* Clear All button */}
@@ -846,6 +945,83 @@ export function SerialEntryStep({
                 {bulkSuccess[cca.name]}
               </div>
             )}
+
+            {/* Bulk import section (above manual entry) */}
+            <div style={{ marginBottom: '8px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkOpen(prev => ({ ...prev, [cca.name]: !prev[cca.name] }));
+                  setBulkError(prev => ({ ...prev, [cca.name]: null }));
+                  setBulkSuccess(prev => ({ ...prev, [cca.name]: null }));
+                  setBulkWarning(prev => ({ ...prev, [cca.name]: null }));
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#1976d2',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  padding: '4px 0',
+                  textDecoration: 'underline',
+                }}
+              >
+                {isBulkOpenForCca ? 'Hide Bulk Import' : 'Bulk Import Serials'}
+              </button>
+            </div>
+
+            {isBulkOpenForCca && (() => {
+              // Build a sample placeholder showing first 2 labels
+              const sampleLabels: string[] = [];
+              for (const str of cca.strings) {
+                for (let i = 1; i <= str.panel_count && sampleLabels.length < 2; i++) {
+                  sampleLabels.push(`${str.name}${i}`);
+                }
+                if (sampleLabels.length >= 2) break;
+              }
+              const samplePlaceholder = sampleLabels
+                .map(l => `${l}\t4-C3XXXXX`)
+                .join('\n') + '\n...';
+
+              return (
+                <div style={bulkSectionStyle}>
+                  <textarea
+                    value={bulkText[cca.name] || ''}
+                    onChange={(e) => setBulkText(prev => ({ ...prev, [cca.name]: e.target.value }))}
+                    style={textareaStyle}
+                    aria-label={`Paste serial numbers for CCA ${cca.name}`}
+                    maxLength={10000}
+                    placeholder={samplePlaceholder}
+                  />
+                  <p style={hintStyle}>
+                    Paste tab-separated label-serial pairs, one per line (e.g., "B4  4-C3F2CCY").
+                    Or paste a plain list of {ccaPanelCount} serials (one per line or comma-separated).
+                  </p>
+                  {bulkError[cca.name] && (
+                    <div style={{ ...errorTextStyle, marginTop: '8px' }}>
+                      <span aria-hidden="true">{'\u26A0'}</span> {bulkError[cca.name]}
+                    </div>
+                  )}
+                  {bulkWarning[cca.name] && (
+                    <div style={warningBannerStyle} role="alert">
+                      {bulkWarning[cca.name]}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleBulkImport(cca.name)}
+                    disabled={bulkImporting[cca.name] || !(bulkText[cca.name] || '').trim()}
+                    style={
+                      bulkImporting[cca.name] || !(bulkText[cca.name] || '').trim()
+                        ? { ...disabledButtonStyle, marginTop: '8px' }
+                        : { ...primaryButtonStyle, marginTop: '8px' }
+                    }
+                  >
+                    {bulkImporting[cca.name] ? 'Importing...' : 'Import'}
+                  </button>
+                </div>
+              );
+            })()}
 
             {/* String sections */}
             {cca.strings.map((str) => {
@@ -899,68 +1075,6 @@ export function SerialEntryStep({
               );
             })}
 
-            {/* Bulk import section */}
-            <div style={{ marginTop: '16px' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setBulkOpen(prev => ({ ...prev, [cca.name]: !prev[cca.name] }));
-                  setBulkError(prev => ({ ...prev, [cca.name]: null }));
-                  setBulkSuccess(prev => ({ ...prev, [cca.name]: null }));
-                  setBulkWarning(prev => ({ ...prev, [cca.name]: null }));
-                }}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: '#1976d2',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  padding: '4px 0',
-                  textDecoration: 'underline',
-                }}
-              >
-                {isBulkOpenForCca ? 'Hide Bulk Import' : 'Bulk Import Serials'}
-              </button>
-            </div>
-
-            {isBulkOpenForCca && (
-              <div style={bulkSectionStyle}>
-                <textarea
-                  value={bulkText[cca.name] || ''}
-                  onChange={(e) => setBulkText(prev => ({ ...prev, [cca.name]: e.target.value }))}
-                  style={textareaStyle}
-                  aria-label={`Paste serial numbers for CCA ${cca.name}`}
-                  maxLength={10000}
-                  placeholder={`Paste ${ccaPanelCount} serial numbers...`}
-                />
-                <p style={hintStyle}>
-                  Paste serial numbers separated by commas, tabs, or newlines (one per line).
-                  Empty entries between delimiters are ignored — ensure every slot has a value.
-                </p>
-                {bulkError[cca.name] && (
-                  <div style={{ ...errorTextStyle, marginTop: '8px' }}>
-                    <span aria-hidden="true">{'\u26A0'}</span> {bulkError[cca.name]}
-                  </div>
-                )}
-                {bulkWarning[cca.name] && (
-                  <div style={warningBannerStyle} role="alert">
-                    {bulkWarning[cca.name]}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => handleBulkImport(cca.name)}
-                  disabled={bulkImporting[cca.name] || !(bulkText[cca.name] || '').trim()}
-                  style={
-                    bulkImporting[cca.name] || !(bulkText[cca.name] || '').trim()
-                      ? { ...disabledButtonStyle, marginTop: '8px' }
-                      : { ...primaryButtonStyle, marginTop: '8px' }
-                  }
-                >
-                  {bulkImporting[cca.name] ? 'Importing...' : 'Import'}
-                </button>
-              </div>
-            )}
           </div>
         );
       })}
