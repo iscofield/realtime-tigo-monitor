@@ -71,3 +71,9 @@ dashboard/backend/tests/fixtures/*.zip
 # TapTap state file backups (critical - never commit these)
 tigo-mqtt/backups/*
 !tigo-mqtt/backups/README.md
+
+# TapTap config backups
+tigo-mqtt/*.bak*
+
+# Backend runtime data (restore temp files, etc.)
+dashboard/backend/data/
