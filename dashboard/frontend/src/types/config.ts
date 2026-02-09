@@ -13,7 +13,7 @@ export interface MQTTConfig {
 
 // A string of panels connected in series
 export interface StringConfig {
-  name: string;        // 1-2 uppercase letters (A, B, AA)
+  name: string;        // Single uppercase letter (A-Z)
   panel_count: number;
 }
 
@@ -129,6 +129,7 @@ export interface MatchResult {
 export type WizardStep =
   | 'mqtt-config'
   | 'system-topology'
+  | 'panel-serials'
   | 'generate-download'
   | 'discovery'
   | 'validation'
@@ -143,6 +144,7 @@ export interface WizardState {
   discoveredPanels: Record<string, DiscoveredPanel>;
   translations: Record<string, string>;  // tigo_label -> display_label
   validationResults: MatchResult[] | null;
+  serialEntries: Record<string, Record<string, string>> | null;
   configDownloaded: boolean;
   // Restore-related fields
   restoredFromBackup: boolean;

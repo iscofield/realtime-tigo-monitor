@@ -6,7 +6,8 @@
 import { useState, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { downloadTigoMqttConfig } from '../../../api/config';
-import type { MQTTConfig, SystemConfig } from '../../../types/config';
+import { serialEntriesToPanels } from './SerialEntryStep';
+import type { MQTTConfig, SystemConfig, Panel } from '../../../types/config';
 
 const containerStyle: CSSProperties = {
   display: 'flex',
@@ -74,7 +75,7 @@ const codeBlockStyle: CSSProperties = {
 
 const buttonGroupStyle: CSSProperties = {
   display: 'flex',
-  gap: '12px',
+  justifyContent: 'space-between',
   marginTop: '20px',
 };
 
@@ -116,6 +117,7 @@ const successBadgeStyle: CSSProperties = {
 interface GenerateDownloadStepProps {
   mqttConfig: MQTTConfig;
   topology: SystemConfig;
+  serialEntries: Record<string, Record<string, string>> | null;
   downloaded: boolean;
   onDownloaded: () => void;
   onNext: () => void;
@@ -125,6 +127,7 @@ interface GenerateDownloadStepProps {
 export function GenerateDownloadStep({
   mqttConfig,
   topology,
+  serialEntries,
   downloaded,
   onDownloaded,
   onNext,
@@ -132,6 +135,7 @@ export function GenerateDownloadStep({
 }: GenerateDownloadStepProps) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [errorType, setErrorType] = useState<'network' | 'validation' | 'other' | null>(null);
 
   const detectedTimezone = useMemo(() => {
     try {
@@ -144,9 +148,23 @@ export function GenerateDownloadStep({
   const handleDownload = async () => {
     setIsDownloading(true);
     setDownloadError(null);
+    setErrorType(null);
 
     try {
-      const blob = await downloadTigoMqttConfig(mqttConfig, topology.ccas, [], detectedTimezone);
+      // Build panels from serial entries if provided
+      let panels: Panel[] = [];
+      if (serialEntries) {
+        try {
+          panels = serialEntriesToPanels(serialEntries, topology);
+        } catch (e) {
+          setDownloadError('An internal error occurred while preparing panel data. Please go back and verify your serial entries.');
+          setErrorType('validation');
+          setIsDownloading(false);
+          return;
+        }
+      }
+
+      const blob = await downloadTigoMqttConfig(mqttConfig, topology.ccas, panels, detectedTimezone);
 
       // Trigger download
       const url = window.URL.createObjectURL(blob);
@@ -159,8 +177,18 @@ export function GenerateDownloadStep({
       window.URL.revokeObjectURL(url);
 
       onDownloaded();
-    } catch (e) {
-      setDownloadError(e instanceof Error ? e.message : 'Download failed');
+    } catch (e: unknown) {
+      const status = (e as { status?: number })?.status;
+      if (status === 422) {
+        setErrorType('validation');
+        setDownloadError(e instanceof Error ? e.message : 'Validation error');
+      } else if (!status || status >= 500) {
+        setErrorType('network');
+        setDownloadError('Download failed. Please try again.');
+      } else {
+        setErrorType('other');
+        setDownloadError(e instanceof Error ? e.message : 'Download failed');
+      }
     } finally {
       setIsDownloading(false);
     }
@@ -239,7 +267,26 @@ export function GenerateDownloadStep({
               {isDownloading ? 'Generating...' : 'Download ZIP'}
             </button>
             {downloadError && (
-              <p style={{ color: '#c62828', marginTop: '12px' }}>{downloadError}</p>
+              <div style={{ marginTop: '12px' }}>
+                <p style={{ color: '#c62828', margin: '0 0 8px' }}>{downloadError}</p>
+                {errorType === 'validation' ? (
+                  <button
+                    type="button"
+                    onClick={onBack}
+                    style={{ ...secondaryButtonStyle, fontSize: '13px', padding: '8px 16px' }}
+                  >
+                    Go Back to Fix
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleDownload}
+                    style={{ ...primaryButtonStyle, fontSize: '13px', padding: '8px 16px' }}
+                  >
+                    Retry Download
+                  </button>
+                )}
+              </div>
             )}
           </>
         )}
@@ -249,10 +296,10 @@ export function GenerateDownloadStep({
       <div style={instructionsStyle}>
         <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>Deployment Instructions</h3>
         <ol style={{ margin: 0, paddingLeft: '20px', lineHeight: 1.8 }}>
-          <li>Clone the repository on your Raspberry Pi:
+          <li>Clone the repository on your device:
             <pre style={codeBlockStyle}>git clone https://github.com/iscofield/realtime-tigo-monitor.git{'\n'}cd realtime-tigo-monitor/tigo-mqtt</pre>
           </li>
-          <li>Copy the ZIP to the Pi and extract into the tigo-mqtt directory:
+          <li>Copy the ZIP to your device and extract into the tigo-mqtt directory:
             <pre style={codeBlockStyle}>unzip tigo-mqtt-config.zip -d /path/to/realtime-tigo-monitor/tigo-mqtt/</pre>
           </li>
           <li>Build and start the containers:

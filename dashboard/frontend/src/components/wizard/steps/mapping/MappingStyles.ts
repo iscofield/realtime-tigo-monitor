@@ -293,7 +293,7 @@ export const legendItemStyle: CSSProperties = {
 // Navigation buttons
 export const buttonGroupStyle: CSSProperties = {
   display: 'flex',
-  gap: '12px',
+  justifyContent: 'space-between',
   marginTop: '24px',
 };
 

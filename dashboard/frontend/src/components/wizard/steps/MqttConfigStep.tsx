@@ -47,7 +47,7 @@ const hintStyle: CSSProperties = {
 
 const buttonGroupStyle: CSSProperties = {
   display: 'flex',
-  gap: '12px',
+  justifyContent: 'space-between',
   marginTop: '20px',
 };
 

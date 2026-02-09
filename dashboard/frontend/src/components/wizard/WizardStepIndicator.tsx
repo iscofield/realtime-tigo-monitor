@@ -9,6 +9,7 @@ import type { WizardStep } from '../../types/config';
 const ALL_STEPS: { id: WizardStep; label: string }[] = [
   { id: 'mqtt-config', label: 'MQTT Settings' },
   { id: 'system-topology', label: 'System Setup' },
+  { id: 'panel-serials', label: 'Panel Serials' },
   { id: 'generate-download', label: 'Generate Config' },
   { id: 'discovery', label: 'Discovery' },
   { id: 'validation', label: 'Validation' },
@@ -16,18 +17,18 @@ const ALL_STEPS: { id: WizardStep; label: string }[] = [
 ];
 
 // Steps to hide in restore mode (panel data already in backup)
-const RESTORE_HIDDEN_STEPS: WizardStep[] = ['discovery', 'validation'];
+const RESTORE_HIDDEN_STEPS: WizardStep[] = ['panel-serials', 'discovery', 'validation'];
 
 const containerStyle: CSSProperties = {
   display: 'flex',
-  justifyContent: 'space-between',
+  alignItems: 'flex-start',
   padding: '20px 30px',
   borderBottom: '1px solid #e0e0e0',
   backgroundColor: 'white',
   overflowX: 'auto',
 };
 
-const stepStyle = (active: boolean, completed: boolean, clickable: boolean): CSSProperties => ({
+const stepItemStyle = (active: boolean, completed: boolean, clickable: boolean): CSSProperties => ({
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
@@ -35,6 +36,7 @@ const stepStyle = (active: boolean, completed: boolean, clickable: boolean): CSS
   cursor: clickable ? 'pointer' : 'default',
   opacity: !active && !completed ? 0.5 : 1,
   transition: 'opacity 0.2s',
+  flexShrink: 0,
 });
 
 const circleStyle = (active: boolean, completed: boolean): CSSProperties => ({
@@ -62,8 +64,6 @@ const connectorStyle = (completed: boolean): CSSProperties => ({
   flex: 1,
   height: '2px',
   backgroundColor: completed ? '#4caf50' : '#e0e0e0',
-  margin: '0 8px',
-  alignSelf: 'flex-start',
   marginTop: '15px',
   minWidth: '20px',
 });
@@ -97,9 +97,9 @@ export function WizardStepIndicator({
         const isClickable = index <= furthestIndex + 1;
 
         return (
-          <div key={step.id} style={{ display: 'flex', alignItems: 'flex-start', flex: index < visibleSteps.length - 1 ? 1 : 0 }}>
+          <div key={step.id} style={{ display: 'contents' }}>
             <div
-              style={stepStyle(isActive, isCompleted, isClickable)}
+              style={stepItemStyle(isActive, isCompleted, isClickable)}
               onClick={() => isClickable && onStepClick(step.id)}
               role="button"
               tabIndex={isClickable ? 0 : -1}

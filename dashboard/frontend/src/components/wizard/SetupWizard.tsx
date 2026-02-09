@@ -11,6 +11,7 @@ import { WizardStepIndicator } from './WizardStepIndicator';
 import { WelcomeStep } from './steps/WelcomeStep';
 import { MqttConfigStep } from './steps/MqttConfigStep';
 import { TopologyStep } from './steps/TopologyStep';
+import { SerialEntryStep } from './steps/SerialEntryStep';
 import { GenerateDownloadStep } from './steps/GenerateDownloadStep';
 import { DiscoveryStep } from './steps/DiscoveryStep';
 import { ValidationStep } from './steps/ValidationStep';
@@ -101,7 +102,7 @@ const restoreBannerIconStyle: CSSProperties = {
 };
 
 // Steps to skip in restore mode (panel data already in backup)
-const RESTORE_SKIP_STEPS: WizardStep[] = ['discovery', 'validation'];
+const RESTORE_SKIP_STEPS: WizardStep[] = ['panel-serials', 'discovery', 'validation'];
 
 interface SetupWizardProps {
   onComplete: () => void;
@@ -183,6 +184,7 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
       const STEP_ORDER: WizardStep[] = [
         'mqtt-config',
         'system-topology',
+        'panel-serials',
         'generate-download',
         'discovery',
         'validation',
@@ -287,7 +289,30 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
             onNext={(topology) => {
               wizardState.setSystemTopology(topology);
               wizardState.saveState();
-              wizardState.goNext();
+              // Check if zero panels - skip serial entry
+              const totalPanels = topology.ccas.reduce((total, cca) =>
+                total + cca.strings.reduce((sum, s) => sum + s.panel_count, 0), 0);
+              if (totalPanels === 0) {
+                // Skip panel-serials step
+                wizardState.goNext(); // goes to panel-serials
+                wizardState.goNext(); // goes to generate-download
+              } else {
+                wizardState.goNext();
+              }
+            }}
+            onBack={wizardState.goBack}
+          />
+        );
+
+      case 'panel-serials':
+        return (
+          <SerialEntryStep
+            topology={wizardState.state.systemTopology!}
+            serialEntries={wizardState.state.serialEntries}
+            onNext={(serials) => {
+              wizardState.setSerialEntries(serials);
+              wizardState.saveState();
+              handleGoNext();
             }}
             onBack={wizardState.goBack}
           />
@@ -298,6 +323,7 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
           <GenerateDownloadStep
             mqttConfig={wizardState.state.mqttConfig!}
             topology={wizardState.state.systemTopology!}
+            serialEntries={wizardState.state.serialEntries}
             downloaded={wizardState.state.configDownloaded}
             onDownloaded={() => {
               wizardState.setConfigDownloaded(true);
