@@ -384,6 +384,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 VALID_LOG_LEVELS = {"debug", "info", "warning", "error"}
+WS_INITIAL_LOG_LIMIT = 200
 
 
 @app.websocket("/ws/logs")
@@ -398,16 +399,19 @@ async def logs_websocket(websocket: WebSocket):
     await websocket.accept()
     log_service.add_connection(websocket, level)
     try:
-        # Filter initial payload by requested level
+        # Filter initial payload by requested level, limited to recent entries
         all_logs = log_service.get_all_logs()
-        filtered_logs = {
-            sys: LogService.filter_by_level(entries, level)
-            for sys, entries in all_logs.items()
-        }
+        filtered_logs = {}
+        total_counts = {}
+        for sys, entries in all_logs.items():
+            filtered = LogService.filter_by_level(entries, level)
+            total_counts[sys] = len(filtered)
+            filtered_logs[sys] = filtered[-WS_INITIAL_LOG_LIMIT:]
         initial = {
             "type": "initial",
             "systems": log_service.get_systems(),
             "logs": filtered_logs,
+            "total": total_counts,
             "has_debug": log_service.get_has_debug(),
         }
         await websocket.send_json(initial)

@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 VALID_SYSTEM_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 # Pattern to extract log level from taptap log lines
-# Format: "2026-02-08 11:06:43 INFO     message text"
+# Formats: "2026-02-08 11:06:43 INFO     message text"
+#           "2026-02-08 21:36:18.913 DEBUG: message text"
 LEVEL_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+",
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL):?\s+",
     re.IGNORECASE,
 )
 
@@ -253,9 +254,8 @@ class LogService:
                             and isinstance(data.get("seq"), int)
                             and data.get("seq") >= 0
                         ):
-                            # Backfill level for entries persisted without it
-                            if "level" not in data:
-                                data["level"] = self._parse_level(data.get("line", ""))
+                            # Always re-parse level from line text on load
+                            data["level"] = self._parse_level(data.get("line", ""))
                             if data["level"] == "debug":
                                 has_debug = True
                             entries.append(data)

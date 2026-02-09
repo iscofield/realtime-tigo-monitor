@@ -192,7 +192,7 @@ function LevelBadge({ level }: { level: string }) {
 
 function LogViewer() {
   const [logLevel, setLogLevel] = useState<'info' | 'debug'>('info');
-  const { logsBySystem, systems, status, hasDebug } = useLogWebSocket(logLevel);
+  const { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs } = useLogWebSocket(logLevel);
   const [activeSystem, setActiveSystem] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [newEntryCount, setNewEntryCount] = useState(0);
@@ -221,7 +221,7 @@ function LogViewer() {
     ? entries.filter((e: LogEntry) => e.line.toLowerCase().includes(searchLower))
     : entries;
 
-  // Track scroll position for "new entries" badge
+  // Track scroll position for "new entries" badge and lazy loading
   const handleScroll = useCallback(() => {
     const el = logContainerRef.current;
     if (!el) return;
@@ -230,7 +230,12 @@ function LogViewer() {
     if (isAtNewestRef.current) {
       setNewEntryCount(0);
     }
-  }, []);
+    // Detect scroll near bottom (oldest entries) for lazy loading
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    if (nearBottom && currentSystem && hasOlderBySystem[currentSystem] && !loadingOlder) {
+      fetchOlderLogs(currentSystem);
+    }
+  }, [currentSystem, hasOlderBySystem, loadingOlder, fetchOlderLogs]);
 
   // Track new entries when scrolled away
   const prevEntryCountRef = useRef(entries.length);
@@ -320,7 +325,9 @@ function LogViewer() {
         <div style={countStyle} aria-live="polite">
           {search
             ? `Showing ${filteredCount} of ${totalEntries} entries`
-            : `${totalEntries} entries`}
+            : currentSystem && totalBySystem[currentSystem] && totalBySystem[currentSystem] > totalEntries
+              ? `${totalEntries} of ${totalBySystem[currentSystem]} entries`
+              : `${totalEntries} entries`}
         </div>
       )}
 
@@ -354,6 +361,16 @@ function LogViewer() {
               {entry.line}
             </div>
           ))}
+          {loadingOlder && (
+            <div style={{ textAlign: 'center', padding: '8px', color: '#888', fontSize: '12px' }}>
+              Loading older entries...
+            </div>
+          )}
+          {currentSystem && !loadingOlder && hasOlderBySystem[currentSystem] === false && entries.length > 0 && (
+            <div style={{ textAlign: 'center', padding: '8px', color: '#555', fontSize: '11px' }}>
+              All entries loaded
+            </div>
+          )}
         </div>
       )}
     </div>
