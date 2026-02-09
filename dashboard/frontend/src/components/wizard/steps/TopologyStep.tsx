@@ -322,7 +322,7 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
           disabled={!isValid}
           style={isValid ? primaryButtonStyle : { ...primaryButtonStyle, backgroundColor: '#ccc', cursor: 'not-allowed' }}
         >
-          Next: Generate Config
+          Next: Panel Serials
         </button>
       </div>
     </form>
