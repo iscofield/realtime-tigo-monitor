@@ -296,10 +296,10 @@ export function GenerateDownloadStep({
       <div style={instructionsStyle}>
         <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>Deployment Instructions</h3>
         <ol style={{ margin: 0, paddingLeft: '20px', lineHeight: 1.8 }}>
-          <li>Clone the repository on your Raspberry Pi:
+          <li>Clone the repository on your device:
             <pre style={codeBlockStyle}>git clone https://github.com/iscofield/realtime-tigo-monitor.git{'\n'}cd realtime-tigo-monitor/tigo-mqtt</pre>
           </li>
-          <li>Copy the ZIP to the Pi and extract into the tigo-mqtt directory:
+          <li>Copy the ZIP to your device and extract into the tigo-mqtt directory:
             <pre style={codeBlockStyle}>unzip tigo-mqtt-config.zip -d /path/to/realtime-tigo-monitor/tigo-mqtt/</pre>
           </li>
           <li>Build and start the containers:

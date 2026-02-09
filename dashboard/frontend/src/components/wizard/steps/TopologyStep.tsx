@@ -251,7 +251,7 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
                 title="Must be /dev/ttyACMn or /dev/ttyUSBn"
                 required
               />
-              <span style={hintStyle}>Serial port on Raspberry Pi</span>
+              <span style={hintStyle}>Serial port on your device</span>
             </div>
           </div>
 

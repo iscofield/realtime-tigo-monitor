@@ -1080,11 +1080,11 @@ export function SerialEntryStep({
       })}
 
       {/* Button group */}
-      <div style={buttonGroupStyle}>
+      <div style={{ ...buttonGroupStyle, justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <button type="button" onClick={onBack} style={secondaryButtonStyle}>
           Back
         </button>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center' }}>
           <button
             type="button"
             onClick={() => setShowSkipModal(true)}
@@ -1115,7 +1115,7 @@ export function SerialEntryStep({
       {showSkipModal && (
         <ConfirmationModal
           title="Config Will Require Manual Editing"
-          body="Without serial numbers, the generated configuration files will contain placeholder values (e.g., PLACEHOLDER_A1). You will need to manually edit the config-*.ini files on the Raspberry Pi before taptap can correctly identify your panels. Continue with placeholders?"
+          body="Without serial numbers, the generated configuration files will contain placeholder values (e.g., PLACEHOLDER_A1). You will need to manually edit the config-*.ini files on your device before taptap can correctly identify your panels. Continue with placeholders?"
           confirmLabel="Continue with Placeholders"
           cancelLabel="Go Back"
           onConfirm={handleSkipConfirm}
