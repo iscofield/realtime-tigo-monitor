@@ -75,7 +75,7 @@ const errorTextStyle: CSSProperties = {
 
 const buttonGroupStyle: CSSProperties = {
   display: 'flex',
-  gap: '12px',
+  justifyContent: 'space-between',
   marginTop: '20px',
 };
 
@@ -1080,7 +1080,7 @@ export function SerialEntryStep({
       })}
 
       {/* Button group */}
-      <div style={{ ...buttonGroupStyle, justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <div style={{ ...buttonGroupStyle, alignItems: 'flex-start' }}>
         <button type="button" onClick={onBack} style={secondaryButtonStyle}>
           Back
         </button>
