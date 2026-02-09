@@ -78,3 +78,6 @@ tigo-mqtt/*.bak*
 
 # Backend runtime data (restore temp files, etc.)
 dashboard/backend/data/
+
+# Favicon generation variants (local reference only)
+assets/favicon-variants/
