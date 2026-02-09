@@ -52,7 +52,7 @@ def parse_tigo_label(label: str) -> tuple[str, int] | None:
 
 class StringConfig(BaseModel):
     """A string of panels connected in series."""
-    name: str = Field(..., min_length=1, max_length=2)
+    name: str = Field(..., min_length=1, max_length=1)
     panel_count: int = Field(..., ge=1)
 
     @field_validator("name")
@@ -60,9 +60,9 @@ class StringConfig(BaseModel):
     def validate_string_name(cls, v: str) -> str:
         """Validate and normalize string name to uppercase."""
         v = v.upper()
-        if not re.match(r'^[A-Z]{1,2}$', v):
+        if not re.match(r'^[A-Z]$', v):
             raise ValueError(
-                f"String name must be 1-2 uppercase letters, got: {v}"
+                f"String name must be a single uppercase letter (A-Z), got: {v}"
             )
         return v
 
@@ -237,7 +237,7 @@ class Panel(BaseModel):
     """A configured panel with serial and label info."""
     serial: str = Field(..., min_length=1)
     cca: str = Field(..., min_length=1)
-    string: str = Field(..., min_length=1, max_length=2)
+    string: str = Field(..., min_length=1, max_length=1)
     tigo_label: str = Field(..., min_length=1)
     display_label: str = Field(..., min_length=1)
     position: Optional[PanelPosition] = None
