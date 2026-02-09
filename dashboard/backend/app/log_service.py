@@ -12,11 +12,27 @@ logger = logging.getLogger(__name__)
 # Allowlist pattern for system names — alphanumeric, hyphens, underscores only
 VALID_SYSTEM_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
+# Pattern to extract log level from taptap log lines
+# Format: "2026-02-08 11:06:43 INFO     message text"
+LEVEL_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+",
+    re.IGNORECASE,
+)
+
+LEVEL_VALUES = {
+    "debug": 10,
+    "info": 20,
+    "warning": 30,
+    "error": 40,
+    "critical": 50,
+}
+
 
 class LogEntry(TypedDict):
     ts: str
     line: str
     seq: int
+    level: str
 
 
 class LogService:
@@ -26,8 +42,15 @@ class LogService:
         self.log_dir = Path(log_dir)
         self.retention_days = retention_days
         self._logs: dict[str, list[LogEntry]] = {}
-        self._connections: set[WebSocket] = set()
+        self._connections: dict[WebSocket, int] = {}  # ws → min_level_value
         self._last_seq: dict[str, int] = {}
+        self._has_debug: dict[str, bool] = {}
+
+    @staticmethod
+    def _parse_level(line: str) -> str:
+        """Extract log level from a taptap log line. Defaults to 'info'."""
+        m = LEVEL_RE.match(line)
+        return m.group(1).lower() if m else "info"
 
     @staticmethod
     def _validate_system(system: str) -> bool:
@@ -62,6 +85,12 @@ class LogService:
                 logger.warning(f"Seq gap for {system}: expected {prev + 1}, got {entry['seq']}")
         self._last_seq[system] = entry["seq"]
 
+        # Parse and attach level before persisting
+        if not entry.get("level"):
+            entry["level"] = self._parse_level(entry.get("line", ""))
+        if entry["level"] == "debug":
+            self._has_debug[system] = True
+
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         log_path = self.log_dir / system / f"{date_str}.log"
         try:
@@ -85,25 +114,30 @@ class LogService:
             f.write(line)
             f.flush()
 
-    def add_connection(self, ws: WebSocket) -> None:
-        self._connections.add(ws)
+    def add_connection(self, ws: WebSocket, min_level: str = "info") -> None:
+        self._connections[ws] = LEVEL_VALUES.get(min_level, 20)
 
     def remove_connection(self, ws: WebSocket) -> None:
-        self._connections.discard(ws)
+        self._connections.pop(ws, None)
 
     async def _broadcast_entry(self, system: str, entry: dict) -> None:
+        entry_level_value = LEVEL_VALUES.get(entry.get("level", "info"), 20)
         msg = json.dumps({"type": "log", "system": system, "entry": entry})
-        connections = set(self._connections)
-        if not connections:
+        # Filter connections by their minimum level
+        targets = [
+            ws for ws, min_val in self._connections.items()
+            if entry_level_value >= min_val
+        ]
+        if not targets:
             return
         results = await asyncio.gather(
-            *[ws.send_text(msg) for ws in connections],
+            *[ws.send_text(msg) for ws in targets],
             return_exceptions=True,
         )
-        for ws, result in zip(connections, results):
+        for ws, result in zip(targets, results):
             if isinstance(result, Exception):
                 logger.debug(f"Removing log WS client after send error: {result}")
-                self._connections.discard(ws)
+                self._connections.pop(ws, None)
 
     async def _pruning_loop(self) -> None:
         while True:
@@ -140,6 +174,17 @@ class LogService:
 
     def get_systems(self) -> list[str]:
         return list(self._logs.keys())
+
+    def get_has_debug(self) -> dict[str, bool]:
+        return dict(self._has_debug)
+
+    @staticmethod
+    def filter_by_level(entries: list[LogEntry], min_level: str) -> list[LogEntry]:
+        """Filter entries to those at or above the given level."""
+        min_val = LEVEL_VALUES.get(min_level, 20)
+        if min_val <= 10:  # debug — no filtering needed
+            return entries
+        return [e for e in entries if LEVEL_VALUES.get(e.get("level", "info"), 20) >= min_val]
 
     def prune_old_logs(self) -> int:
         if not self.log_dir.exists():
@@ -181,6 +226,7 @@ class LogService:
                 logger.warning(f"Skipping invalid system directory: {system!r}")
                 continue
             entries: list[LogEntry] = []
+            has_debug = False
             log_files = sorted(system_dir.glob("*.log"))
             for log_file in log_files:
                 try:
@@ -207,8 +253,15 @@ class LogService:
                             and isinstance(data.get("seq"), int)
                             and data.get("seq") >= 0
                         ):
+                            # Backfill level for entries persisted without it
+                            if "level" not in data:
+                                data["level"] = self._parse_level(data.get("line", ""))
+                            if data["level"] == "debug":
+                                has_debug = True
                             entries.append(data)
                         else:
                             logger.debug(f"Skipping invalid entry in {log_file}")
             if entries:
                 self._logs[system] = entries
+                if has_debug:
+                    self._has_debug[system] = True

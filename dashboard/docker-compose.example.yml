@@ -28,6 +28,8 @@ services:
       # State file paths for bootstrapping status check
       - TAPTAP_PRIMARY_STATE_FILE=/app/state/primary/taptap.state
       - TAPTAP_SECONDARY_STATE_FILE=/app/state/secondary/taptap.state
+      # Log retention in days (1-30). Reduce if debug logging generates high volume.
+      # - LOG_RETENTION_DAYS=7
     volumes:
       # Config directory - writable for setup wizard to save YAML configs
       - ../config:/app/config

@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 export interface LogEntry {
   ts: string;
   line: string;
   seq: number;
+  level: string;
 }
 
 export type LogConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -12,100 +13,113 @@ interface UseLogWebSocketResult {
   logsBySystem: Record<string, LogEntry[]>;
   systems: string[];
   status: LogConnectionStatus;
+  hasDebug: Record<string, boolean>;
 }
 
-function getLogWebSocketUrl(): string {
+function getLogWebSocketUrl(level: string): string {
+  let base: string;
   if (import.meta.env.VITE_WS_URL) {
     const wsUrl = import.meta.env.VITE_WS_URL;
-    const base = wsUrl.replace(/\/ws\/.*$/, '').replace(/\/$/, '');
-    return `${base}/ws/logs`;
+    base = wsUrl.replace(/\/ws\/.*$/, '').replace(/\/$/, '');
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    base = `${protocol}//${window.location.host}`;
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/ws/logs`;
+  return `${base}/ws/logs?level=${encodeURIComponent(level)}`;
 }
 
-export function useLogWebSocket(): UseLogWebSocketResult {
+export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
   const [logsBySystem, setLogsBySystem] = useState<Record<string, LogEntry[]>>({});
   const [systems, setSystems] = useState<string[]>([]);
   const [status, setStatus] = useState<LogConnectionStatus>('connecting');
+  const [hasDebug, setHasDebug] = useState<Record<string, boolean>>({});
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelayRef = useRef(1000);
+  const intentionalCloseRef = useRef(false);
 
-  const connect = useCallback(() => {
+  useEffect(() => {
+    intentionalCloseRef.current = false;
+
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
 
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
+    function connect() {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
 
-    setStatus('connecting');
+      setStatus('connecting');
 
-    try {
-      const ws = new WebSocket(getLogWebSocketUrl());
-      wsRef.current = ws;
+      try {
+        const ws = new WebSocket(getLogWebSocketUrl(level));
+        wsRef.current = ws;
 
-      ws.onopen = () => {
-        setStatus('connected');
-        reconnectDelayRef.current = 1000; // Reset backoff
-      };
+        ws.onopen = () => {
+          setStatus('connected');
+          reconnectDelayRef.current = 1000;
+        };
 
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
 
-          if (data.type === 'initial') {
-            // Replace all state with initial payload
-            setLogsBySystem(data.logs || {});
-            setSystems(data.systems || []);
-          } else if (data.type === 'log') {
-            const { system, entry } = data;
-            setLogsBySystem((prev) => ({
-              ...prev,
-              [system]: [...(prev[system] || []), entry],
-            }));
-            // Add new system if not already tracked
-            setSystems((prev) =>
-              prev.includes(system) ? prev : [...prev, system]
-            );
+            if (data.type === 'initial') {
+              setLogsBySystem(data.logs || {});
+              setSystems(data.systems || []);
+              setHasDebug(data.has_debug || {});
+            } else if (data.type === 'log') {
+              const { system, entry } = data;
+              setLogsBySystem((prev) => ({
+                ...prev,
+                [system]: [...(prev[system] || []), entry],
+              }));
+              setSystems((prev) =>
+                prev.includes(system) ? prev : [...prev, system]
+              );
+              if (entry.level === 'debug') {
+                setHasDebug((prev) => prev[system] ? prev : { ...prev, [system]: true });
+              }
+            }
+          } catch (e) {
+            console.error('Failed to parse log WebSocket message:', e);
           }
-        } catch (e) {
-          console.error('Failed to parse log WebSocket message:', e);
-        }
-      };
+        };
 
-      ws.onclose = () => {
-        setStatus('disconnected');
-        // Exponential backoff: 1s, 2s, 4s, ... up to 30s
-        reconnectTimeoutRef.current = setTimeout(() => {
-          reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30000);
-          connect();
-        }, reconnectDelayRef.current);
-      };
+        ws.onclose = () => {
+          if (intentionalCloseRef.current) return;
+          setStatus('disconnected');
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectDelayRef.current = Math.min(reconnectDelayRef.current * 2, 30000);
+            connect();
+          }, reconnectDelayRef.current);
+        };
 
-      ws.onerror = () => {
+        ws.onerror = () => {
+          setStatus('error');
+        };
+      } catch (e) {
         setStatus('error');
-      };
-    } catch (e) {
-      setStatus('error');
+      }
     }
-  }, []);
 
-  useEffect(() => {
     connect();
 
     return () => {
+      intentionalCloseRef.current = true;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
       }
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
-  }, [connect]);
+  }, [level]);
 
-  return { logsBySystem, systems, status };
+  return { logsBySystem, systems, status, hasDebug };
 }

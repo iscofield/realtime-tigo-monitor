@@ -383,18 +383,32 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
+VALID_LOG_LEVELS = {"debug", "info", "warning", "error"}
+
+
 @app.websocket("/ws/logs")
 async def logs_websocket(websocket: WebSocket):
     if log_service is None:
         await websocket.close(code=1011, reason="Log service not available")
         return
+    # Parse level from query params
+    level = (websocket.query_params.get("level") or "info").lower()
+    if level not in VALID_LOG_LEVELS:
+        level = "info"
     await websocket.accept()
-    log_service.add_connection(websocket)
+    log_service.add_connection(websocket, level)
     try:
+        # Filter initial payload by requested level
+        all_logs = log_service.get_all_logs()
+        filtered_logs = {
+            sys: LogService.filter_by_level(entries, level)
+            for sys, entries in all_logs.items()
+        }
         initial = {
             "type": "initial",
             "systems": log_service.get_systems(),
-            "logs": log_service.get_all_logs(),
+            "logs": filtered_logs,
+            "has_debug": log_service.get_has_debug(),
         }
         await websocket.send_json(initial)
         while True:
@@ -420,6 +434,7 @@ async def get_logs(
     days: int = Query(default=7, ge=1, le=30),
     limit: int = Query(default=1000, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
+    level: str = Query(default="info"),
 ):
     if log_service is None:
         raise HTTPException(status_code=503, detail="Log service not available")
@@ -428,10 +443,12 @@ async def get_logs(
     systems = log_service.get_systems()
     if system not in systems:
         raise HTTPException(status_code=404, detail="System not found")
+    req_level = level.lower() if level.lower() in VALID_LOG_LEVELS else "info"
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_str = cutoff.isoformat()
     all_entries = log_service.get_logs_for_system(system)
     filtered = [e for e in all_entries if e.get("ts", "") >= cutoff_str]
+    filtered = LogService.filter_by_level(filtered, req_level)
     filtered.sort(key=lambda e: e.get("ts", ""), reverse=True)
     total = len(filtered)
     entries = filtered[offset : offset + limit]
@@ -447,6 +464,7 @@ class LogEntryModel(BaseModel):
     ts: str = PydanticField(min_length=1)
     line: str = PydanticField(max_length=10300)
     seq: int = PydanticField(ge=0)
+    level: str | None = None  # Optional; parsed from line text if not provided
 
 
 class InjectLogRequest(BaseModel):
@@ -460,7 +478,7 @@ async def inject_log(req: InjectLogRequest):
         raise HTTPException(status_code=404)
     if log_service is None:
         raise HTTPException(status_code=503, detail="Log service not available")
-    accepted = await log_service.ingest(req.system, req.entry.model_dump())
+    accepted = await log_service.ingest(req.system, req.entry.model_dump(exclude_none=True))
     if not accepted:
         raise HTTPException(status_code=422, detail="Entry rejected by validation")
     return {"status": "ok"}

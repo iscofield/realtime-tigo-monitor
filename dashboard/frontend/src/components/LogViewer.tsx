@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import { useLogWebSocket, type LogEntry } from '../hooks/useLogWebSocket';
 
@@ -18,6 +18,14 @@ function formatTimestamp(ts: string): string {
     return '---------- --:--:--.---';
   }
 }
+
+const LEVEL_COLORS: Record<string, string> = {
+  debug: '#569CD6',
+  info: '#6A9955',
+  warning: '#D7BA7D',
+  error: '#F44747',
+  critical: '#F44747',
+};
 
 const containerStyle: CSSProperties = {
   display: 'flex',
@@ -77,6 +85,17 @@ const clearButtonStyle: CSSProperties = {
   lineHeight: 1,
 };
 
+const levelSelectStyle: CSSProperties = {
+  padding: '5px 8px',
+  backgroundColor: '#3c3c3c',
+  border: '1px solid #555',
+  borderRadius: '4px',
+  color: '#d4d4d4',
+  fontSize: '13px',
+  cursor: 'pointer',
+  outline: 'none',
+};
+
 const countStyle: CSSProperties = {
   padding: '4px 12px',
   fontSize: '12px',
@@ -106,6 +125,18 @@ const timestampStyle: CSSProperties = {
   color: '#6A9955',
   marginRight: '8px',
   userSelect: 'none',
+};
+
+const levelBadgeBaseStyle: CSSProperties = {
+  display: 'inline-block',
+  fontSize: '10px',
+  fontWeight: 600,
+  padding: '0 4px',
+  borderRadius: '3px',
+  marginRight: '6px',
+  textTransform: 'uppercase',
+  lineHeight: '16px',
+  verticalAlign: 'middle',
 };
 
 const emptyStateStyle: CSSProperties = {
@@ -143,13 +174,36 @@ const newEntriesBadgeStyle: CSSProperties = {
   boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
 };
 
+function LevelBadge({ level }: { level: string }) {
+  const color = LEVEL_COLORS[level] || LEVEL_COLORS.info;
+  return (
+    <span
+      style={{
+        ...levelBadgeBaseStyle,
+        color,
+        border: `1px solid ${color}40`,
+        backgroundColor: `${color}15`,
+      }}
+    >
+      {level}
+    </span>
+  );
+}
+
 function LogViewer() {
-  const { logsBySystem, systems, status } = useLogWebSocket();
+  const [logLevel, setLogLevel] = useState<'info' | 'debug'>('info');
+  const { logsBySystem, systems, status, hasDebug } = useLogWebSocket(logLevel);
   const [activeSystem, setActiveSystem] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [newEntryCount, setNewEntryCount] = useState(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const isAtNewestRef = useRef(true);
+
+  // Show dropdown if any system has debug entries
+  const showLevelDropdown = useMemo(
+    () => Object.values(hasDebug).some(Boolean),
+    [hasDebug]
+  );
 
   // Set active system when systems become available
   useEffect(() => {
@@ -249,6 +303,17 @@ function LogViewer() {
             X
           </button>
         )}
+        {showLevelDropdown && (
+          <select
+            value={logLevel}
+            onChange={(e) => setLogLevel(e.target.value as 'info' | 'debug')}
+            aria-label="Log level filter"
+            style={levelSelectStyle}
+          >
+            <option value="info">Info+</option>
+            <option value="debug">Debug</option>
+          </select>
+        )}
       </div>
 
       {hasEntries && (
@@ -285,6 +350,7 @@ function LogViewer() {
               >
                 {formatTimestamp(entry.ts)}
               </span>
+              <LevelBadge level={entry.level || 'info'} />
               {entry.line}
             </div>
           ))}
