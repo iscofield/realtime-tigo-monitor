@@ -418,6 +418,10 @@ git branch -d implement/feature-name
 
 See `docs/worktree-support.md` for project-specific worktree configuration.
 
+## Protected Branches
+
+- **`assets`** - An **orphan branch** (no common ancestor with `main`) used to store GIF/image assets referenced by the README (e.g., layout-view.gif, setup-wizard.gif). It has a corresponding worktree at `.worktrees/assets`. Do NOT delete this branch, remove the worktree, or merge it into `main`. It is intentionally separate.
+
 ## Restricted Files
 
 - **`docs/TODOs.md`** - Do NOT modify this file. Only the user should edit it. You may commit it when the user has made changes, but never add, remove, or change its contents.
