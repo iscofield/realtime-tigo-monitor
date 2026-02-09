@@ -9,6 +9,7 @@ import type { WizardStep } from '../../types/config';
 const ALL_STEPS: { id: WizardStep; label: string }[] = [
   { id: 'mqtt-config', label: 'MQTT Settings' },
   { id: 'system-topology', label: 'System Setup' },
+  { id: 'panel-serials', label: 'Panel Serials' },
   { id: 'generate-download', label: 'Generate Config' },
   { id: 'discovery', label: 'Discovery' },
   { id: 'validation', label: 'Validation' },
@@ -16,7 +17,7 @@ const ALL_STEPS: { id: WizardStep; label: string }[] = [
 ];
 
 // Steps to hide in restore mode (panel data already in backup)
-const RESTORE_HIDDEN_STEPS: WizardStep[] = ['discovery', 'validation'];
+const RESTORE_HIDDEN_STEPS: WizardStep[] = ['panel-serials', 'discovery', 'validation'];
 
 const containerStyle: CSSProperties = {
   display: 'flex',
