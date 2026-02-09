@@ -167,7 +167,7 @@ QOS = 1
 TIMEOUT = 30
 
 [TAPTAP]
-LOG_LEVEL = info
+LOG_LEVEL = debug
 BINARY = /usr/local/bin/taptap
 SERIAL = {cca.serial_device}
 # WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
@@ -419,7 +419,7 @@ QOS = 1
 TIMEOUT = 30
 
 [TAPTAP]
-LOG_LEVEL = info
+LOG_LEVEL = debug
 BINARY = /usr/local/bin/taptap
 SERIAL = {cca.serial_device}
 # WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
