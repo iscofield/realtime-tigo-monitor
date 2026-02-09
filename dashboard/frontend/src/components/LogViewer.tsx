@@ -86,8 +86,6 @@ const countStyle: CSSProperties = {
 const logContainerStyle: CSSProperties = {
   flex: 1,
   overflow: 'auto',
-  display: 'flex',
-  flexDirection: 'column-reverse',
   fontFamily: 'monospace',
   fontSize: '12px',
   lineHeight: '1.5',
@@ -170,8 +168,8 @@ function LogViewer() {
   const handleScroll = useCallback(() => {
     const el = logContainerRef.current;
     if (!el) return;
-    // In column-reverse, scrollTop=0 is the newest (visual top)
-    isAtNewestRef.current = Math.abs(el.scrollTop) <= 1;
+    // scrollTop=0 means we're at the top (newest entries)
+    isAtNewestRef.current = el.scrollTop <= 1;
     if (isAtNewestRef.current) {
       setNewEntryCount(0);
     }
@@ -275,8 +273,8 @@ function LogViewer() {
               {newEntryCount} new {newEntryCount === 1 ? 'entry' : 'entries'}
             </div>
           )}
-          {/* DOM order: oldest first (ascending). column-reverse displays newest at top. */}
-          {filtered.map((entry: LogEntry, i: number) => (
+          {/* Reverse so newest entries render at the top */}
+          {[...filtered].reverse().map((entry: LogEntry, i: number) => (
             <div key={`${entry.seq}-${i}`} style={logEntryStyle}>
               <span
                 style={timestampStyle}
