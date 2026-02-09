@@ -174,6 +174,27 @@ const newEntriesBadgeStyle: CSSProperties = {
   boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
 };
 
+const filterBarStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  padding: '4px 12px',
+  backgroundColor: '#252526',
+  borderBottom: '1px solid #333',
+  gap: '12px',
+  flexShrink: 0,
+  fontSize: '12px',
+  flexWrap: 'wrap',
+};
+
+const filterCheckboxStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '4px',
+  color: '#aaa',
+  cursor: 'pointer',
+  userSelect: 'none',
+};
+
 function LevelBadge({ level }: { level: string }) {
   const color = LEVEL_COLORS[level] || LEVEL_COLORS.info;
   return (
@@ -192,12 +213,28 @@ function LevelBadge({ level }: { level: string }) {
 
 function LogViewer() {
   const [logLevel, setLogLevel] = useState<'info' | 'debug'>('info');
-  const { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs } = useLogWebSocket(logLevel);
+  const [excludedCategories, setExcludedCategories] = useState<Set<string>>(new Set());
+  const [categoriesInitialized, setCategoriesInitialized] = useState(false);
+
+  const { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs, categories } = useLogWebSocket(logLevel, excludedCategories);
   const [activeSystem, setActiveSystem] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [newEntryCount, setNewEntryCount] = useState(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const isAtNewestRef = useRef(true);
+
+  // Initialize excluded categories from server-provided defaults (once)
+  useEffect(() => {
+    if (!categoriesInitialized && Object.keys(categories).length > 0) {
+      const defaultExcluded = new Set(
+        Object.entries(categories)
+          .filter(([, v]) => !v.default)
+          .map(([k]) => k)
+      );
+      setExcludedCategories(defaultExcluded);
+      setCategoriesInitialized(true);
+    }
+  }, [categories, categoriesInitialized]);
 
   // Show dropdown if any system has debug entries
   const showLevelDropdown = useMemo(
@@ -220,6 +257,18 @@ function LogViewer() {
   const filtered = search
     ? entries.filter((e: LogEntry) => e.line.toLowerCase().includes(searchLower))
     : entries;
+
+  // Memoize reversed array
+  const reversedFiltered = useMemo(() => [...filtered].reverse(), [filtered]);
+
+  const toggleCategory = useCallback((id: string) => {
+    setExcludedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   // Track scroll position for "new entries" badge and lazy loading
   const handleScroll = useCallback(() => {
@@ -265,6 +314,7 @@ function LogViewer() {
   const totalEntries = entries.length;
   const filteredCount = filtered.length;
   const hasEntries = totalEntries > 0;
+  const showCategoryFilters = logLevel === 'debug' && Object.keys(categories).length > 0;
 
   return (
     <div style={containerStyle}>
@@ -321,6 +371,21 @@ function LogViewer() {
         )}
       </div>
 
+      {showCategoryFilters && (
+        <div style={filterBarStyle}>
+          {Object.entries(categories).map(([id, { label }]) => (
+            <label key={id} style={filterCheckboxStyle}>
+              <input
+                type="checkbox"
+                checked={!excludedCategories.has(id)}
+                onChange={() => toggleCategory(id)}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      )}
+
       {hasEntries && (
         <div style={countStyle} aria-live="polite">
           {search
@@ -349,8 +414,8 @@ function LogViewer() {
             </div>
           )}
           {/* Reverse so newest entries render at the top */}
-          {[...filtered].reverse().map((entry: LogEntry, i: number) => (
-            <div key={`${entry.seq}-${i}`} style={logEntryStyle}>
+          {reversedFiltered.map((entry: LogEntry) => (
+            <div key={entry.seq} style={logEntryStyle}>
               <span
                 style={timestampStyle}
                 title={entry.ts}

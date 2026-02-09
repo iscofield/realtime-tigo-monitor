@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field as PydanticField
 
 from . import VERSION
 from .config import get_settings
-from .log_service import LogService
+from .log_service import FILTERABLE_CATEGORIES, LogService
 from .panel_service import PanelService
 from .websocket_manager import ConnectionManager
 from .mqtt_client import MQTTClient
@@ -396,15 +396,20 @@ async def logs_websocket(websocket: WebSocket):
     level = (websocket.query_params.get("level") or "info").lower()
     if level not in VALID_LOG_LEVELS:
         level = "info"
+    # Parse excluded categories from query params
+    exclude_param = websocket.query_params.get("exclude") or ""
+    excluded = {c.strip() for c in exclude_param.split(",") if c.strip()}
+    excluded = excluded & set(FILTERABLE_CATEGORIES.keys())
     await websocket.accept()
-    log_service.add_connection(websocket, level)
+    log_service.add_connection(websocket, level, excluded)
     try:
-        # Filter initial payload by requested level, limited to recent entries
+        # Filter initial payload by requested level and categories, limited to recent entries
         all_logs = log_service.get_all_logs()
         filtered_logs = {}
         total_counts = {}
         for sys, entries in all_logs.items():
             filtered = LogService.filter_by_level(entries, level)
+            filtered = LogService.filter_by_category(filtered, excluded)
             total_counts[sys] = len(filtered)
             filtered_logs[sys] = filtered[-WS_INITIAL_LOG_LIMIT:]
         initial = {
@@ -413,6 +418,7 @@ async def logs_websocket(websocket: WebSocket):
             "logs": filtered_logs,
             "total": total_counts,
             "has_debug": log_service.get_has_debug(),
+            "categories": FILTERABLE_CATEGORIES,
         }
         await websocket.send_json(initial)
         while True:
@@ -439,6 +445,7 @@ async def get_logs(
     limit: int = Query(default=1000, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     level: str = Query(default="info"),
+    exclude: str = Query(default=""),
 ):
     if log_service is None:
         raise HTTPException(status_code=503, detail="Log service not available")
@@ -448,11 +455,14 @@ async def get_logs(
     if system not in systems:
         raise HTTPException(status_code=404, detail="System not found")
     req_level = level.lower() if level.lower() in VALID_LOG_LEVELS else "info"
+    excluded = {c.strip() for c in exclude.split(",") if c.strip()}
+    excluded = excluded & set(FILTERABLE_CATEGORIES.keys())
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_str = cutoff.isoformat()
     all_entries = log_service.get_logs_for_system(system)
     filtered = [e for e in all_entries if e.get("ts", "") >= cutoff_str]
     filtered = LogService.filter_by_level(filtered, req_level)
+    filtered = LogService.filter_by_category(filtered, excluded)
     filtered.sort(key=lambda e: e.get("ts", ""), reverse=True)
     total = len(filtered)
     entries = filtered[offset : offset + limit]

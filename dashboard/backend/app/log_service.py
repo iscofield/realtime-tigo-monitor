@@ -28,6 +28,36 @@ LEVEL_VALUES = {
     "critical": 50,
 }
 
+# Log categories for filtering
+CATEGORY_SENSOR_RESET = "sensor_reset"
+CATEGORY_TELEMETRY_JSON = "telemetry_json"
+CATEGORY_POLLING = "polling"
+CATEGORY_NODE_STATUS = "node_status"
+CATEGORY_MQTT = "mqtt"
+CATEGORY_GENERAL = "general"
+
+# Categories that are always hidden (never sent to clients)
+ALWAYS_HIDDEN = {CATEGORY_SENSOR_RESET}
+
+# All filterable categories with human-readable labels and defaults
+FILTERABLE_CATEGORIES = {
+    CATEGORY_TELEMETRY_JSON: {"label": "Telemetry dumps", "default": False},
+    CATEGORY_POLLING: {"label": "Polling loop", "default": False},
+    CATEGORY_NODE_STATUS: {"label": "Node status", "default": True},
+    CATEGORY_MQTT: {"label": "MQTT messages", "default": True},
+}
+
+# Pre-compiled patterns for category classification
+_NODE_STATUS_RE = re.compile(r"^Node \w+ is (?:offline|online)")
+_RESET_PREFIXES = (
+    "Calling reset_node_sensor",
+    "Calling reset_stat_sensor",
+    "Calling reset_sensor_integral",
+    "Calling reset_stats_tele",
+)
+_POLLING_EXACT = {"stats file updated"}
+_POLLING_PREFIXES = ("Calling run_file", "Calling taptap_tele")
+
 
 class LogEntry(TypedDict):
     ts: str
@@ -43,7 +73,7 @@ class LogService:
         self.log_dir = Path(log_dir)
         self.retention_days = retention_days
         self._logs: dict[str, list[LogEntry]] = {}
-        self._connections: dict[WebSocket, int] = {}  # ws → min_level_value
+        self._connections: dict[WebSocket, tuple[int, set[str]]] = {}  # ws → (min_level_value, excluded_categories)
         self._last_seq: dict[str, int] = {}
         self._has_debug: dict[str, bool] = {}
 
@@ -52,6 +82,28 @@ class LogService:
         """Extract log level from a taptap log line. Defaults to 'info'."""
         m = LEVEL_RE.match(line)
         return m.group(1).lower() if m else "info"
+
+    @staticmethod
+    def _classify_category(line: str) -> str:
+        """Classify a log line into a category for filtering."""
+        # Strip timestamp+level prefix to get message body
+        m = re.match(
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\w+:?\s+(.*)",
+            line,
+        )
+        msg = m.group(1) if m else line
+
+        if msg.startswith(_RESET_PREFIXES):
+            return CATEGORY_SENSOR_RESET
+        if msg.startswith("{") and '"nodes"' in msg:
+            return CATEGORY_TELEMETRY_JSON
+        if msg in _POLLING_EXACT or msg.startswith(_POLLING_PREFIXES):
+            return CATEGORY_POLLING
+        if _NODE_STATUS_RE.match(msg) or "nodes reported online" in msg or "nodes were find identified" in msg:
+            return CATEGORY_NODE_STATUS
+        if "MQTT" in msg or "mqtt" in msg:
+            return CATEGORY_MQTT
+        return CATEGORY_GENERAL
 
     @staticmethod
     def _validate_system(system: str) -> bool:
@@ -92,6 +144,10 @@ class LogService:
         if entry["level"] == "debug":
             self._has_debug[system] = True
 
+        # Classify category
+        if not entry.get("category"):
+            entry["category"] = self._classify_category(entry.get("line", ""))
+
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         log_path = self.log_dir / system / f"{date_str}.log"
         try:
@@ -115,19 +171,23 @@ class LogService:
             f.write(line)
             f.flush()
 
-    def add_connection(self, ws: WebSocket, min_level: str = "info") -> None:
-        self._connections[ws] = LEVEL_VALUES.get(min_level, 20)
+    def add_connection(self, ws: WebSocket, min_level: str = "info", excluded_categories: set[str] | None = None) -> None:
+        self._connections[ws] = (LEVEL_VALUES.get(min_level, 20), excluded_categories or set())
 
     def remove_connection(self, ws: WebSocket) -> None:
         self._connections.pop(ws, None)
 
     async def _broadcast_entry(self, system: str, entry: dict) -> None:
         entry_level_value = LEVEL_VALUES.get(entry.get("level", "info"), 20)
+        entry_cat = entry.get("category", CATEGORY_GENERAL)
+        # Never broadcast always-hidden categories
+        if entry_cat in ALWAYS_HIDDEN:
+            return
         msg = json.dumps({"type": "log", "system": system, "entry": entry})
-        # Filter connections by their minimum level
+        # Filter connections by level and excluded categories
         targets = [
-            ws for ws, min_val in self._connections.items()
-            if entry_level_value >= min_val
+            ws for ws, (min_val, excluded) in self._connections.items()
+            if entry_level_value >= min_val and entry_cat not in excluded
         ]
         if not targets:
             return
@@ -186,6 +246,12 @@ class LogService:
         if min_val <= 10:  # debug — no filtering needed
             return entries
         return [e for e in entries if LEVEL_VALUES.get(e.get("level", "info"), 20) >= min_val]
+
+    @staticmethod
+    def filter_by_category(entries: list[LogEntry], excluded: set[str]) -> list[LogEntry]:
+        """Remove entries whose category is in the excluded set or always hidden."""
+        hide = excluded | ALWAYS_HIDDEN
+        return [e for e in entries if e.get("category", CATEGORY_GENERAL) not in hide]
 
     def prune_old_logs(self) -> int:
         if not self.log_dir.exists():
@@ -258,6 +324,8 @@ class LogService:
                             data["level"] = self._parse_level(data.get("line", ""))
                             if data["level"] == "debug":
                                 has_debug = True
+                            # Classify category
+                            data["category"] = self._classify_category(data.get("line", ""))
                             entries.append(data)
                         else:
                             logger.debug(f"Skipping invalid entry in {log_file}")

@@ -1,13 +1,19 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 
 export interface LogEntry {
   ts: string;
   line: string;
   seq: number;
   level: string;
+  category?: string;
 }
 
 export type LogConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+
+export interface CategoryInfo {
+  label: string;
+  default: boolean;
+}
 
 const BUFFER_CAP = 2000;
 const LAZY_LOAD_BATCH = 200;
@@ -21,9 +27,10 @@ interface UseLogWebSocketResult {
   loadingOlder: boolean;
   hasOlderBySystem: Record<string, boolean>;
   fetchOlderLogs: (system: string) => Promise<void>;
+  categories: Record<string, CategoryInfo>;
 }
 
-function getLogWebSocketUrl(level: string): string {
+function getLogWebSocketUrl(level: string, excluded: Set<string>): string {
   let base: string;
   if (import.meta.env.VITE_WS_URL) {
     const wsUrl = import.meta.env.VITE_WS_URL;
@@ -32,10 +39,17 @@ function getLogWebSocketUrl(level: string): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     base = `${protocol}//${window.location.host}`;
   }
-  return `${base}/ws/logs?level=${encodeURIComponent(level)}`;
+  let url = `${base}/ws/logs?level=${encodeURIComponent(level)}`;
+  if (excluded.size > 0) {
+    url += `&exclude=${encodeURIComponent([...excluded].join(','))}`;
+  }
+  return url;
 }
 
-export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
+export function useLogWebSocket(
+  level: string = 'info',
+  excludedCategories: Set<string> = new Set()
+): UseLogWebSocketResult {
   const [logsBySystem, setLogsBySystem] = useState<Record<string, LogEntry[]>>({});
   const [systems, setSystems] = useState<string[]>([]);
   const [status, setStatus] = useState<LogConnectionStatus>('connecting');
@@ -44,12 +58,19 @@ export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderBySystem, setHasOlderBySystem] = useState<Record<string, boolean>>({});
   const [olderOffsetBySystem, setOlderOffsetBySystem] = useState<Record<string, number>>({});
+  const [categories, setCategories] = useState<Record<string, CategoryInfo>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelayRef = useRef(1000);
   const intentionalCloseRef = useRef(false);
   const loadingOlderRef = useRef(false);
+
+  // Stabilize excludedCategories for useEffect deps
+  const excludeKey = useMemo(
+    () => [...excludedCategories].sort().join(','),
+    [excludedCategories]
+  );
 
   useEffect(() => {
     intentionalCloseRef.current = false;
@@ -68,7 +89,7 @@ export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
       setStatus('connecting');
 
       try {
-        const ws = new WebSocket(getLogWebSocketUrl(level));
+        const ws = new WebSocket(getLogWebSocketUrl(level, excludedCategories));
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -85,6 +106,9 @@ export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
               setSystems(data.systems || []);
               setHasDebug(data.has_debug || {});
               setTotalBySystem(data.total || {});
+              if (data.categories) {
+                setCategories(data.categories);
+              }
 
               const offsets: Record<string, number> = {};
               const hasOlder: Record<string, boolean> = {};
@@ -153,16 +177,25 @@ export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
         wsRef.current = null;
       }
     };
-  }, [level]);
+  }, [level, excludeKey]);
+
+  // Use refs for fetchOlderLogs deps to avoid callback recreation
+  const hasOlderRef = useRef(hasOlderBySystem);
+  hasOlderRef.current = hasOlderBySystem;
+  const offsetRef = useRef(olderOffsetBySystem);
+  offsetRef.current = olderOffsetBySystem;
 
   const fetchOlderLogs = useCallback(async (system: string) => {
-    if (loadingOlderRef.current || !hasOlderBySystem[system]) return;
+    if (loadingOlderRef.current || !hasOlderRef.current[system]) return;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      const offset = olderOffsetBySystem[system] || 0;
+      const offset = offsetRef.current[system] || 0;
       const API_BASE = import.meta.env.VITE_API_BASE || '';
-      const url = `${API_BASE}/api/logs/${encodeURIComponent(system)}?level=${encodeURIComponent(level)}&limit=${LAZY_LOAD_BATCH}&offset=${offset}`;
+      let url = `${API_BASE}/api/logs/${encodeURIComponent(system)}?level=${encodeURIComponent(level)}&limit=${LAZY_LOAD_BATCH}&offset=${offset}`;
+      if (excludeKey) {
+        url += `&exclude=${encodeURIComponent(excludeKey)}`;
+      }
       const resp = await fetch(url);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
@@ -188,7 +221,7 @@ export function useLogWebSocket(level: string = 'info'): UseLogWebSocketResult {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
-  }, [hasOlderBySystem, olderOffsetBySystem, level]);
+  }, [level, excludeKey]);
 
-  return { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs };
+  return { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs, categories };
 }
