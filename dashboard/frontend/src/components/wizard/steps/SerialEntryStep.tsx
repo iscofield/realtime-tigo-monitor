@@ -851,10 +851,11 @@ export function SerialEntryStep({
             {cca.strings.map((str) => {
               if (str.panel_count <= 0) return null;
 
-              const stringEnteredCount = Array.from({ length: str.panel_count }, (_, i) => {
-                const label = `${str.name}${i + 1}`;
-                return (values[cca.name]?.[label] || '').length > 0 ? 1 : 0;
-              }).reduce((a, b) => a + b, 0);
+              let stringEnteredCount = 0;
+              for (let i = 1; i <= str.panel_count; i++) {
+                const label = `${str.name}${i}`;
+                if ((values[cca.name]?.[label] || '').length > 0) stringEnteredCount++;
+              }
 
               return (
                 <div key={str.name} style={stringSectionStyle}>
