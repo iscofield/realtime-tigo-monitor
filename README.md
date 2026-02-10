@@ -1,4 +1,4 @@
-# Realtime Tigo Monitor
+# <img src="dashboard/frontend/public/favicon.png" width="32" height="32" style="vertical-align: middle;" /> Realtime Tigo Monitor
 
 A real-time visualization dashboard for Tigo Energy solar panel monitoring systems. Monitor your solar array with **5-10 second updates** — all running 100% locally on your network.
 
