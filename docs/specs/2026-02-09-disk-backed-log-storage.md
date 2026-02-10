@@ -185,9 +185,8 @@ async def _count_system(s: str) -> tuple[str, int]:
         # count_logs_on_disk() method could skip the sort (O(n log n) on up to
         # 50K entries). Acceptable for v1 with 2 systems.
         entries, _ = await asyncio.to_thread(
-            lambda: log_service.query_logs_from_disk(
-                s, None, req_level, excluded  # None = use configured retention
-            )
+            log_service.query_logs_from_disk,
+            s, None, req_level, excluded,  # None = use configured retention
         )
         count = len(entries)
         return (s, count)
@@ -294,7 +293,7 @@ def prune_old_logs(self) -> int:
 
 **NFR-1.2:** Server-side processing time for `GET /api/logs/{system}` with default parameters (`retention=7d, limit=1000`) MUST be < 500ms on Raspberry Pi 4 (2 GB RAM, SD card) with <= 5,000 entries per system. For the 50,000-entry cap case, server-side latency MUST be < 2 seconds. "Server-side" means time from receiving the HTTP request to sending the response, excluding network round-trip. Reading and parsing ~350 KB of JSONL per system is well within this budget on both Pi and server hardware. **Error-loop protection:** The `query_logs_from_disk()` method MUST enforce a hard cap of 50,000 filtered entries. If the cap is reached during file reading, the method stops reading and returns the entries collected so far. This prevents memory exhaustion when a CCA enters an error loop (the spec's primary motivation) producing tens of thousands of entries. The `total` count in this case reflects the capped result, not the true disk total.
 
-**NFR-1.3:** The refactor MUST NOT change the MQTT ingestion flow. Every entry is still written to disk AND appended to the in-memory buffer AND broadcast to WebSocket clients. The only change is that the in-memory buffer is capped. **Disk write failure handling:** If the disk write in `ingest()` fails (e.g., `OSError` due to full disk), the entry MUST still be appended to the in-memory buffer and broadcast to WebSocket clients. The disk write failure MUST be logged as a warning. Repeated disk failures within a 60-second window SHOULD be rate-limited to avoid log flooding. Implementation hint: track `_last_disk_warning_time: float` (global, not per-system) and only log if `time.monotonic() - last > 60`. The first successful write after a suppression period resets the timer. Suppressed failures are silently dropped (no summary count needed).
+**NFR-1.3:** The refactor MUST NOT change the MQTT ingestion flow. Every entry is still written to disk AND appended to the in-memory buffer AND broadcast to WebSocket clients. The only change is that the in-memory buffer is capped. **Disk write failure handling:** If the disk write in `ingest()` fails (e.g., `OSError` due to full disk), the entry MUST still be appended to the in-memory buffer and broadcast to WebSocket clients. The disk write failure MUST be logged as a warning. Repeated disk failures within a 60-second window SHOULD be rate-limited to avoid log flooding. Implementation hint: track `_last_disk_warning_time: float` (global, not per-system) and only log if `time.monotonic() - last > 60`. The timer advances only on logged warnings (not reset on successful writes). Suppressed failures are silently dropped (no summary count needed).
 
 **NFR-1.4:** The refactor MUST NOT change the WebSocket live streaming behavior. New entries continue to be pushed to connected clients in real-time as they arrive. The `_broadcast_entry()` method's per-connection level and category filtering MUST be preserved — each connection's `min_level` and `excluded_categories` (stored in `self._connections: dict[WebSocket, tuple[int, set[str]]]`) are applied before sending.
 
@@ -337,6 +336,8 @@ FILTERABLE_CATEGORIES: dict[str, str] = {  # user-visible categories with displa
     "tigo": "Tigo",
     "system": "System",
 }
+WS_INITIAL_LOG_LIMIT: int = 200          # max entries per system in WebSocket initial payload
+MAX_DISK_QUERY_ENTRIES: int = 50_000     # hard cap for query_logs_from_disk() results
 # Defined in log_service.py per the CCA Log Viewer spec. See that spec for the
 # authoritative list. The REST endpoint's `exclude` parameter silently intersects
 # with these keys — unknown categories are ignored.
@@ -518,7 +519,7 @@ class LogService:
         cutoff_str = cutoff.isoformat()
         excluded = excluded_categories or set()
 
-        MAX_ENTRIES = 50_000  # Hard cap to prevent memory exhaustion from error loops
+        MAX_ENTRIES = MAX_DISK_QUERY_ENTRIES  # Hard cap to prevent memory exhaustion from error loops
         entries: list[LogEntry] = []
         # Read files in REVERSE chronological order (newest first) so that
         # if the 50K cap triggers, we keep the most recent entries — the ones
@@ -825,8 +826,8 @@ volumes:
 5. Update `_prune_memory()` to work with deques (rebuild deque with non-expired entries)
 6. Update `load_from_disk()` to populate deques with only the most recent `buffer_size` entries
 7. Update `_pruning_loop()` to use `_compute_prune_interval()` for adaptive prune scheduling
-8. Verify `get_all_logs()` already returns list copies (via `list()` constructor), which works correctly with deques — no code changes needed
-9. Verify `get_logs_for_system()` similarly — `list()` on deque works identically to `list()` on list
+8. Verify `get_all_logs()` already returns list copies (via `list()` constructor), which works correctly with deques — no code changes needed. **Note:** `get_all_logs()` returns `{system: list(deque)}` — the `list()` wrapping ensures callers receive a snapshot, not a live reference to the deque. This method is not shown in this spec (it is defined by the CCA Log Viewer spec) but is used by the WebSocket initial payload (FR-1.3, FR-5.2).
+9. Verify `get_logs_for_system()` similarly — `list()` on deque works identically to `list()` on list. This method is being replaced by `query_logs_from_disk()` for the REST path (Task 5) but may still be referenced by other callers.
 
 ### Task 4: Add Disk-Backed Query Method
 
@@ -905,11 +906,27 @@ volumes:
 
 ---
 
-**Specification Version:** 1.7
+**Specification Version:** 1.8
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
+
+### v1.8 (February 2026)
+**Summary:** Address review findings (iteration 7: 11 new comments, 4 fixes + 7 verified)
+
+**Changes:**
+- Aligned `_count_system` in FR-5.3 pseudocode to use direct method reference (`log_service.query_logs_from_disk, s, None, ...`) instead of lambda wrapper, consistent with REST handler pattern
+- Changed NFR-1.3 disk-warning timer prose from "first successful write resets the timer" to "timer advances only on logged warnings" to match the `ingest()` code sample (which only sets the timer on failure)
+- Added `WS_INITIAL_LOG_LIMIT` and `MAX_DISK_QUERY_ENTRIES` to the Constants cross-reference section; updated `query_logs_from_disk()` code sample to reference `MAX_DISK_QUERY_ENTRIES` instead of inline `50_000`
+- Added notes to Task 3 steps 8-9 documenting `get_all_logs()` return shape (`{system: list(deque)}`) and `get_logs_for_system()` replacement context, since neither method has a code sample in this spec
+- Verified: `cutoff_str` computation in `load_from_disk()` is correct (runs once at startup)
+- Verified: `logger.debug` consistency between `load_from_disk()` and `query_logs_from_disk()`
+- Verified: `([], False)` tuple returns traced to all callers (REST + WebSocket)
+- Verified: `_last_disk_warning_time = 0.0` initialization is acceptable (first-failure-at-boot suppression extremely unlikely)
+- Verified: `query_logs_from_disk()` return asymmetry with `load_from_disk()` is correct (different signatures)
+- Verified: FR-4.2 migration path is intentional (warning fires, old value ignored without alias)
+- Verified: Overall consistency across all 7 prior versions — spec is implementation-ready
 
 ### v1.7 (February 2026)
 **Summary:** Address review findings (iteration 6: 7 new comments, 3 fixes + 4 verified)
