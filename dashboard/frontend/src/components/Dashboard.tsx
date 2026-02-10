@@ -71,12 +71,25 @@ const modeToggleContainerStyle: CSSProperties = {
   overflow: 'visible',
 };
 
-const settingsContainerStyle: CSSProperties = {
+const logoContainerStyle: CSSProperties = {
   position: 'absolute',
-  right: '10px',
+  right: 'calc(14px + env(safe-area-inset-right, 0px))',
   top: '50%',
   transform: 'translateY(-50%)',
-  zIndex: 1001,
+};
+
+const floatingSettingsDesktopStyle: CSSProperties = {
+  position: 'fixed',
+  right: 'calc(16px + env(safe-area-inset-right, 0px))',
+  top: '108px',
+  zIndex: 100,
+};
+
+const floatingSettingsMobileStyle: CSSProperties = {
+  position: 'fixed',
+  right: 'calc(16px + env(safe-area-inset-right, 0px))',
+  top: '64px',
+  zIndex: 100,
 };
 
 const modeToggleMobileStyle: CSSProperties = {
@@ -287,11 +300,9 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
           <>
             <div style={isMobile ? modeToggleMobileStyle : modeToggleContainerStyle}>
               <ModeToggle mode={mode} setMode={setMode} />
-              {onRestore && onRerunWizard && !isMobile && (
-                <div style={settingsContainerStyle}>
-                  <SettingsMenu onRestore={onRestore} onRerunWizard={onRerunWizard} />
-                </div>
-              )}
+              <div style={logoContainerStyle}>
+                <AppLogo size={40} />
+              </div>
             </div>
             {isMobile && <div style={modeToggleSpacerStyle} />}
           </>
@@ -326,7 +337,11 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
         ) : null}
       </main>
 
-      {activeTab === 'layout' && <AppLogo isMobile={isMobile} />}
+      {activeTab === 'layout' && onRestore && onRerunWizard && (
+        <div style={isMobile ? floatingSettingsMobileStyle : floatingSettingsDesktopStyle}>
+          <SettingsMenu onRestore={onRestore} onRerunWizard={onRerunWizard} />
+        </div>
+      )}
 
       {activeTab === 'layout' && (
         <ZoomControls

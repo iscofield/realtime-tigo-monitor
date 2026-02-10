@@ -1,13 +1,18 @@
 import './AppLogo.css';
 
 interface AppLogoProps {
-  isMobile: boolean;
+  size?: number;
+  floating?: boolean;
 }
 
-export function AppLogo({ isMobile }: AppLogoProps) {
+export function AppLogo({ size = 32, floating = false }: AppLogoProps) {
   return (
-    <div className={`app-logo ${isMobile ? 'app-logo--mobile' : 'app-logo--desktop'}`}>
-      <img src="/favicon.png" alt="Realtime Tigo Monitor" />
+    <div className={`app-logo${floating ? ' app-logo--floating' : ''}`}>
+      <img
+        src="/favicon.png"
+        alt="Realtime Tigo Monitor"
+        style={{ width: size, height: size }}
+      />
     </div>
   );
 }
