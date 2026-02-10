@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field as PydanticField
 
 from . import VERSION
 from .config import get_settings
-from .log_service import FILTERABLE_CATEGORIES, LogService
+from .log_service import FILTERABLE_CATEGORIES, LogService, VALID_LOG_LEVELS
 from .panel_service import PanelService
 from .websocket_manager import ConnectionManager
 from .mqtt_client import MQTTClient
@@ -149,10 +149,21 @@ async def lifespan(app: FastAPI):
     ws_manager.start_background_tasks()
 
     # Initialize log service
-    log_service = LogService(settings.log_dir, settings.log_retention_days)
-    log_service.prune_old_logs()
+    log_service = LogService(
+        settings.log_dir,
+        retention=settings.retention_timedelta,
+        buffer_size=settings.log_buffer_size,
+    )
+    try:
+        log_service.prune_old_logs()
+    except Exception:
+        logger.exception("Initial prune failed, continuing with stale files")
     log_service.load_from_disk()
     pruning_task = asyncio.create_task(log_service._pruning_loop())
+
+    # Deprecation warning for old env var
+    if os.environ.get("LOG_RETENTION_DAYS"):
+        logger.warning("LOG_RETENTION_DAYS is deprecated, use LOG_RETENTION instead")
 
     # Apply mock data if enabled (FR-2.3)
     if settings.use_mock_data:
@@ -383,7 +394,6 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
-VALID_LOG_LEVELS = {"debug", "info", "warning", "error"}
 WS_INITIAL_LOG_LIMIT = 200
 
 
@@ -403,18 +413,36 @@ async def logs_websocket(websocket: WebSocket):
     await websocket.accept()
     log_service.add_connection(websocket, level, excluded)
     try:
-        # Filter initial payload by requested level and categories, limited to recent entries
-        all_logs = log_service.get_all_logs()
+        # Get all systems (buffer + disk merged)
+        all_systems = log_service.get_systems()
+        buffer_logs = log_service.get_all_logs()
         filtered_logs = {}
-        total_counts = {}
-        for sys, entries in all_logs.items():
+
+        # Prepare buffer entries per system
+        for sys in all_systems:
+            entries = buffer_logs.get(sys, [])  # empty for disk-only systems
             filtered = LogService.filter_by_level(entries, level)
             filtered = LogService.filter_by_category(filtered, excluded)
-            total_counts[sys] = len(filtered)
             filtered_logs[sys] = filtered[-WS_INITIAL_LOG_LIMIT:]
+
+        # Disk-based totals for lazy-loading — parallelized across systems
+        async def _count_system(s: str) -> tuple[str, int]:
+            try:
+                entries, _ = await asyncio.to_thread(
+                    log_service.query_logs_from_disk,
+                    s, None, level, excluded,
+                )
+                return (s, len(entries))
+            except Exception:
+                logger.warning(f"Failed to count logs for {s}, defaulting to 0")
+                return (s, 0)
+
+        count_results = await asyncio.gather(*[_count_system(s) for s in all_systems])
+        total_counts = dict(count_results)
+
         initial = {
             "type": "initial",
-            "systems": log_service.get_systems(),
+            "systems": all_systems,
             "logs": filtered_logs,
             "total": total_counts,
             "has_debug": log_service.get_has_debug(),
@@ -450,27 +478,38 @@ async def get_logs(
     if log_service is None:
         raise HTTPException(status_code=503, detail="Log service not available")
     if not LogService._validate_system(system):
+        raise HTTPException(status_code=400, detail="Invalid system name format")
+    if system not in log_service.get_systems():
         raise HTTPException(status_code=404, detail="System not found")
-    systems = log_service.get_systems()
-    if system not in systems:
-        raise HTTPException(status_code=404, detail="System not found")
-    req_level = level.lower() if level.lower() in VALID_LOG_LEVELS else "info"
+
+    req_level = level.lower()
+    if req_level not in VALID_LOG_LEVELS:
+        raise HTTPException(status_code=422, detail=f"Invalid level: {level!r}. Valid: {sorted(VALID_LOG_LEVELS)}")
+
     excluded = {c.strip() for c in exclude.split(",") if c.strip()}
     excluded = excluded & set(FILTERABLE_CATEGORIES.keys())
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    cutoff_str = cutoff.isoformat()
-    all_entries = log_service.get_logs_for_system(system)
-    filtered = [e for e in all_entries if e.get("ts", "") >= cutoff_str]
-    filtered = LogService.filter_by_level(filtered, req_level)
-    filtered = LogService.filter_by_category(filtered, excluded)
-    filtered.sort(key=lambda e: e.get("ts", ""), reverse=True)
-    total = len(filtered)
-    entries = filtered[offset : offset + limit]
+
+    # Read from disk instead of memory, capped by server retention
+    requested = timedelta(days=days)
+    retention = min(requested, log_service.retention)
+    try:
+        all_filtered, capped = await asyncio.to_thread(
+            log_service.query_logs_from_disk,
+            system, retention, req_level, excluded,
+        )
+    except Exception:
+        logger.exception(f"Failed to query logs for {system}")
+        raise HTTPException(status_code=500, detail="Failed to read log files")
+
+    total = len(all_filtered)
+    entries = all_filtered[offset : offset + limit]
+
     return {
         "system": system,
         "entries": entries,
         "total": total,
         "has_more": offset + limit < total,
+        "capped": capped,
     }
 
 

@@ -28,8 +28,13 @@ services:
       # State file paths for bootstrapping status check
       - TAPTAP_PRIMARY_STATE_FILE=/app/state/primary/taptap.state
       - TAPTAP_SECONDARY_STATE_FILE=/app/state/secondary/taptap.state
-      # Log retention in days (1-30). Reduce if debug logging generates high volume.
-      # - LOG_RETENTION_DAYS=7
+      # Log storage configuration:
+      # LOG_RETENTION accepts duration strings: "1d" (days), "8h" (hours), "30m" (minutes).
+      # Default: 1d. Min: 10m, Max: 30d. Plain integers treated as days (e.g., "1" = "1d").
+      - LOG_RETENTION=1d
+      # In-memory buffer size per system (entries kept for WebSocket initial payloads).
+      # Min: 100, Max: 5000. REST queries always read from disk regardless of buffer size.
+      - LOG_BUFFER_SIZE=500
     volumes:
       # Config directory - writable for setup wizard to save YAML configs
       - ../config:/app/config

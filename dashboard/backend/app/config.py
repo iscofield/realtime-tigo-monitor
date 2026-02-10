@@ -1,6 +1,39 @@
-from pydantic import Field
+import re
+from datetime import timedelta
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
+
+def parse_retention(value: str) -> timedelta:
+    """Parse a duration string into a timedelta.
+
+    Supported formats: '7d' (days), '8h' (hours), '30m' (minutes).
+    Plain integers are treated as days for backward compatibility.
+    Validates bounds: minimum 10 minutes, maximum 30 days.
+    """
+    value = value.strip().lower()
+    match = re.fullmatch(r"(\d+)\s*([dhm])?", value)
+    if not match:
+        raise ValueError(f"Invalid retention format: {value!r}. Use e.g. '7d', '8h', '30m'")
+    amount = int(match.group(1))
+    if amount == 0:
+        raise ValueError("Retention must be greater than zero")
+    unit = match.group(2) or "d"
+    if unit == "d":
+        td = timedelta(days=amount)
+    elif unit == "h":
+        td = timedelta(hours=amount)
+    elif unit == "m":
+        td = timedelta(minutes=amount)
+    else:
+        raise ValueError(f"Unknown unit: {unit}")
+    if td < timedelta(minutes=10):
+        raise ValueError("LOG_RETENTION must be at least 10m")
+    if td > timedelta(days=30):
+        raise ValueError("LOG_RETENTION must be at most 30d")
+    return td
 
 
 class Settings(BaseSettings):
@@ -25,8 +58,20 @@ class Settings(BaseSettings):
     staleness_threshold_seconds: int = 300  # 5 minutes to match Tigo reporting interval
 
     # Log Configuration
-    log_retention_days: int = Field(default=7, ge=1, le=30)
+    log_retention: str = Field(default="1d")
+    log_buffer_size: int = Field(default=500, ge=100, le=5000)
     log_dir: str = "/app/logs"
+
+    @field_validator("log_retention")
+    @classmethod
+    def validate_retention(cls, v: str) -> str:
+        parse_retention(v)
+        return v
+
+    @property
+    def retention_timedelta(self) -> timedelta:
+        """Parsed retention as timedelta."""
+        return parse_retention(self.log_retention)
 
     # TapTap State File Paths (for bootstrapping status check)
     # These should be mounted from the taptap container data directories

@@ -2,9 +2,11 @@ import asyncio
 import json
 import logging
 import re
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, NotRequired
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,8 @@ LEVEL_VALUES = {
     "critical": 50,
 }
 
+VALID_LOG_LEVELS: set[str] = set(LEVEL_VALUES.keys())
+
 # Log categories for filtering
 CATEGORY_SENSOR_RESET = "sensor_reset"
 CATEGORY_TELEMETRY_JSON = "telemetry_json"
@@ -47,6 +51,8 @@ FILTERABLE_CATEGORIES = {
     CATEGORY_MQTT: {"label": "MQTT messages", "default": True},
 }
 
+MAX_DISK_QUERY_ENTRIES: int = 50_000
+
 # Pre-compiled patterns for category classification
 _NODE_STATUS_RE = re.compile(r"^Node \w+ is (?:offline|online)")
 _RESET_PREFIXES = (
@@ -63,19 +69,22 @@ class LogEntry(TypedDict):
     ts: str
     line: str
     seq: int
-    level: str
+    level: NotRequired[str]
+    category: NotRequired[str]
 
 
 class LogService:
     """Manages CCA log ingestion, persistence, and retrieval."""
 
-    def __init__(self, log_dir: str, retention_days: int):
+    def __init__(self, log_dir: str, retention: timedelta, buffer_size: int = 500):
         self.log_dir = Path(log_dir)
-        self.retention_days = retention_days
-        self._logs: dict[str, list[LogEntry]] = {}
+        self.retention = retention
+        self.buffer_size = buffer_size
+        self._logs: dict[str, deque[LogEntry]] = {}
         self._connections: dict[WebSocket, tuple[int, set[str]]] = {}  # ws → (min_level_value, excluded_categories)
         self._last_seq: dict[str, int] = {}
         self._has_debug: dict[str, bool] = {}
+        self._last_disk_warning_time: float = 0.0
 
     @staticmethod
     def _parse_level(line: str) -> str:
@@ -154,11 +163,14 @@ class LogService:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(entry) + "\n"
             self._write_line(log_path, line)
-        except OSError as e:
-            logger.error(f"Failed to write log entry to {log_path}: {e}")
+        except OSError:
+            now = time.monotonic()
+            if now - self._last_disk_warning_time > 60:
+                logger.warning(f"Disk write failed for {system}, continuing in-memory only")
+                self._last_disk_warning_time = now
 
         if system not in self._logs:
-            self._logs[system] = []
+            self._logs[system] = deque(maxlen=self.buffer_size)
         self._logs[system].append(entry)
 
         await self._broadcast_entry(system, entry)
@@ -200,10 +212,20 @@ class LogService:
                 logger.debug(f"Removing log WS client after send error: {result}")
                 self._connections.pop(ws, None)
 
+    def _compute_prune_interval(self) -> float:
+        total_seconds = self.retention.total_seconds()
+        if total_seconds >= 86400:
+            return 86400.0
+        elif total_seconds >= 3600:
+            return 3600.0
+        else:
+            return 600.0
+
     async def _pruning_loop(self) -> None:
+        interval = self._compute_prune_interval()
         while True:
             try:
-                await asyncio.sleep(86400)
+                await asyncio.sleep(interval)
                 deleted = self.prune_old_logs()
                 if deleted:
                     logger.info(f"Pruned {deleted} old log files")
@@ -214,16 +236,27 @@ class LogService:
                 logger.exception("Error in pruning loop")
 
     def _prune_memory(self) -> None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
+        """Remove expired entries and clean up empty systems.
+
+        CRITICAL: Must rebuild as deque(maxlen=...), NOT a list.
+        Using a list comprehension without wrapping in deque() would
+        silently revert to unbounded memory growth.
+        """
+        cutoff = datetime.now(timezone.utc) - self.retention
         cutoff_str = cutoff.isoformat()
-        for system in list(self._logs.keys()):
-            self._logs[system] = [
-                e for e in self._logs[system]
-                if e.get("ts", "") >= cutoff_str
-            ]
-            if not self._logs[system]:
-                del self._logs[system]
-                self._last_seq.pop(system, None)
+        empty_systems = []
+        for system, buf in self._logs.items():
+            pruned = deque(
+                (e for e in buf if e.get("ts", "") >= cutoff_str),
+                maxlen=self.buffer_size,
+            )
+            self._logs[system] = pruned
+            if not pruned:
+                empty_systems.append(system)
+        for system in empty_systems:
+            del self._logs[system]
+            self._has_debug.pop(system, None)
+            self._last_seq.pop(system, None)
 
     def get_all_logs(self) -> dict[str, list[LogEntry]]:
         return {
@@ -234,7 +267,10 @@ class LogService:
         return list(self._logs.get(system, []))
 
     def get_systems(self) -> list[str]:
-        return list(self._logs.keys())
+        """Return merged system list from buffer + disk."""
+        buffer_systems = set(self._logs.keys())
+        disk_systems = set(self.get_disk_systems())
+        return sorted(buffer_systems | disk_systems)
 
     def get_has_debug(self) -> dict[str, bool]:
         return dict(self._has_debug)
@@ -256,35 +292,44 @@ class LogService:
     def prune_old_logs(self) -> int:
         if not self.log_dir.exists():
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
-        cutoff_date = cutoff.date()
+        cutoff = datetime.now(timezone.utc) - self.retention
+        safe_cutoff_date = cutoff.date() - timedelta(days=1)
         deleted = 0
+        empty_dirs = []
         for system_dir in self.log_dir.iterdir():
             if not system_dir.is_dir():
                 continue
-            for log_file in system_dir.glob("*.log"):
+            if not self._validate_system(system_dir.name):
+                continue
+            for log_file in list(system_dir.glob("*.log")):
                 try:
                     file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
-                    if file_date < cutoff_date:
+                except ValueError:
+                    continue
+                if file_date < safe_cutoff_date:
+                    try:
                         log_file.unlink()
                         deleted += 1
-                except ValueError:
-                    pass
-            try:
-                if system_dir.is_dir() and not any(system_dir.iterdir()):
+                    except OSError:
+                        logger.warning(f"Cannot delete {log_file}")
+            if not any(system_dir.iterdir()):
+                try:
                     system_dir.rmdir()
-            except OSError:
-                pass
+                    empty_dirs.append(system_dir.name)
+                except OSError:
+                    pass
         return deleted
 
     def load_from_disk(self) -> None:
+        """On startup, populate the capped buffer with the most recent entries."""
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             logger.error(f"Cannot create log directory {self.log_dir}: {e}")
             return
-        cutoff = datetime.now(timezone.utc) - timedelta(days=self.retention_days)
+        cutoff = datetime.now(timezone.utc) - self.retention
         cutoff_date = cutoff.date()
+        cutoff_str = cutoff.isoformat()
         for system_dir in self.log_dir.iterdir():
             if not system_dir.is_dir():
                 continue
@@ -292,17 +337,21 @@ class LogService:
             if not self._validate_system(system):
                 logger.warning(f"Skipping invalid system directory: {system!r}")
                 continue
-            entries: list[LogEntry] = []
+            buf: deque[LogEntry] = deque(maxlen=self.buffer_size)
             has_debug = False
-            log_files = sorted(system_dir.glob("*.log"))
-            for log_file in log_files:
+            for log_file in sorted(system_dir.glob("*.log")):
                 try:
                     file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
                     if file_date < cutoff_date:
                         continue
                 except ValueError:
                     continue
-                with open(log_file, "r") as f:
+                try:
+                    f = open(log_file, "r")
+                except OSError:
+                    logger.warning(f"Cannot open {log_file}, skipping")
+                    continue
+                with f:
                     for raw_line in f:
                         raw_line = raw_line.strip()
                         if not raw_line:
@@ -317,19 +366,115 @@ class LogService:
                             and isinstance(data.get("ts"), str)
                             and data.get("ts")
                             and isinstance(data.get("line"), str)
-                            and isinstance(data.get("seq"), int)
+                            and type(data.get("seq")) is int
                             and data.get("seq") >= 0
                         ):
-                            # Always re-parse level from line text on load
+                            if data.get("ts", "") < cutoff_str:
+                                continue
                             data["level"] = self._parse_level(data.get("line", ""))
                             if data["level"] == "debug":
                                 has_debug = True
-                            # Classify category
                             data["category"] = self._classify_category(data.get("line", ""))
-                            entries.append(data)
-                        else:
-                            logger.debug(f"Skipping invalid entry in {log_file}")
-            if entries:
-                self._logs[system] = entries
+                            buf.append(data)
+            if buf:
+                self._logs[system] = buf
+                last_entry = buf[-1]
+                self._last_seq[system] = last_entry["seq"]
                 if has_debug:
                     self._has_debug[system] = True
+
+    def query_logs_from_disk(
+        self,
+        system: str,
+        retention: timedelta | None = None,
+        min_level: str = "info",
+        excluded_categories: set[str] | None = None,
+    ) -> tuple[list[LogEntry], bool]:
+        """Read and filter log entries from JSONL files on disk.
+
+        Returns a tuple of (entries sorted by timestamp descending, capped)
+        where `capped` is True if the 50,000 entry cap was reached.
+        If retention is None, uses self.retention.
+        """
+        if not self._validate_system(system):
+            return ([], False)
+        system_dir = self.log_dir / system
+        if not system_dir.is_dir():
+            return ([], False)
+
+        cutoff = datetime.now(timezone.utc) - (retention or self.retention)
+        cutoff_date = cutoff.date()
+        cutoff_str = cutoff.isoformat()
+        excluded = excluded_categories or set()
+
+        MAX_ENTRIES = MAX_DISK_QUERY_ENTRIES
+        entries: list[LogEntry] = []
+        # Read files in REVERSE chronological order (newest first) so that
+        # if the 50K cap triggers, we keep the most recent entries.
+        for log_file in sorted(system_dir.glob("*.log"), reverse=True):
+            try:
+                file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
+                if file_date < cutoff_date:
+                    continue
+            except ValueError:
+                continue
+            try:
+                f = open(log_file, "r")
+            except OSError:
+                logger.warning(f"Cannot open {log_file}, skipping")
+                continue
+            with f:
+                for raw_line in f:
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        data = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        logger.debug(f"Skipping malformed line in {log_file}")
+                        continue
+                    if not (
+                        isinstance(data, dict)
+                        and isinstance(data.get("ts"), str)
+                        and data.get("ts")
+                        and isinstance(data.get("line"), str)
+                        and type(data.get("seq")) is int
+                        and data.get("seq") >= 0
+                    ):
+                        continue
+                    # Always re-parse level and category for consistency
+                    data["level"] = self._parse_level(data.get("line", ""))
+                    data["category"] = self._classify_category(data.get("line", ""))
+                    # Apply timestamp cutoff
+                    if data.get("ts", "") < cutoff_str:
+                        continue
+                    # Apply level filter
+                    entry_level_val = LEVEL_VALUES.get(data.get("level", "info"), 20)
+                    min_level_val = LEVEL_VALUES.get(min_level, 20)
+                    if entry_level_val < min_level_val:
+                        continue
+                    # Apply category filter
+                    entry_cat = data.get("category", CATEGORY_GENERAL)
+                    if entry_cat in ALWAYS_HIDDEN or entry_cat in excluded:
+                        continue
+                    entries.append(data)
+                    if len(entries) >= MAX_ENTRIES:
+                        break
+            if len(entries) >= MAX_ENTRIES:
+                break
+
+        capped = len(entries) >= MAX_ENTRIES
+        # Sort newest first
+        entries.sort(key=lambda e: e.get("ts", ""), reverse=True)
+        return entries, capped
+
+    def get_disk_systems(self) -> list[str]:
+        """Return system names that have log directories on disk."""
+        if not self.log_dir.exists():
+            return []
+        systems = []
+        for d in self.log_dir.iterdir():
+            if d.is_dir() and self._validate_system(d.name):
+                if any(d.glob("*.log")):
+                    systems.append(d.name)
+        return systems
