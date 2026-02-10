@@ -40,12 +40,14 @@ The fix: cap the in-memory buffer to a fixed number of recent entries (for WebSo
 4. Applies level filtering (`filter_by_level`) and category filtering (`filter_by_category`)
 5. Returns the filtered entries as a list, sorted by timestamp descending (newest first)
 
-**REST Response Schema:**
+**REST Response Schema** (produced by the REST handler in `main.py`, not by `query_logs_from_disk()` directly):
 
 | Status | Response |
 |--------|----------|
 | 200 | `{"system": str, "entries": list[LogEntry], "total": int, "has_more": bool}` — `total` is the full filtered count (capped at 50,000), `has_more` is `true` if `offset + limit < total` |
-| 404 | `{"detail": "System not found"}` — returned for invalid system name format or non-existent system |
+| 400 | `{"detail": "Invalid system name format"}` — returned when `_validate_system()` rejects the system name |
+| 404 | `{"detail": "System not found"}` — returned when the system name is valid but does not exist in buffer or on disk |
+| 422 | `{"detail": "Invalid level: 'waring'. Valid: ['debug', 'error', 'info', 'warning']"}` — returned for invalid query parameter values (e.g., misspelled `level`) |
 | 503 | `{"detail": "Log service not available"}` — returned when log service is not initialized |
 | 500 | `{"detail": "Failed to read log files"}` — returned on unexpected disk I/O errors |
 
@@ -55,7 +57,12 @@ The fix: cap the in-memory buffer to a fixed number of recent entries (for WebSo
 
 **FR-2.5:** The REST endpoint's `days` query parameter is always capped by the server's configured retention (`min(requested, server_retention)`). With sub-day retention (e.g., `8h`), `days=1` effectively returns only 8 hours of data. The minimum is `days=1` (24 hours or server retention, whichever is smaller). Sub-day client requests are not supported — this is acceptable because the primary use case is "last N days" and the server's retention already bounds the query. The REST endpoint MUST continue to support `limit` and `offset` pagination parameters. Since entries are read from disk, the endpoint applies pagination after filtering and sorting. The `total` count in the response reflects the full filtered count (before pagination). **Known limitation:** Since new entries may arrive between paginated requests, offset-based pagination may return duplicate entries or skip entries. The frontend deduplicates by `seq` field (existing behavior in `fetchOlderLogs()`: `existingSeqs.has(e.seq)`), which mitigates duplicates. Skipped entries are acceptable for this use case given the low log volume.
 
-**FR-2.6:** The `GET /api/logs/systems` endpoint MUST derive the system list from **both** the in-memory buffer keys AND the disk directory listing. A system that has disk-only data (entries older than the buffer window) MUST still appear in the systems list. The merged list is deduplicated. Response schema: `{"systems": list[str]}` — a sorted, deduplicated list of system names.
+**FR-2.6:** The `GET /api/logs/systems` endpoint MUST derive the system list from **both** the in-memory buffer keys AND the disk directory listing. A system that has disk-only data (entries older than the buffer window) MUST still appear in the systems list. The merged list is deduplicated. Response schema:
+
+| Status | Response |
+|--------|----------|
+| 200 | `{"systems": list[str]}` — a sorted, deduplicated list of system names |
+| 503 | `{"detail": "Log service not available"}` — returned when log service is not initialized |
 
 ### FR-3: Docker Volume Mount
 
@@ -78,7 +85,9 @@ log_buffer_size: int = Field(default=500, ge=100, le=5000)
 ```
 Configurable via the `LOG_BUFFER_SIZE` environment variable.
 
-**FR-4.2:** The `LOG_RETENTION_DAYS` environment variable MUST be replaced by `LOG_RETENTION`. **Migration:** If the deprecated `LOG_RETENTION_DAYS` environment variable is set, the application MUST log a startup warning: `"LOG_RETENTION_DAYS is deprecated, use LOG_RETENTION instead"`. The deprecated variable MUST NOT be silently ignored — the warning ensures operators discover the rename during upgrades. The `Settings` class MAY support reading the old name as a fallback via Pydantic's `alias` mechanism, but `LOG_RETENTION` takes precedence if both are set., which accepts a duration string with a unit suffix:
+**FR-4.2:** The `LOG_RETENTION_DAYS` environment variable MUST be replaced by `LOG_RETENTION`. **Migration:** If the deprecated `LOG_RETENTION_DAYS` environment variable is set, the application MUST log a startup warning: `"LOG_RETENTION_DAYS is deprecated, use LOG_RETENTION instead"`. The deprecated variable MUST NOT be silently ignored — the warning ensures operators discover the rename during upgrades. The `Settings` class MAY support reading the old name as a fallback via Pydantic's `alias` mechanism, but `LOG_RETENTION` takes precedence if both are set.
+
+`LOG_RETENTION` accepts a duration string with a unit suffix:
 - `"7d"` — 7 days (default)
 - `"8h"` — 8 hours
 - `"30m"` — 30 minutes
@@ -116,6 +125,8 @@ def parse_retention(value: str) -> timedelta:
     Validates bounds: minimum 10 minutes, maximum 30 days.
     """
     value = value.strip().lower()
+    # Accepts leading zeros (e.g., "007d" → 7 days) and optional whitespace
+    # between digits and unit (e.g., "7 d"). Both are harmless edge cases.
     match = re.fullmatch(r"(\d+)\s*([dhm])?", value)
     if not match:
         raise ValueError(f"Invalid retention format: {value!r}. Use e.g. '7d', '8h', '30m'")
@@ -167,12 +178,21 @@ for sys in all_systems:
 # Disk-based totals for lazy-loading — parallelized across systems
 # to reduce WebSocket connect latency (N reads in ~1 disk-read-time)
 async def _count_system(s: str) -> tuple[str, int]:
-    count = await asyncio.to_thread(
-        lambda: len(log_service.query_logs_from_disk(
-            s, None, req_level, excluded  # None = use configured retention
-        ))
-    )
-    return (s, count)
+    try:
+        # Note: builds full list just to take len(). This is a known optimization
+        # target — the sort inside query_logs_from_disk() is wasted work when
+        # only the count is needed. A future count_only parameter or dedicated
+        # count_logs_on_disk() method could skip the sort (O(n log n) on up to
+        # 50K entries). Acceptable for v1 with 2 systems.
+        count = await asyncio.to_thread(
+            lambda: len(log_service.query_logs_from_disk(
+                s, None, req_level, excluded  # None = use configured retention
+            ))
+        )
+        return (s, count)
+    except Exception:
+        logger.warning(f"Failed to count logs for {s}, defaulting to 0")
+        return (s, 0)
 
 count_results = await asyncio.gather(*[_count_system(s) for s in all_systems])
 total_counts = dict(count_results)
@@ -187,9 +207,10 @@ total_counts = dict(count_results)
 - Retention >= 1 hour but < 1 day: prune every hour
 - Retention < 1 hour: prune every 10 minutes
 
-This ensures disk storage is bounded at approximately `retention + one_prune_interval` worth of data at worst. The prune interval MUST be computed once at startup:
+For retention >= 1 day, this ensures disk storage is bounded at approximately `retention + one_prune_interval` worth of data. For sub-day retention, the file-level granularity (one file per day) means up to ~2 days of files may be retained on disk (today + yesterday), though read-time filtering ensures only entries within the retention window are returned. See FR-6.5 and the "Known limitation" note for details. The prune interval MUST be computed once at startup:
 
 ```python
+# Method of LogService
 def _compute_prune_interval(self) -> float:
     """Return prune loop sleep interval in seconds."""
     total_seconds = self.retention.total_seconds()
@@ -220,7 +241,7 @@ async def _pruning_loop(self) -> None:
 
 **FR-6.4:** At startup, `prune_old_logs()` MUST run **before** `load_from_disk()` to avoid loading stale data into the buffer only to immediately discard it. This is the existing behavior and MUST be preserved. The full startup sequence is: (1) construct `LogService`, (2) `prune_old_logs()`, (3) `load_from_disk()`, (4) `asyncio.create_task(_pruning_loop())`. See the Lifespan Initialization code sample for the complete sequence.
 
-**FR-6.5:** For sub-day retention periods, `prune_old_logs()` MUST use the full timestamp cutoff (not just the date) when deciding whether to delete a file. Since log files are named by date (`YYYY-MM-DD.log`), a file from today may contain entries both within and outside an 8-hour retention window. The method MUST NOT delete files whose filename date is >= `(cutoff_date - 1 day)`. Only files whose filename date is strictly before `(cutoff_date - 1 day)` SHOULD be deleted. This one-day safety margin ensures that entries straddling midnight are not lost. Entries within retained files that are older than the retention period are filtered out at read time by `query_logs_from_disk()` and `_prune_memory()`.
+**FR-6.5:** For sub-day retention periods, `prune_old_logs()` MUST use the full timestamp cutoff (not just the date) when deciding whether to delete a file. Since log files are named by date (`YYYY-MM-DD.log`), a file from today may contain entries both within and outside an 8-hour retention window. Only files whose filename date is **at least 2 days before** the cutoff date are deleted (i.e., `file_date < cutoff_date - 1 day`). This one-day safety margin ensures that entries straddling midnight are not lost. Entries within retained files that are older than the retention period are filtered out at read time by `query_logs_from_disk()` and `_prune_memory()`.
 
 **Known limitation:** With sub-day retention (e.g., `8h`), today's log file may contain entries outside the retention window that are not deleted from disk until the file's date passes the cutoff. This is acceptable because: (1) a single day's log file is small (~50 KB per CCA for typical volumes), (2) read-time filtering ensures only entries within the retention window are returned, and (3) the file will be deleted on the next day's prune cycle.
 
@@ -272,7 +293,7 @@ def prune_old_logs(self) -> int:
 
 **NFR-1.2:** Server-side processing time for `GET /api/logs/{system}` with default parameters (`retention=7d, limit=1000`) MUST be < 500ms on Raspberry Pi 4 (2 GB RAM, SD card) with <= 5,000 entries per system. For the 50,000-entry cap case, server-side latency MUST be < 2 seconds. "Server-side" means time from receiving the HTTP request to sending the response, excluding network round-trip. Reading and parsing ~350 KB of JSONL per system is well within this budget on both Pi and server hardware. **Error-loop protection:** The `query_logs_from_disk()` method MUST enforce a hard cap of 50,000 filtered entries. If the cap is reached during file reading, the method stops reading and returns the entries collected so far. This prevents memory exhaustion when a CCA enters an error loop (the spec's primary motivation) producing tens of thousands of entries. The `total` count in this case reflects the capped result, not the true disk total.
 
-**NFR-1.3:** The refactor MUST NOT change the MQTT ingestion flow. Every entry is still written to disk AND appended to the in-memory buffer AND broadcast to WebSocket clients. The only change is that the in-memory buffer is capped. **Disk write failure handling:** If the disk write in `ingest()` fails (e.g., `OSError` due to full disk), the entry MUST still be appended to the in-memory buffer and broadcast to WebSocket clients. The disk write failure MUST be logged as a warning. Repeated disk failures within a 60-second window SHOULD be rate-limited to avoid log flooding (e.g., log once then suppress until success or timeout).
+**NFR-1.3:** The refactor MUST NOT change the MQTT ingestion flow. Every entry is still written to disk AND appended to the in-memory buffer AND broadcast to WebSocket clients. The only change is that the in-memory buffer is capped. **Disk write failure handling:** If the disk write in `ingest()` fails (e.g., `OSError` due to full disk), the entry MUST still be appended to the in-memory buffer and broadcast to WebSocket clients. The disk write failure MUST be logged as a warning. Repeated disk failures within a 60-second window SHOULD be rate-limited to avoid log flooding. Implementation hint: track `_last_disk_warning_time: float` (global, not per-system) and only log if `time.monotonic() - last > 60`. The first successful write after a suppression period resets the timer. Suppressed failures are silently dropped (no summary count needed).
 
 **NFR-1.4:** The refactor MUST NOT change the WebSocket live streaming behavior. New entries continue to be pushed to connected clients in real-time as they arrive. The `_broadcast_entry()` method's per-connection level and category filtering MUST be preserved — each connection's `min_level` and `excluded_categories` (stored in `self._connections: dict[WebSocket, tuple[int, set[str]]]`) are applied before sending.
 
@@ -282,16 +303,20 @@ def prune_old_logs(self) -> int:
 
 ### LogEntry Type
 
-`LogEntry` is a type alias for `dict[str, Any]` used throughout this spec. The canonical fields are:
+`LogEntry` describes the **post-enrichment** shape of a log entry — i.e., after `ingest()` or `load_from_disk()` has added `level` and `category`. Raw disk entries (before re-enrichment in `query_logs_from_disk()`) are plain `dict[str, Any]` and may lack these fields.
 
 ```python
 class LogEntry(TypedDict):
     ts: str          # ISO 8601 UTC timestamp (always +00:00, never Z)
     line: str        # raw log line text
     seq: int         # monotonic sequence number (>= 0, must be int not bool)
-    level: str       # parsed log level: "debug" | "info" | "warning" | "error"
-    category: str    # classified category (e.g., "general", "mqtt", "heartbeat")
+    level: NotRequired[str]    # parsed log level: "debug" | "info" | "warning" | "error"
+                               # Added by ingest()/load_from_disk(); raw disk entries may lack this
+    category: NotRequired[str] # classified category (e.g., "general", "mqtt", "heartbeat")
+                               # Added by ingest()/load_from_disk(); raw disk entries may lack this
 ```
+
+At runtime, `LogEntry` is used as a type annotation only — actual entries are `dict[str, Any]` instances. Code samples use `.get()` with fallback defaults (e.g., `data.get("level", "info")`) because raw disk entries may not have enrichment fields until re-parsed.
 
 Additional fields MAY be present and MUST be preserved (pass-through). The `system` name is NOT included in the entry — it is derived from the directory path or buffer key.
 
@@ -304,7 +329,14 @@ LEVEL_VALUES: dict[str, int] = {"debug": 10, "info": 20, "warning": 30, "error":
 VALID_LOG_LEVELS: set[str] = set(LEVEL_VALUES.keys())
 CATEGORY_GENERAL: str = "general"        # default category for unclassified entries
 ALWAYS_HIDDEN: set[str] = {"heartbeat"}  # categories always filtered from display
-FILTERABLE_CATEGORIES: dict[str, str]    # user-visible categories with display names
+FILTERABLE_CATEGORIES: dict[str, str] = {  # user-visible categories with display names
+    "mqtt": "MQTT",
+    "tigo": "Tigo",
+    "system": "System",
+}
+# Defined in log_service.py per the CCA Log Viewer spec. See that spec for the
+# authoritative list. The REST endpoint's `exclude` parameter silently intersects
+# with these keys — unknown categories are ignored.
 ```
 
 ### `_validate_system()` Method
@@ -338,7 +370,7 @@ sequenceDiagram
     Disk-->>WS: Entry counts for lazy-load decisions (total_counts)
 
     Note over REST,Disk: REST Historical Query (NEW)
-    REST->>Disk: query_logs_from_disk(system, days, level, categories)
+    REST->>Disk: query_logs_from_disk(system, retention, min_level, excluded_categories)
     Disk-->>REST: Parsed + filtered entries from JSONL files
 ```
 
@@ -377,6 +409,8 @@ class LogService:
         self._has_debug: dict[str, bool] = {}
 
     async def ingest(self, system: str, entry: dict) -> bool:
+        """Ingest a log entry. Returns True if accepted; False if rejected
+        (invalid system name, schema validation failure, or duplicate seq)."""
         # Validation (unchanged from CCA Log Viewer spec):
         # 1. _validate_system(system) — rejects invalid system names
         # 2. Schema validation — requires ts (str), line (str), seq (int)
@@ -443,6 +477,9 @@ class LogService:
         Returns entries sorted by timestamp descending (newest first).
         If retention is None, uses self.retention.
         """
+        # Returns [] for invalid system names. Callers from get_systems() are
+        # pre-validated; the REST handler validates separately and raises 400.
+        # Direct callers must pre-validate or accept [] as "no data."
         if not self._validate_system(system):
             return []
         system_dir = self.log_dir / system
@@ -556,6 +593,13 @@ class LogService:
             buf = deque(maxlen=self.buffer_size)
             has_debug = False
             cutoff_str = cutoff.isoformat()
+            # Files are read in forward chronological order so that the deque
+            # naturally retains the most recent buffer_size entries. With sub-day
+            # retention (e.g., 30m at 00:15), yesterday's file is read first and
+            # most of its entries are parsed then dropped by the per-entry cutoff
+            # check below. This is wasted I/O but not a correctness issue — the
+            # deque evicts old entries as new ones are appended, and the cutoff_str
+            # filter ensures only in-retention entries survive.
             for log_file in sorted(system_dir.glob("*.log")):
                 try:
                     file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
@@ -595,6 +639,12 @@ class LogService:
                             buf.append(data)  # deque auto-evicts oldest
             if buf:
                 self._logs[system] = buf
+                # Restore _last_seq from the most recent entry in the buffer.
+                # This prevents duplicate entries from MQTT replay after restart:
+                # ingest() checks seq > _last_seq, so replayed entries with
+                # seq <= last known are rejected.
+                last_entry = buf[-1]  # most recent entry (deque is chronological)
+                self._last_seq[system] = last_entry.get("seq", 0)
                 if has_debug:
                     self._has_debug[system] = True
 ```
@@ -605,7 +655,9 @@ class LogService:
 @app.get("/api/logs/{system}")
 async def get_logs(
     system: str,
-    days: int = Query(default=7, ge=1, le=30),  # Note: always capped by server retention
+    days: int = Query(default=7, ge=1, le=30),  # Always capped by server retention; with sub-day
+                                                 # retention (e.g., 8h), days=1 returns only 8h of data.
+                                                 # The response `total` may reflect less time than requested.
     limit: int = Query(default=1000, ge=1, le=5000),
     offset: int = Query(default=0, ge=0),
     level: str = Query(default="info"),
@@ -616,7 +668,11 @@ async def get_logs(
     if not LogService._validate_system(system):
         raise HTTPException(status_code=400, detail="Invalid system name format")
 
-    # CHANGED: Check both buffer and disk for system existence
+    # CHANGED: Check both buffer and disk for system existence.
+    # Note: TOCTOU race — a prune cycle could delete the last file between this
+    # check and query_logs_from_disk(), producing an empty result instead of 404.
+    # This is acceptable (non-crashable). The get_systems() call does filesystem
+    # I/O (glob per system dir); caching with a short TTL is a future optimization.
     if system not in log_service.get_systems():
         raise HTTPException(status_code=404, detail="System not found")
 
@@ -627,6 +683,10 @@ async def get_logs(
     # Leading/trailing whitespace per segment is trimmed. Unknown categories
     # are silently ignored (intersected with FILTERABLE_CATEGORIES).
     excluded = {c.strip() for c in exclude.split(",") if c.strip()}
+    # Unlike `level` (which returns 422 for invalid values), `exclude` silently
+    # ignores unknown categories. This asymmetry is intentional: the comma-separated
+    # format makes strict validation brittle (categories may be added/removed between
+    # frontend and backend deployments), while `level` is a single enum value.
     excluded = excluded & set(FILTERABLE_CATEGORIES.keys())
 
     # CHANGED: Read from disk instead of memory.
@@ -666,11 +726,19 @@ log_service = LogService(
     buffer_size=settings.log_buffer_size,  # NEW parameter
 )
 # Startup sequence (FR-6.4): prune stale files BEFORE loading into buffer
-log_service.prune_old_logs()
+try:
+    log_service.prune_old_logs()
+except Exception:
+    logger.exception("Initial prune failed, continuing with stale files")
 log_service.load_from_disk()
 asyncio.create_task(log_service._pruning_loop())
 
-# Deprecation warning for old env var
+# Deprecation warning for old env var.
+# Note: This checks os.environ directly, so it only detects shell-level env vars.
+# If the deprecated var is set via a .env file loaded only by Pydantic, this check
+# will miss it. For more robust detection, the check could be moved into the
+# Settings validator — but os.environ covers the common case (docker-compose
+# environment section, shell exports).
 import os
 if os.environ.get("LOG_RETENTION_DAYS"):
     logger.warning("LOG_RETENTION_DAYS is deprecated, use LOG_RETENTION instead")
@@ -717,15 +785,14 @@ volumes:
 5. Update `_prune_memory()` to work with deques (rebuild deque with non-expired entries)
 6. Update `load_from_disk()` to populate deques with only the most recent `buffer_size` entries
 7. Update `_pruning_loop()` to use `_compute_prune_interval()` for adaptive prune scheduling
-8. Update `query_logs_from_disk()` signature to accept `retention: timedelta | None` instead of `days: int`
-9. Verify `get_all_logs()` already returns list copies (via `list()` constructor), which works correctly with deques — no code changes needed
-10. Verify `get_logs_for_system()` similarly — `list()` on deque works identically to `list()` on list
+8. Verify `get_all_logs()` already returns list copies (via `list()` constructor), which works correctly with deques — no code changes needed
+9. Verify `get_logs_for_system()` similarly — `list()` on deque works identically to `list()` on list
 
 ### Task 4: Add Disk-Backed Query Method
 
 **Files:** `dashboard/backend/app/log_service.py`
 
-1. Add `query_logs_from_disk()` method that reads JSONL files, filters, and returns sorted entries
+1. Add new `query_logs_from_disk(system, retention: timedelta | None, min_level, excluded_categories)` method that reads JSONL files, filters, and returns sorted entries
 2. Add `get_disk_systems()` method that lists system directories with `.log` files
 3. Update `get_systems()` to merge buffer keys with disk directory listing
 
@@ -760,22 +827,26 @@ volumes:
    - REST endpoint returns persisted entries
    - WebSocket initial payload is populated from disk (not empty)
    - `dashboard/backend/logs/` contains JSONL files on host
+6. **Restart dedup test:** Inject entries with seq 1-10, restart the container, re-inject entries with seq 1-5 (simulating MQTT replay). Verify that only entries with seq > last-known are accepted (no duplicates in buffer or on disk). This also verifies that `_last_seq` is restored from disk on startup.
 
 **Error handling and edge cases:**
-6. **Malformed file test:** Manually add a file with invalid JSON lines to the logs directory, verify `query_logs_from_disk()` skips them without returning a 500 error
-7. **Merged systems test:** Manually create a system directory with a `.log` file on the volume mount, verify it appears in `GET /api/logs/systems`
-8. **Empty log directory test:** Delete all log files, verify the service starts cleanly with no errors
-9. **Disk-only system test:** Stop a CCA, let its buffer empty via `_prune_memory()`, verify it still appears in systems list and WebSocket payload with empty entries and a disk-based total_count
+7. **Malformed file test:** Manually add a file with invalid JSON lines to the logs directory, verify `query_logs_from_disk()` skips them without returning a 500 error
+8. **Prune/query race test:** Trigger a REST query while a prune cycle is running (or simulate by deleting a log file mid-query). Verify the endpoint returns a successful response (possibly with fewer entries) rather than a 500 error. This validates the `OSError` handling documented in FR-2.3.
+9. **Merged systems test:** Manually create a system directory with a `.log` file on the volume mount, verify it appears in `GET /api/logs/systems`
+10. **Empty log directory test:** Delete all log files, verify the service starts cleanly with no errors
+11. **Disk-only system test:** Stop a CCA, let its buffer empty via `_prune_memory()`, verify it still appears in systems list and WebSocket payload with empty entries and a disk-based total_count
+12. **Disk write failure test:** Make the log directory read-only (e.g., `chmod 444`), send an MQTT message, verify the entry appears in the WebSocket stream and in-memory buffer despite the disk write failure. Verify a warning is logged. Restore permissions and verify disk writes resume.
 
 **Configuration and validation:**
-10. **Sub-day retention test:** Set `LOG_RETENTION=30m`, verify that entries older than 30 minutes are excluded from REST queries and that the prune interval is 10 minutes
-11. **Duration parsing edge cases:** Verify these all fail at startup with validation errors: `LOG_RETENTION=0`, `LOG_RETENTION=abc`, `LOG_RETENTION=31d` (over max), `LOG_RETENTION=5m` (under min)
-12. **Invalid level test:** Verify `GET /api/logs/{system}?level=waring` returns 422, not a silent fallback to info
-13. **Deprecated env var test:** Set `LOG_RETENTION_DAYS=7` without `LOG_RETENTION`, verify startup warning is logged
+13. **Sub-day retention test:** Set `LOG_RETENTION=30m`, verify that entries older than 30 minutes are excluded from REST queries and that the prune interval is 10 minutes
+14. **Duration parsing edge cases:** Verify these all fail at startup with validation errors: `LOG_RETENTION=0`, `LOG_RETENTION=abc`, `LOG_RETENTION=31d` (over max), `LOG_RETENTION=5m` (under min)
+15. **Invalid level test:** Verify `GET /api/logs/{system}?level=waring` returns 422, not a silent fallback to info
+16. **Deprecated env var test:** Set `LOG_RETENTION_DAYS=7` without `LOG_RETENTION`, verify startup warning is logged
 
 **Performance:**
-14. **NFR-1.1 memory test:** Inject entries for 2 systems at default buffer size (500), verify steady-state RSS increase < 10 MB via `tracemalloc` or container stats
-15. **NFR-1.2 latency test:** With ~5,000 entries per system, verify REST endpoint responds in < 500ms (server-side)
+17. **NFR-1.1 memory test:** Inject entries for 2 systems at default buffer size (500), verify steady-state RSS increase < 10 MB via `tracemalloc` or container stats
+18. **NFR-1.2 latency test:** With ~5,000 entries per system, verify REST endpoint responds in < 500ms (server-side)
+19. **50K cap test:** Inject 60,000+ entries for one system, verify `GET /api/logs/{system}` returns `total` <= 50,000, `has_more` is `true`, and server-side latency is < 2 seconds
 
 ## Related Specifications
 
@@ -794,11 +865,43 @@ volumes:
 
 ---
 
-**Specification Version:** 1.4
+**Specification Version:** 1.5
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
+
+### v1.5 (February 2026)
+**Summary:** Address review findings (iteration 4: 28 comments)
+
+**Changes:**
+- Fixed `LogEntry` TypedDict: marked `level` and `category` as `NotRequired`, removed contradictory "type alias for dict" sentence, clarified post-enrichment vs raw disk shape
+- Added concrete `FILTERABLE_CATEGORIES` values and cross-reference note
+- Moved REST response schema attribution note ("produced by REST handler, not query_logs_from_disk")
+- Split 400 and 404 descriptions: 400 for invalid format only, 404 for non-existent system only
+- Added 422 row to REST response schema table (invalid query parameters)
+- Added `/api/logs/systems` endpoint error response schema (503 case)
+- Added `load_from_disk()` forward-order I/O note for sub-day retention performance
+- Fixed `load_from_disk()` to restore `_last_seq` from the most recent buffered entry (prevents duplicate entries from MQTT replay after restart)
+- Added note to `query_logs_from_disk()` about silent `return []` for invalid system names (callers must pre-validate)
+- Corrected FR-6.2 disk bound claim for sub-day retention (up to ~2 days of files, not retention + prune interval)
+- Added `parse_retention()` note about leading zeros and whitespace acceptance
+- Simplified FR-6.5 prose: "at least 2 days before the cutoff date" instead of dual MUST NOT/SHOULD formulation
+- Added error handling to `asyncio.gather()` in FR-5.3 pseudocode (try/except returns 0 on failure)
+- Added code comment noting `query_logs_from_disk()` sort is wasted work for count-only usage (optimization target)
+- Added `exclude` vs `level` validation asymmetry note (intentional design decision)
+- Added TOCTOU race note to REST system existence check (acceptable, future optimization target)
+- Added 4 new acceptance tests: restart dedup (#6), prune/query race (#8), disk write failure (#12), 50K cap (#19)
+- Added disk write failure rate-limiting implementation hint (global `_last_disk_warning_time`)
+- Fixed FR-4.2 grammatical splice ("., which" split into two sentences)
+- Added `ingest()` return type documentation (True=accepted, False=rejected)
+- Added try/except around lifespan `prune_old_logs()` call (prevents startup failure on permission errors)
+- Added deprecation warning placement note (os.environ only detects shell-level vars)
+- Added `# Method of LogService` comment to `_compute_prune_interval()`
+- Fixed HLD sequence diagram: `days, level, categories` -> `retention, min_level, excluded_categories`
+- Moved Task 3 step 8 to Task 4 (query_logs_from_disk is a new method, not an existing one)
+- Fixed Task 7 test numbering (duplicate "7." entries)
+- Added `days` parameter sub-day behavior note to REST code sample
 
 ### v1.4 (February 2026)
 **Summary:** Address review findings (iteration 3: 36 issues)
