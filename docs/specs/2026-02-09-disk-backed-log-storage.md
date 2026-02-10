@@ -69,9 +69,10 @@ The fix: cap the in-memory buffer to a fixed number of recent entries (for WebSo
 **FR-3.1:** The `dashboard/docker-compose.yml` MUST add a bind mount for the log directory:
 ```yaml
 volumes:
+  # Log persistence: ~50 KB/day per CCA system at normal volume
   - ./backend/logs:/app/logs
 ```
-This persists logs across container restarts and rebuilds. The `./backend/logs` path is relative to the `dashboard/` directory (i.e., `dashboard/backend/logs/` on the host).
+This persists logs across container restarts and rebuilds. The `./backend/logs` path is relative to the `dashboard/` directory (i.e., `dashboard/backend/logs/` on the host). At default retention (7 days) with 2 CCA systems, expect ~700 KB of log files on disk. Even under aggressive error loops, the 50,000-entry cap (NFR-1.2) limits each system's data to ~20 MB.
 
 **FR-3.2:** The directory `dashboard/backend/logs/` MUST be added to `.gitignore` (it contains runtime data, not source code).
 
@@ -794,7 +795,19 @@ volumes:
   - ./backend/assets:/app/assets
   - ../tigo-mqtt/data/primary:/app/state/primary:ro
   - ../tigo-mqtt/data/secondary:/app/state/secondary:ro
-  - ./backend/logs:/app/logs  # NEW: persist logs across restarts
+  # Log persistence: JSONL files at ~50 KB/day per CCA system (~100 KB/day total
+  # for 2 systems). At 7d retention, expect ~700 KB on disk. Even with aggressive
+  # error loops, the 50K entry cap keeps files under ~20 MB per system.
+  - ./backend/logs:/app/logs
+environment:
+  # ... existing env vars ...
+  # Log storage configuration:
+  # LOG_RETENTION accepts duration strings: "7d" (days), "8h" (hours), "30m" (minutes).
+  # Default: 7d. Min: 10m, Max: 30d. Plain integers treated as days (e.g., "7" = "7d").
+  - LOG_RETENTION=7d
+  # In-memory buffer size per system (entries kept for WebSocket initial payloads).
+  # Min: 100, Max: 5000. REST queries always read from disk regardless of buffer size.
+  - LOG_BUFFER_SIZE=500
 ```
 
 ## Task Breakdown
@@ -803,7 +816,7 @@ volumes:
 
 **Files:** `dashboard/docker-compose.yml`, `.gitignore`
 
-1. Add `./backend/logs:/app/logs` volume mount to the backend service in `docker-compose.yml`
+1. Add `./backend/logs:/app/logs` volume mount to the backend service in `docker-compose.yml`, with a descriptive comment noting approximate file sizes (~50 KB/day per CCA system). See Docker Compose Changes section for exact format.
 2. Add `dashboard/backend/logs/` to `.gitignore`
 
 ### Task 2: Update Configuration (Buffer Size + Retention Duration)
@@ -813,7 +826,7 @@ volumes:
 1. Add `log_buffer_size: int = Field(default=500, ge=100, le=5000)` to `Settings`
 2. Replace `log_retention_days: int = Field(default=7, ge=1, le=30)` with `log_retention: str = Field(default="7d")`
 3. Add `parse_retention()` helper function and `validate_retention` field validator
-4. MAY add `LOG_BUFFER_SIZE=500` and `LOG_RETENTION=7d` to `docker-compose.yml` environment for documentation clarity
+4. Add `LOG_RETENTION=7d` and `LOG_BUFFER_SIZE=500` to the backend `environment` section in `docker-compose.yml`, replacing the deprecated `LOG_RETENTION_DAYS=1`. Include descriptive comments explaining accepted formats and value ranges (see Docker Compose Changes section for exact content)
 
 ### Task 3: Refactor LogService In-Memory Storage
 
@@ -854,7 +867,18 @@ volumes:
 3. Start `_pruning_loop()` as background task
 4. Add deprecation warning if `LOG_RETENTION_DAYS` env var is set
 
-### Task 7: Build, Deploy, and Verify
+### Task 7: Update Documentation
+
+**Files:** `README.md` (or project documentation)
+
+1. Add a "Log Configuration" section to the project documentation covering:
+   - `LOG_RETENTION` environment variable: accepted formats (`"7d"`, `"8h"`, `"30m"`), default value, min/max bounds
+   - `LOG_BUFFER_SIZE` environment variable: purpose, default, min/max
+   - Log persistence: volume mount requirement, approximate disk usage (~50 KB/day per CCA system at normal volume, ~700 KB at 7d retention)
+   - Migration note: `LOG_RETENTION_DAYS` is deprecated in favor of `LOG_RETENTION`
+2. Update the docker-compose documentation (if any) to reference the new volume mount and environment variables
+
+### Task 8: Build, Deploy, and Verify
 
 **Basic functionality:**
 1. Rebuild containers: `cd dashboard && docker compose up --build -d`
@@ -906,11 +930,23 @@ volumes:
 
 ---
 
-**Specification Version:** 1.8
+**Specification Version:** 1.9
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
+
+### v1.9 (February 2026)
+**Summary:** Add documentation task, enhance docker-compose with descriptive comments and file size estimates
+
+**Changes:**
+- Enhanced Docker Compose Changes code sample with descriptive comments explaining log file sizes (~50 KB/day per CCA, ~700 KB at 7d retention, max ~20 MB under error loops)
+- Added `LOG_RETENTION` and `LOG_BUFFER_SIZE` environment variables to Docker Compose code sample with documentation comments explaining accepted formats and value ranges
+- Changed Task 2 step 4 from "MAY add" to "MUST add" for env vars in docker-compose.yml, including removal of deprecated `LOG_RETENTION_DAYS`
+- Enhanced FR-3.1 with disk usage estimates for operators
+- Enhanced Task 1 to include descriptive volume mount comments
+- Added Task 7: Update Documentation (README with log configuration section, migration note for deprecated env var)
+- Renumbered Task 7 → Task 8 (Build, Deploy, and Verify)
 
 ### v1.8 (February 2026)
 **Summary:** Address review findings (iteration 7: 11 new comments, 4 fixes + 7 verified)
