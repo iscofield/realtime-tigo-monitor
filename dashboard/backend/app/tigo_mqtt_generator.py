@@ -195,7 +195,7 @@ PORT = 502
 # Example: A:1:4-C3F23CR,A:2:4-C3F2ACK,B:1:4-C3F282R
 MODULES = {modules_line}
 TOPIC_PREFIX = taptap
-# Unique name for this CCA — used as the MQTT topic suffix (e.g. taptap/<name>/...)
+# Name used as device name in Home Assistant and in TapTap MQTT topics for this installation
 TOPIC_NAME = {cca.name}
 TIMEOUT = 300
 UPDATE = 5
@@ -472,7 +472,7 @@ PORT = 502
 # PLACEHOLDER: Update MODULES with actual serial numbers after discovery
 MODULES = {modules_line}
 TOPIC_PREFIX = taptap
-# Unique name for this CCA — used as the MQTT topic suffix (e.g. taptap/<name>/...)
+# Name used as device name in Home Assistant and in TapTap MQTT topics for this installation
 TOPIC_NAME = {cca.name}
 TIMEOUT = 300
 UPDATE = 5
