@@ -40,7 +40,11 @@ services:
       - ../config:/app/config
       # Assets directory for layout images (writable for layout editor uploads)
       - ./backend/assets:/app/assets
-      # Log directory for CCA log persistence
+      # Log persistence — disk usage depends heavily on LOG_LEVEL in tigo-mqtt config:
+      #   info:  ~2-3 MB/panel/day  (e.g. ~100 MB/day for 47 panels at 5s polling)
+      #   debug: ~400-500 MB/panel/day (e.g. ~22 GB/day for 47 panels at 5s polling)
+      # Longer UPDATE intervals (e.g. 60s) reduce volume ~12x. Use LOG_RETENTION
+      # above to bound total disk usage (retention × daily rate).
       - ./backend/logs:/app/logs
       # Mount taptap state files for status checking (read-only)
       # Update these paths if your tigo-mqtt data directory is elsewhere
