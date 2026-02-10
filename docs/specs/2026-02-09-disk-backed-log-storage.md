@@ -414,6 +414,7 @@ class LogService:
         # Disk-only debug entries are accessible via REST with level=debug
         # regardless of _has_debug.
         self._has_debug: dict[str, bool] = {}
+        self._last_disk_warning_time: float = 0.0  # for NFR-1.3 rate-limited disk warnings
 
     async def ingest(self, system: str, entry: dict) -> bool:
         """Ingest a log entry. Returns True if accepted; False if rejected
@@ -507,10 +508,10 @@ class LogService:
         # pre-validated; the REST handler validates separately and raises 400.
         # Direct callers must pre-validate or accept [] as "no data."
         if not self._validate_system(system):
-            return []
+            return ([], False)
         system_dir = self.log_dir / system
         if not system_dir.is_dir():
-            return []
+            return ([], False)
 
         cutoff = datetime.now(timezone.utc) - (retention or self.retention)
         cutoff_date = cutoff.date()
@@ -657,6 +658,7 @@ class LogService:
                         try:
                             data = json.loads(raw_line)
                         except json.JSONDecodeError:
+                            logger.debug(f"Skipping malformed line in {log_file}")
                             continue
                         if (
                             isinstance(data, dict)
@@ -903,11 +905,23 @@ volumes:
 
 ---
 
-**Specification Version:** 1.6
+**Specification Version:** 1.7
 **Last Updated:** February 2026
 **Authors:** Ian, Claude
 
 ## Changelog
+
+### v1.7 (February 2026)
+**Summary:** Address review findings (iteration 6: 7 new comments, 3 fixes + 4 verified)
+
+**Changes:**
+- Fixed `query_logs_from_disk()` early returns from bare `return []` to `return ([], False)` to match declared `tuple[list[LogEntry], bool]` return type (bug: caused `ValueError` on tuple unpacking in REST and WebSocket callers)
+- Added `self._last_disk_warning_time: float = 0.0` to `LogService.__init__` code sample (was referenced in `ingest()` but never declared, would cause `AttributeError` on first disk write failure)
+- Added `logger.debug(f"Skipping malformed line in {log_file}")` to `load_from_disk()` `JSONDecodeError` handler for consistency with `query_logs_from_disk()` (both methods now log at debug level)
+- Verified: FR-1.4 empty-timestamp rewrite is accurate (all three entry paths reject `ts=""`)
+- Verified: `capped` field is consistent across all touchpoints and backward-compatible
+- Verified: `ingest()` disk-write `try/except` aligns with NFR-1.3 graceful degradation
+- Verified: `_last_seq` direct key access (`["seq"]` not `.get("seq", 0)`) is correct
 
 ### v1.6 (February 2026)
 **Summary:** Address review findings (iteration 5: 14 new comments)
