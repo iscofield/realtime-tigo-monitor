@@ -1,0 +1,25 @@
+.app-logo {
+  position: fixed;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  z-index: 99;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+  pointer-events: none;
+}
+
+.app-logo:hover {
+  opacity: 1;
+}
+
+.app-logo--desktop {
+  top: 108px;
+}
+
+.app-logo--mobile {
+  top: 58px;
+}
+
+.app-logo img {
+  width: 32px;
+  height: 32px;
+}

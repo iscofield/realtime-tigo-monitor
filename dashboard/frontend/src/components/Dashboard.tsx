@@ -16,6 +16,7 @@ import { SystemWarningBanner } from './SystemWarningBanner';
 import { TabNavigation, type TabType } from './TabNavigation';
 import { TableView } from './TableView';
 import { ZoomControls } from './ZoomControls';
+import { AppLogo } from './AppLogo';
 import { SettingsMenu } from './SettingsMenu';
 import type { DisplayMode } from './PanelOverlay';
 import type { RestoreData, LayoutConfig } from '../types/config';
@@ -324,6 +325,8 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
           </Suspense>
         ) : null}
       </main>
+
+      {activeTab === 'layout' && <AppLogo isMobile={isMobile} />}
 
       {activeTab === 'layout' && (
         <ZoomControls
