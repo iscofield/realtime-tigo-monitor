@@ -188,8 +188,14 @@ SERIAL = {cca.serial_device}
 # WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
 ADDRESS =
 PORT = 502
+# Module definitions: STRING:POSITION:SERIAL (comma-separated, single line)
+# STRING is the string identifier (A, B, etc.)
+# POSITION is the panel position in the string (1, 2, etc.)
+# SERIAL is the module serial number (e.g., 4-C3F23CR)
+# Example: A:1:4-C3F23CR,A:2:4-C3F2ACK,B:1:4-C3F282R
 MODULES = {modules_line}
 TOPIC_PREFIX = taptap
+# Unique name for this CCA — used as the MQTT topic suffix (e.g. taptap/<name>/...)
 TOPIC_NAME = {cca.name}
 TIMEOUT = 300
 UPDATE = 5
@@ -205,6 +211,8 @@ STRINGS_AVAILABILITY_ONLINE = true
 STRINGS_AVAILABILITY_IDENTIFIED = true
 STATS_AVAILABILITY_ONLINE = true
 STATS_AVAILABILITY_IDENTIFIED = true
+# Recorder settings control Home Assistant long-term statistics
+# Valid values: 'energy' (cumulative), 'energy_daily' (daily totals), or empty (disabled)
 NODES_SENSORS_RECORDER = energy
 STRINGS_SENSORS_RECORDER = energy_daily
 STATS_SENSORS_RECORDER = energy_daily
@@ -456,9 +464,15 @@ SERIAL = {cca.serial_device}
 # WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
 ADDRESS =
 PORT = 502
+# Module definitions: STRING:POSITION:SERIAL (comma-separated, single line)
+# STRING is the string identifier (A, B, etc.)
+# POSITION is the panel position in the string (1, 2, etc.)
+# SERIAL is the module serial number (e.g., 4-C3F23CR)
+# Example: A:1:4-C3F23CR,A:2:4-C3F2ACK,B:1:4-C3F282R
 # PLACEHOLDER: Update MODULES with actual serial numbers after discovery
 MODULES = {modules_line}
 TOPIC_PREFIX = taptap
+# Unique name for this CCA — used as the MQTT topic suffix (e.g. taptap/<name>/...)
 TOPIC_NAME = {cca.name}
 TIMEOUT = 300
 UPDATE = 5
@@ -474,6 +488,8 @@ STRINGS_AVAILABILITY_ONLINE = true
 STRINGS_AVAILABILITY_IDENTIFIED = true
 STATS_AVAILABILITY_ONLINE = true
 STATS_AVAILABILITY_IDENTIFIED = true
+# Recorder settings control Home Assistant long-term statistics
+# Valid values: 'energy' (cumulative), 'energy_daily' (daily totals), or empty (disabled)
 NODES_SENSORS_RECORDER = energy
 STRINGS_SENSORS_RECORDER = energy_daily
 STATS_SENSORS_RECORDER = energy_daily
