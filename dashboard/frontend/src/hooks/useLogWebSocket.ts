@@ -134,7 +134,7 @@ export function useLogWebSocket(
                 };
               });
               setSystems((prev) =>
-                prev.includes(system) ? prev : [...prev, system]
+                prev.includes(system) ? prev : [...prev, system].sort()
               );
               if (entry.level === 'debug') {
                 setHasDebug((prev) => prev[system] ? prev : { ...prev, [system]: true });
