@@ -320,6 +320,7 @@ export function Dashboard({ onRestore, onRerunWizard, initialTab }: DashboardPro
               layoutWidth={layoutWidth}
               layoutHeight={layoutHeight}
               overlaySize={overlaySize}
+              useBlankBackground={!layoutConfig?.image_path || layoutConfig.use_blank_background}
             />
           </div>
         ) : activeTab === 'table' ? (

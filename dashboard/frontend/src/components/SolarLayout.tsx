@@ -6,7 +6,7 @@ import type { PanelData } from '../hooks/useWebSocket';
 import { PanelOverlay } from './PanelOverlay';
 import type { DisplayMode } from './PanelOverlay';
 import { useMediaQuery } from '../hooks/useMediaQuery';
-import { getLayoutImageUrl, getLayoutConfig } from '../api/config';
+import { getLayoutImageUrl } from '../api/config';
 import {
   MOBILE_BREAKPOINT,
   MIN_ZOOM,
@@ -31,6 +31,7 @@ interface SolarLayoutProps {
   layoutWidth: number;
   layoutHeight: number;
   overlaySize: number;
+  useBlankBackground: boolean;
 }
 
 const errorContainerStyle: CSSProperties = {
@@ -60,10 +61,10 @@ export function SolarLayout({
   layoutWidth,
   layoutHeight,
   overlaySize,
+  useBlankBackground,
 }: SolarLayoutProps) {
-  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(useBlankBackground);
   const [imageError, setImageError] = useState(false);
-  const [noImageConfigured, setNoImageConfigured] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const imgRef = useRef<HTMLImageElement>(null);
 
@@ -157,18 +158,6 @@ export function SolarLayout({
     };
   }, [handleWheel]);
 
-  // Check if layout has an image configured
-  useEffect(() => {
-    getLayoutConfig().then(config => {
-      if (!config.image_path || config.use_blank_background) {
-        setNoImageConfigured(true);
-        setImageLoaded(true); // Allow panels to render
-      }
-    }).catch(() => {
-      // If config fetch fails, let the image load attempt determine state
-    });
-  }, []);
-
   // NFR-5.1: Defensive pattern for cached images that load synchronously
   useLayoutEffect(() => {
     if (imgRef.current?.complete && imgRef.current?.naturalWidth > 0) {
@@ -177,7 +166,7 @@ export function SolarLayout({
   }, [retryCount]);
 
   // Handle image load error — only show error if an image was expected
-  if (imageError && !noImageConfigured) {
+  if (imageError && !useBlankBackground) {
     return (
       <div style={errorContainerStyle} data-testid="image-error">
         <p>Failed to load layout image</p>
@@ -251,7 +240,7 @@ export function SolarLayout({
         >
           <div style={paddingContainerStyle}>
             <div style={contentWrapperStyle}>
-              {noImageConfigured ? (
+              {useBlankBackground ? (
                 <div
                   style={{
                     width: '100%',
