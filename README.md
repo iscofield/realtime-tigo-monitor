@@ -62,7 +62,7 @@ Intuitive visual editor for positioning panels:
 Guided configuration for first-time setup:
 - MQTT broker connection testing
 - CCA device topology configuration
-- **Auto-generates tigo-mqtt docker-compose files** for your Pi
+- **Auto-generates tigo-mqtt docker-compose files** for your data collection device
 - **Automatic panel discovery** — scans your Tigo optimizers via MQTT and auto-detects all panels, feeding discovered serials directly into string assignment
 - **String mapping with drag-and-drop** — visually reassign panels across strings to ensure your physical wiring topology matches the depicted layout (useful when installers wire panels differently than the design)
 - Panel validation and serial number mapping
@@ -92,7 +92,7 @@ Works great on phones and tablets:
 
 ### Logging
 
-The dashboard surfaces real-time logs from your Tigo optimizers, letting you confirm the system is working correctly and see exactly what the optimizers are sending. This is invaluable for troubleshooting panel issues, verifying serial number mappings, and monitoring system health — all from the browser, without SSH-ing into your Pi.
+The dashboard surfaces real-time logs from your Tigo optimizers, letting you confirm the system is working correctly and see exactly what the optimizers are sending. This is invaluable for troubleshooting panel issues, verifying serial number mappings, and monitoring system health — all from the browser, without SSH-ing into your data collection device.
 
 #### Log Levels
 
@@ -214,11 +214,11 @@ The system supports **1 or more CCA devices** — configure as many as your inst
 ### Tigo Equipment
 - **Tigo CCA (Cloud Connect Advanced)** — 1 or more units
 - **Tigo TS4-A-O Optimizers** — one per solar panel
-- RS485-to-USB adapter for connecting CCA to Pi (see [taptap guide](https://github.com/taptap))
+- RS485-to-USB adapter for connecting CCA to your data collection device (see [taptap guide](https://github.com/taptap))
 
 ### Computing
-- **Data Collection Device** — Raspberry Pi (3B+ or newer) or similar
-- **Dashboard Server** — Can run on the same Pi or a separate server/NAS
+- **Data Collection Device** — Any Linux device with USB ports (Raspberry Pi 3B+ or newer is a popular choice)
+- **Dashboard Server** — Can run on the same device or a separate server/NAS
 - **MQTT Broker** — Home Assistant's built-in broker, standalone Mosquitto, or any MQTT 3.1.1+ broker
 
 ## Quick Start
@@ -226,7 +226,7 @@ The system supports **1 or more CCA devices** — configure as many as your inst
 ### Prerequisites
 - Docker and Docker Compose installed
 - Access to an MQTT broker ([setup guide](docs/DEPLOYMENT.md#mqtt-broker-setup))
-- Raspberry Pi with Tigo CCA connected via RS485
+- A device with Tigo CCA connected via RS485 (e.g., Raspberry Pi)
 
 ### 1. Clone the Repository
 
@@ -237,7 +237,7 @@ cd solar_tigo_viewer
 
 ### 2. Deploy the Dashboard
 
-On your dashboard server (can be the same Pi or different machine):
+On your dashboard server (can be the same device or a different machine):
 
 ```bash
 cd dashboard
@@ -256,10 +256,10 @@ Open `http://your-server:5174` and follow the setup wizard to:
 
 ### 4. Deploy tigo-mqtt Service
 
-Copy the generated files to your Raspberry Pi:
+Copy the generated files to the device hosting your tigo-mqtt containers:
 
 ```bash
-# On your Raspberry Pi
+# On your data collection device
 cd solar_tigo_viewer/tigo-mqtt
 # Copy the downloaded docker-compose.yml and config files here
 docker compose up --build -d
