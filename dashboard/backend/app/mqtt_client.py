@@ -103,10 +103,15 @@ class MQTTClient:
                                     parts = remainder.split("/")
                                     if len(parts) == 2 and parts[1] == "logs":
                                         system = parts[0]
-                                        if isinstance(payload, dict) and self.on_log:
+                                        if isinstance(payload, list) and self.on_log:
+                                            # Batched log entries (array of dicts)
+                                            for entry in payload:
+                                                if isinstance(entry, dict):
+                                                    await self.on_log(system, entry)
+                                        elif isinstance(payload, dict) and self.on_log:
                                             await self.on_log(system, payload)
-                                        elif not isinstance(payload, dict):
-                                            logger.warning(f"Non-dict payload on log topic: {type(payload)}")
+                                        elif not isinstance(payload, (dict, list)):
+                                            logger.warning(f"Unexpected payload type on log topic: {type(payload)}")
                             elif topic_str.endswith("/state"):
                                 # Extract system from topic (e.g., "taptap/primary/state" -> "primary")
                                 parts = topic_str.split("/")

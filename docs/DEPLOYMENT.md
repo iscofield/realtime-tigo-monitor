@@ -284,6 +284,100 @@ Regularly backup your configuration:
 3. Select **Backup Configuration**
 4. Save the ZIP file securely
 
+## Logging Configuration
+
+### Log Levels
+
+Log verbosity is controlled per-CCA via the `LOG_LEVEL` setting in each taptap config file (`config-primary.ini`, etc.):
+
+- **Info** (`LOG_LEVEL = info`): High-level operational events — when panels come online or go offline, MQTT connection status, errors, and warnings. Enough to confirm the system is healthy and catch problems at a glance. Lightweight enough to keep running indefinitely.
+
+- **Debug** (`LOG_LEVEL = debug`): Everything in info, plus detailed telemetry from every poll cycle — the raw power, voltage, and current readings from each panel, power report events, node enumeration steps, and Modbus communication details. Essential for diagnosing hardware issues or verifying that panel data is accurate, but generates substantial volume.
+
+### Retention & Storage
+
+Logs are persisted to disk with a configurable retention window via the `LOG_RETENTION` environment variable on the dashboard backend. Supports duration strings:
+
+| Format | Example | Meaning |
+|--------|---------|---------|
+| `Nd` | `7d` | N days |
+| `Nh` | `8h` | N hours |
+| `Nm` | `30m` | N minutes |
+
+Default is `1d` (1 day). Minimum is `10m`, maximum is `30d`. Logs older than the retention window are automatically pruned.
+
+The in-memory buffer size is controlled by `LOG_BUFFER_SIZE` (default: 500 entries, range: 100-5000). This determines how many recent entries are immediately available without reading from disk.
+
+### Disk Usage Estimates
+
+At the default 5-second polling interval (`UPDATE = 5`):
+
+| Panels | Info (per day) | Debug (per day) |
+|--------|----------------|-----------------|
+| 10 | ~20-30 MB | ~4-5 GB |
+| 25 | ~50-75 MB | ~10-13 GB |
+| 47 | ~95-140 MB | ~19-24 GB |
+| 69 | ~140-210 MB | ~28-35 GB |
+
+Longer polling intervals reduce volume proportionally. At `UPDATE = 60` (60-second intervals), divide these estimates by roughly 12x.
+
+> **Warning:** Debug logging generates approximately 400-500 MB per panel per day at 5-second polling intervals. For a 47-panel system, that is roughly 22 GB/day. Keep debug enabled only for short-term troubleshooting, and pair it with a short retention window (e.g. `LOG_RETENTION=1d`).
+
+### Recommended Configuration
+
+Use **info** level for normal operation. Info logs are small enough (2-3 MB/panel/day at 5s polling) to retain for extended periods without concern.
+
+Only enable **debug** when actively troubleshooting a specific issue — a misbehaving panel, incorrect serial mappings, or suspected communication problems. When you do, set `LOG_RETENTION` to `1d` or less to avoid filling your disk.
+
+```yaml
+# dashboard/docker-compose.yml — backend environment
+environment:
+  LOG_RETENTION: "1d"    # How long to keep logs (default: 1d)
+  LOG_BUFFER_SIZE: "500" # In-memory entries per CCA (default: 500)
+```
+
+```ini
+# tigo-mqtt/config-primary.ini — per-CCA log level
+[TAPTAP]
+LOG_LEVEL = info   # Use "debug" only for short-term troubleshooting
+```
+
+## Docker Memory Limits
+
+The docker-compose files include memory limits (`deploy.resources.limits.memory`) as a safety net to prevent runaway containers from consuming all available RAM. These limits require the Linux **cgroup memory controller** to be enabled.
+
+### Most Linux Distributions
+
+Most x86 Linux distributions (Ubuntu, Debian, Fedora, etc.) have cgroup memory enabled by default. No action needed — Docker memory limits will work out of the box.
+
+### Raspberry Pi and ARM Devices
+
+If running on a Raspberry Pi (or other ARM devices with Raspberry Pi OS), cgroup memory is often **disabled by default**. Without it, Docker memory limits are silently ignored.
+
+**Check if cgroup memory is enabled:**
+
+```bash
+grep memory /proc/cgroups
+# The "enabled" column (4th) should be 1
+```
+
+**Enable cgroup memory:**
+
+1. Edit the kernel command line:
+   ```bash
+   sudo nano /boot/firmware/cmdline.txt
+   ```
+2. Append to the **same line** (space-separated, do not add a new line):
+   ```
+   cgroup_enable=memory cgroup_memory=1
+   ```
+3. Reboot:
+   ```bash
+   sudo reboot
+   ```
+
+After rebooting, verify with `grep memory /proc/cgroups` and confirm the enabled column is `1`.
+
 ## Environment Variables Reference
 
 | Variable | Description | Default |

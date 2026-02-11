@@ -31,6 +31,39 @@ MQTT_TOPIC_PREFIX = os.environ.get("MQTT_TOPIC_PREFIX", "taptap")
 
 MAX_LINE_LENGTH = 10240
 
+# Max lines to load from container history on startup (override with HISTORY_TAIL_LINES env var)
+HISTORY_TAIL_LINES = int(os.environ.get("HISTORY_TAIL_LINES", "2000"))
+
+# Batch size for historical log replay (lines per MQTT message)
+HISTORY_BATCH_SIZE = 50
+
+# Max seconds to buffer real-time log lines before flushing
+REALTIME_FLUSH_INTERVAL = 1.0
+
+# Sensor reset prefixes — these lines are ALWAYS_HIDDEN in the frontend
+# and constitute ~88% of taptap log volume at debug level.  Filtering at
+# the source avoids publishing, transmitting, and storing lines that are
+# never displayed to users.
+_RESET_PREFIXES = (
+    "Calling reset_node_sensor",
+    "Calling reset_stat_sensor",
+    "Calling reset_sensor_integral",
+    "Calling reset_stats_tele",
+)
+
+# Regex to strip timestamp+level prefix from taptap log lines
+# Example: "2025-01-15 12:34:56.789 INFO: Calling reset_node_sensor" -> "Calling reset_node_sensor"
+_TS_LEVEL_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\w+:?\s+(.*)"
+)
+
+
+def _is_sensor_reset(line: str) -> bool:
+    """Return True if *line* is a sensor-reset message that the frontend never shows."""
+    m = _TS_LEVEL_RE.match(line)
+    msg = m.group(1) if m else line
+    return msg.startswith(_RESET_PREFIXES)
+
 # asyncio StreamReader line buffer limit for `docker logs -f` output.
 # Taptap telemetry JSON dumps are ~460 bytes/panel. At 1MB limit this
 # supports ~2,200 panels. If you run more panels than that and see
@@ -97,12 +130,13 @@ async def monitor_container(container_name: str, system: str):
     logger.info(f"Parsing historical logs for {container_name}...")
     try:
         hist_process = await asyncio.create_subprocess_exec(
-            "docker", "logs", container_name,
+            "docker", "logs", "--tail", str(HISTORY_TAIL_LINES), container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
         stdout, _ = await hist_process.communicate()
 
+        reset_count = 0
         for line in stdout.decode(errors="replace").splitlines():
             line_stripped = line.strip()
             if not line_stripped:
@@ -110,9 +144,8 @@ async def monitor_container(container_name: str, system: str):
             # Truncate long lines
             if len(line_stripped) > MAX_LINE_LENGTH:
                 line_stripped = line_stripped[:MAX_LINE_LENGTH] + " [truncated]"
-            historical_lines.append(line_stripped)
 
-            # Existing enumeration parsing
+            # Parse enumeration events from ALL lines (including resets)
             if temp_match := TEMP_PATTERN.search(line_stripped):
                 temp_nodes.add(int(temp_match.group(1)))
             elif perm_match := PERM_SERIAL_PATTERN.search(line_stripped):
@@ -121,11 +154,18 @@ async def monitor_container(container_name: str, system: str):
                 temp_nodes.discard(int(node_id))
                 node_mappings[node_id] = serial
 
+            # Filter sensor_reset lines from replay (never shown in frontend)
+            if _is_sensor_reset(line_stripped):
+                reset_count += 1
+                continue
+
+            historical_lines.append(line_stripped)
+
         if hist_process.returncode == 0:
             logger.info(
                 f"Recovered from {container_name} history: "
                 f"{len(temp_nodes)} temp nodes, {len(node_mappings)} mappings, "
-                f"{len(historical_lines)} log lines"
+                f"{len(historical_lines)} log lines ({reset_count} sensor_reset filtered)"
             )
         else:
             logger.warning(f"Docker logs failed for {container_name} (exit code {hist_process.returncode})")
@@ -158,19 +198,23 @@ async def monitor_container(container_name: str, system: str):
                 await publish_temp_nodes(mqtt, system, temp_nodes)
                 await publish_node_mappings(mqtt, system, node_mappings)
 
-                # Replay historical lines with incrementing timestamps
+                # Replay historical lines in batches
                 base_ts = datetime.now(timezone.utc)
+                batch: list[dict] = []
                 for i, line_str in enumerate(historical_lines):
                     entry_ts = base_ts + timedelta(microseconds=i)
-                    log_entry = json.dumps({
+                    batch.append({
                         "ts": entry_ts.isoformat(),
                         "line": line_str,
                         "seq": seq,
                     })
-                    await mqtt.publish(log_topic, log_entry, qos=0, retain=False)
                     seq += 1
-                    if i % 50 == 0:
+                    if len(batch) >= HISTORY_BATCH_SIZE:
+                        await mqtt.publish(log_topic, json.dumps(batch), qos=0, retain=False)
+                        batch = []
                         await asyncio.sleep(0)
+                if batch:
+                    await mqtt.publish(log_topic, json.dumps(batch), qos=0, retain=False)
                 historical_lines = []  # Free memory
 
                 # Follow new logs with dedup
@@ -181,6 +225,16 @@ async def monitor_container(container_name: str, system: str):
                     stderr=asyncio.subprocess.STDOUT,
                     limit=STREAM_LINE_LIMIT,
                 )
+
+                realtime_buf: list[dict] = []
+                last_flush = asyncio.get_event_loop().time()
+
+                async def flush_buf():
+                    nonlocal realtime_buf, last_flush
+                    if realtime_buf:
+                        await mqtt.publish(log_topic, json.dumps(realtime_buf), qos=0, retain=False)
+                        realtime_buf = []
+                    last_flush = asyncio.get_event_loop().time()
 
                 async for line in process.stdout:
                     line_str = line.decode(errors="replace").strip()
@@ -203,16 +257,7 @@ async def monitor_container(container_name: str, system: str):
                         dedup_phase_active = False
                         dedup_set = None
 
-                    # Publish log entry
-                    log_entry = json.dumps({
-                        "ts": datetime.now(timezone.utc).isoformat(),
-                        "line": line_str,
-                        "seq": seq,
-                    })
-                    await mqtt.publish(log_topic, log_entry, qos=0, retain=False)
-                    seq += 1
-
-                    # Existing enumeration parsing
+                    # Enumeration parsing (always runs, even for filtered lines)
                     if temp_match := TEMP_PATTERN.search(line_str):
                         node_id = int(temp_match.group(1))
                         if node_id not in temp_nodes:
@@ -232,6 +277,25 @@ async def monitor_container(container_name: str, system: str):
                             logger.info(f"[{system}] Node {node_id_str} -> serial {serial}")
                             await publish_node_mappings(mqtt, system, node_mappings)
 
+                    # Filter sensor_reset lines (never shown in frontend)
+                    if _is_sensor_reset(line_str):
+                        continue
+
+                    # Buffer log entry for batched publish
+                    realtime_buf.append({
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "line": line_str,
+                        "seq": seq,
+                    })
+                    seq += 1
+
+                    # Flush buffer if interval elapsed
+                    now = asyncio.get_event_loop().time()
+                    if now - last_flush >= REALTIME_FLUSH_INTERVAL:
+                        await flush_buf()
+
+                # Flush any remaining buffered lines
+                await flush_buf()
                 await process.wait()
                 logger.warning(f"Log stream for {container_name} ended")
 
