@@ -348,8 +348,10 @@ Found a bug or have a feature request? **[Open an Issue](https://github.com/isco
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
+The `tigo-mqtt/` service downloads and builds third-party components into its Docker image at build time, including [taptap](https://github.com/willglynn/taptap) (MIT) and [taptap-mqtt](https://github.com/litinoveweedle/taptap-mqtt) (GPL-3.0). These components retain their original licenses. No third-party source code is checked into this repository. See [`tigo-mqtt/THIRD-PARTY-NOTICES.md`](tigo-mqtt/THIRD-PARTY-NOTICES.md) for full details.
+
 ## Acknowledgments
 
 - [taptap](https://github.com/willglynn/taptap) — Tigo CCA communication binary
-- [taptap-mqtt](https://github.com/litinoveweedle/taptap-mqtt) - Tigo CCA to the Home Assistant MQTT bridge
+- [taptap-mqtt](https://github.com/litinoveweedle/taptap-mqtt) — Tigo CCA to Home Assistant MQTT bridge
 - [Tigo Energy](https://www.tigoenergy.com/) — Solar optimizer hardware
