@@ -168,7 +168,7 @@ describe('2-panel string handling', () => {
     expect(result.hasMismatch).toBe(false);
   });
 
-  it('2-panel string shows appropriate warning message', () => {
+  it('2-panel string shows appropriate warning message identifying lower panel', () => {
     const panels = [
       createMockPanel({ display_label: 'A1', watts: 100 }),
       createMockPanel({ display_label: 'A2', watts: 160 }),
@@ -177,6 +177,7 @@ describe('2-panel string handling', () => {
     const result = analyzeStringForMismatches(panels, 15);
     expect(result.warningMessage).toContain('only 2 panels');
     expect(result.warningMessage).toContain('not all panels are outputting equally');
+    expect(result.warningMessage).toContain('A1 is producing less');
   });
 });
 
@@ -193,7 +194,20 @@ describe('1-panel string handling', () => {
 });
 
 describe('warning message generation', () => {
-  it('single mismatch shows panel-specific message', () => {
+  it('single low mismatch shows shading/degradation message', () => {
+    const panels = [
+      createMockPanel({ display_label: 'A1', watts: 100 }),
+      createMockPanel({ display_label: 'A2', watts: 100 }),
+      createMockPanel({ display_label: 'A3', watts: 51 }),
+    ];
+
+    const result = analyzeStringForMismatches(panels, 15);
+    expect(result.warningMessage).toContain('A3');
+    expect(result.warningMessage).toContain('below');
+    expect(result.warningMessage).toContain('shading');
+  });
+
+  it('single high mismatch shows temporary variance message', () => {
     const panels = [
       createMockPanel({ display_label: 'A1', watts: 100 }),
       createMockPanel({ display_label: 'A2', watts: 100 }),
@@ -202,11 +216,12 @@ describe('warning message generation', () => {
 
     const result = analyzeStringForMismatches(panels, 15);
     expect(result.warningMessage).toContain('A3');
-    expect(result.warningMessage).toContain('200W');
+    expect(result.warningMessage).toContain('above');
+    expect(result.warningMessage).toContain('temporary');
   });
 
-  it('multiple mismatches lists all panel IDs', () => {
-    // Two outliers (A1=100, A2=100) vs median of 300 (from A3, A4, A5)
+  it('multiple mismatches groups by direction', () => {
+    // Two low outliers (A1=100, A2=100) vs median of 300 (from A3, A4, A5)
     const panels = [
       createMockPanel({ display_label: 'A1', watts: 100 }),
       createMockPanel({ display_label: 'A2', watts: 100 }),
@@ -218,6 +233,25 @@ describe('warning message generation', () => {
     const result = analyzeStringForMismatches(panels, 15);
     expect(result.warningMessage).toContain('A1');
     expect(result.warningMessage).toContain('A2');
+    expect(result.warningMessage).toContain('below');
+    expect(result.warningMessage).toContain('shading');
+  });
+
+  it('multiple mismatches with mixed directions shows both', () => {
+    const panels = [
+      createMockPanel({ display_label: 'A1', watts: 51 }),   // low outlier
+      createMockPanel({ display_label: 'A2', watts: 100 }),
+      createMockPanel({ display_label: 'A3', watts: 100 }),
+      createMockPanel({ display_label: 'A4', watts: 100 }),
+      createMockPanel({ display_label: 'A5', watts: 200 }),   // high outlier
+    ];
+
+    const result = analyzeStringForMismatches(panels, 15);
+    expect(result.warningMessage).toContain('A1');
+    expect(result.warningMessage).toContain('below');
+    expect(result.warningMessage).toContain('A5');
+    expect(result.warningMessage).toContain('above');
+    expect(result.warningMessage).toContain('temporary');
   });
 });
 

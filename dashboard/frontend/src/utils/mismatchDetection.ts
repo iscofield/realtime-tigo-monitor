@@ -91,7 +91,7 @@ export function analyzeStringForMismatches(
         })),
         hasMismatch: true,
         mismatchedPanels: validPanels.map(p => p.display_label),
-        warningMessage: "String has only 2 panels — not all panels are outputting equally. This may be due to shading or panel degradation, or in some cases a wiring issue.",
+        warningMessage: `String has only 2 panels — not all panels are outputting equally. ${p1.watts! < p2.watts! ? p1.display_label : p2.display_label} is producing less, which may be due to shading, soiling, or degradation. The difference may also be temporary.`,
       };
     }
 
@@ -143,9 +143,22 @@ export function analyzeStringForMismatches(
   let warningMessage: string | undefined;
   if (mismatchedPanels.length === 1) {
     const m = results.find(r => r.isMismatched)!;
-    warningMessage = `Not all panels are outputting equally. Panel ${m.panelId} shows ${Math.round(m.power)}W while median is ${Math.round(median)}W. This may be due to shading or panel degradation, or in some cases a wiring issue.`;
+    const direction = m.power < median ? 'below' : 'above';
+    const explanation = m.power < median
+      ? 'This may be due to shading, soiling, or panel degradation, or in some cases a wiring issue.'
+      : 'This is likely a temporary measurement variance and may resolve with the next report. If sustained, the panel\'s optimizer or wiring may warrant inspection.';
+    warningMessage = `Not all panels are outputting equally. Panel ${m.panelId} shows ${Math.round(m.power)}W, ${direction} the string median of ${Math.round(median)}W. ${explanation}`;
   } else if (mismatchedPanels.length > 1) {
-    warningMessage = `Not all panels are outputting equally. Panels ${mismatchedPanels.join(', ')} show significant variance from median (${Math.round(median)}W). This may be due to shading or panel degradation, or in some cases a wiring issue.`;
+    const lowPanels = results.filter(r => r.isMismatched && r.power < median);
+    const highPanels = results.filter(r => r.isMismatched && r.power >= median);
+    const parts: string[] = [];
+    if (lowPanels.length > 0) {
+      parts.push(`${lowPanels.map(p => p.panelId).join(', ')} ${lowPanels.length === 1 ? 'is' : 'are'} below — possible shading, soiling, or degradation`);
+    }
+    if (highPanels.length > 0) {
+      parts.push(`${highPanels.map(p => p.panelId).join(', ')} ${highPanels.length === 1 ? 'is' : 'are'} above — likely temporary, may resolve with next report`);
+    }
+    warningMessage = `Not all panels are outputting equally relative to the string median (${Math.round(median)}W). ${parts.join('; ')}.`;
   }
 
   return {
