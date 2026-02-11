@@ -3,6 +3,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.test
+      args:
+        - BUILDKIT_INLINE_CACHE=1
     volumes:
       - ../config/panel_mapping.json:/app/config/panel_mapping.json:ro
 
@@ -10,14 +12,23 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
     ports:
       - "3050:8000"
     environment:
       - USE_MOCK_DATA=true
       - LOG_LEVEL=DEBUG
+      - MEM_SOFT_LIMIT_MB=150
+      - MEM_HARD_LIMIT_MB=500
     volumes:
       - ../config/panel_mapping.json:/app/config/panel_mapping.json:ro
       - ../assets/layout.png:/app/static/layout.png:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     build:
@@ -25,6 +36,7 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_WS_URL=ws://localhost:3050/ws/panels
+        - BUILDKIT_INLINE_CACHE=1
     ports:
       - "5174:80"
     depends_on:

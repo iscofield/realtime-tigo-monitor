@@ -1,12 +1,17 @@
 import asyncio
+import ctypes
+import gc
 import json
 import logging
+import os
 import re
+import resource
+import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TypedDict, NotRequired
+from typing import TextIO, TypedDict, NotRequired
 from fastapi import WebSocket
 
 logger = logging.getLogger(__name__)
@@ -51,8 +56,6 @@ FILTERABLE_CATEGORIES = {
     CATEGORY_MQTT: {"label": "MQTT messages", "default": True},
 }
 
-MAX_DISK_QUERY_ENTRIES: int = 50_000
-
 # Pre-compiled patterns for category classification
 _NODE_STATUS_RE = re.compile(r"^Node \w+ is (?:offline|online)")
 _RESET_PREFIXES = (
@@ -76,15 +79,20 @@ class LogEntry(TypedDict):
 class LogService:
     """Manages CCA log ingestion, persistence, and retrieval."""
 
-    def __init__(self, log_dir: str, retention: timedelta, buffer_size: int = 500):
+    def __init__(self, log_dir: str, retention: timedelta, buffer_size: int = 500,
+                 mem_soft_limit_mb: int = 150, mem_hard_limit_mb: int = 500):
         self.log_dir = Path(log_dir)
         self.retention = retention
         self.buffer_size = buffer_size
+        self.mem_soft_limit_mb = mem_soft_limit_mb
+        self.mem_hard_limit_mb = mem_hard_limit_mb
         self._logs: dict[str, deque[LogEntry]] = {}
         self._connections: dict[WebSocket, tuple[int, set[str]]] = {}  # ws → (min_level_value, excluded_categories)
         self._last_seq: dict[str, int] = {}
         self._has_debug: dict[str, bool] = {}
         self._last_disk_warning_time: float = 0.0
+        # Persistent file handles for write path (avoids open/close per entry)
+        self._write_handles: dict[str, TextIO] = {}  # "system/date" → file handle
 
     @staticmethod
     def _parse_level(line: str) -> str:
@@ -159,10 +167,10 @@ class LogService:
 
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         log_path = self.log_dir / system / f"{date_str}.log"
+        line = json.dumps(entry) + "\n"
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(entry) + "\n"
-            self._write_line(log_path, line)
+            await asyncio.to_thread(self._write_line, log_path, line, system, date_str)
         except OSError:
             now = time.monotonic()
             if now - self._last_disk_warning_time > 60:
@@ -176,12 +184,61 @@ class LogService:
         await self._broadcast_entry(system, entry)
         return True
 
+    def _write_line(self, path: Path, line: str, system: str, date_str: str) -> None:
+        """Write a single line to a log file.
+
+        Keeps file handles open to avoid open/close per entry.
+        Called via asyncio.to_thread to avoid blocking the event loop.
+        """
+        handle_key = f"{system}/{date_str}"
+        fh = self._write_handles.get(handle_key)
+        if fh is None or fh.closed:
+            # Close any stale handle for this system (previous date)
+            for key in list(self._write_handles):
+                if key.startswith(f"{system}/") and key != handle_key:
+                    try:
+                        self._write_handles.pop(key).close()
+                    except OSError:
+                        pass
+            fh = open(path, "a")
+            self._write_handles[handle_key] = fh
+        fh.write(line)
+        fh.flush()
+
     @staticmethod
-    def _write_line(path: Path, line: str) -> None:
-        """Write a single line to a log file (synchronous, inline on event loop)."""
-        with open(path, "a") as f:
-            f.write(line)
-            f.flush()
+    def _reverse_readline(filepath: Path, buf_size: int = 65536):
+        """Yield lines from a file in reverse order (last line first).
+
+        Reads in chunks from the end, so only as much of the file is read
+        as needed.  Ideal for getting the most recent log entries without
+        loading the entire file into memory.
+        """
+        with open(filepath, "rb") as f:
+            f.seek(0, 2)  # seek to end
+            remaining = f.tell()
+            if remaining == 0:
+                return
+
+            carry = b""
+            while remaining > 0:
+                read_size = min(buf_size, remaining)
+                remaining -= read_size
+                f.seek(remaining)
+                block = f.read(read_size) + carry
+                lines = block.split(b"\n")
+
+                # First element may be a partial line if not at file start
+                if remaining > 0:
+                    carry = lines[0]
+                    start = 1
+                else:
+                    carry = b""
+                    start = 0
+
+                for i in range(len(lines) - 1, start - 1, -1):
+                    line = lines[i].strip()
+                    if line:
+                        yield line.decode("utf-8", errors="replace")
 
     def add_connection(self, ws: WebSocket, min_level: str = "info", excluded_categories: set[str] | None = None) -> None:
         self._connections[ws] = (LEVEL_VALUES.get(min_level, 20), excluded_categories or set())
@@ -234,6 +291,85 @@ class LogService:
                 raise
             except Exception:
                 logger.exception("Error in pruning loop")
+
+    @staticmethod
+    def _get_rss_mb() -> float:
+        """Return current RSS in MB. Uses /proc on Linux, ru_maxrss on macOS."""
+        try:
+            # Linux: read current RSS from /proc (not peak)
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024  # KB → MB
+        except FileNotFoundError:
+            pass
+        # macOS fallback: ru_maxrss (peak, in bytes)
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return rss / (1024 * 1024)
+
+    def _try_release_memory(self, rss_mb: float) -> float:
+        """Attempt to release memory back to the OS. Returns new RSS."""
+        logger.warning(
+            f"[mem] RSS={rss_mb:.1f}MB exceeds soft limit "
+            f"({self.mem_soft_limit_mb}MB) — attempting remediation"
+        )
+        # 1. Force Python garbage collection
+        gc.collect()
+        # 2. Prune expired entries from in-memory buffers
+        self._prune_memory()
+        # 3. Close all file handles (they'll reopen on next write)
+        for key in list(self._write_handles):
+            try:
+                self._write_handles.pop(key).close()
+            except OSError:
+                pass
+        # 4. Tell glibc to release free pages back to OS (Linux only)
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            libc.malloc_trim(0)
+            logger.info("[mem] malloc_trim(0) called")
+        except (OSError, AttributeError):
+            pass  # not Linux / glibc
+        new_rss = self._get_rss_mb()
+        logger.info(f"[mem] after remediation: RSS={new_rss:.1f}MB")
+        return new_rss
+
+    async def _memory_monitor_loop(self) -> None:
+        """Periodically log RSS and buffer stats. Takes action on threshold breach."""
+        while True:
+            try:
+                await asyncio.sleep(60)  # every 60s during debugging
+                rss_mb = self._get_rss_mb()
+                peak_bytes = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                if os.uname().sysname == "Darwin":
+                    peak_mb = peak_bytes / (1024 * 1024)
+                else:
+                    peak_mb = peak_bytes / 1024
+                buf_entries = sum(len(d) for d in self._logs.values())
+                ws_clients = len(self._connections)
+                open_handles = len(self._write_handles)
+                logger.info(
+                    f"[mem] RSS={rss_mb:.1f}MB  peak={peak_mb:.1f}MB  "
+                    f"buf_entries={buf_entries}  "
+                    f"ws_clients={ws_clients}  "
+                    f"open_handles={open_handles}  "
+                    f"systems={len(self._logs)}"
+                )
+                # Soft limit: try to free memory
+                if self.mem_soft_limit_mb and rss_mb > self.mem_soft_limit_mb:
+                    rss_mb = self._try_release_memory(rss_mb)
+                # Hard limit: force exit (Docker restart: unless-stopped will revive us)
+                if self.mem_hard_limit_mb and rss_mb > self.mem_hard_limit_mb:
+                    logger.critical(
+                        f"[mem] RSS={rss_mb:.1f}MB still exceeds hard limit "
+                        f"({self.mem_hard_limit_mb}MB) after remediation — "
+                        f"forcing exit for container restart"
+                    )
+                    os._exit(1)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Error in memory monitor loop")
 
     def _prune_memory(self) -> None:
         """Remove expired entries and clean up empty systems.
@@ -321,7 +457,11 @@ class LogService:
         return deleted
 
     def load_from_disk(self) -> None:
-        """On startup, populate the capped buffer with the most recent entries."""
+        """On startup, populate the capped buffer with the most recent entries.
+
+        Uses reverse file reading to collect only buffer_size entries from
+        the newest files, avoiding iteration through millions of old lines.
+        """
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -337,49 +477,49 @@ class LogService:
             if not self._validate_system(system):
                 logger.warning(f"Skipping invalid system directory: {system!r}")
                 continue
-            buf: deque[LogEntry] = deque(maxlen=self.buffer_size)
+            entries: list[LogEntry] = []
             has_debug = False
-            for log_file in sorted(system_dir.glob("*.log")):
+            done = False
+            # Process files newest-first; read lines from end of each file
+            for log_file in sorted(system_dir.glob("*.log"), reverse=True):
                 try:
                     file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
                     if file_date < cutoff_date:
                         continue
                 except ValueError:
                     continue
-                try:
-                    f = open(log_file, "r")
-                except OSError:
-                    logger.warning(f"Cannot open {log_file}, skipping")
-                    continue
-                with f:
-                    for raw_line in f:
-                        raw_line = raw_line.strip()
-                        if not raw_line:
-                            continue
-                        try:
-                            data = json.loads(raw_line)
-                        except json.JSONDecodeError:
-                            logger.debug(f"Skipping malformed line in {log_file}")
-                            continue
-                        if (
-                            isinstance(data, dict)
-                            and isinstance(data.get("ts"), str)
-                            and data.get("ts")
-                            and isinstance(data.get("line"), str)
-                            and type(data.get("seq")) is int
-                            and data.get("seq") >= 0
-                        ):
-                            if data.get("ts", "") < cutoff_str:
-                                continue
-                            data["level"] = self._parse_level(data.get("line", ""))
-                            if data["level"] == "debug":
-                                has_debug = True
-                            data["category"] = self._classify_category(data.get("line", ""))
-                            buf.append(data)
-            if buf:
+                for raw_line in self._reverse_readline(log_file):
+                    try:
+                        data = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not (
+                        isinstance(data, dict)
+                        and isinstance(data.get("ts"), str)
+                        and data.get("ts")
+                        and isinstance(data.get("line"), str)
+                        and type(data.get("seq")) is int
+                        and data.get("seq") >= 0
+                    ):
+                        continue
+                    if data["ts"] < cutoff_str:
+                        break  # remaining entries in this file are older
+                    data["level"] = self._parse_level(data.get("line", ""))
+                    if data["level"] == "debug":
+                        has_debug = True
+                    data["category"] = self._classify_category(data.get("line", ""))
+                    entries.append(data)
+                    if len(entries) >= self.buffer_size:
+                        done = True
+                        break
+                if done:
+                    break
+            if entries:
+                # entries are newest-first; reverse to chronological for the deque
+                entries.reverse()
+                buf: deque[LogEntry] = deque(entries, maxlen=self.buffer_size)
                 self._logs[system] = buf
-                last_entry = buf[-1]
-                self._last_seq[system] = last_entry["seq"]
+                self._last_seq[system] = buf[-1]["seq"]
                 if has_debug:
                     self._has_debug[system] = True
 
@@ -389,12 +529,13 @@ class LogService:
         retention: timedelta | None = None,
         min_level: str = "info",
         excluded_categories: set[str] | None = None,
+        offset: int = 0,
+        limit: int = 200,
     ) -> tuple[list[LogEntry], bool]:
         """Read and filter log entries from JSONL files on disk.
 
-        Returns a tuple of (entries sorted by timestamp descending, capped)
-        where `capped` is True if the 50,000 entry cap was reached.
-        If retention is None, uses self.retention.
+        Uses reverse file reading so that only as much data as needed is
+        actually read.  Returns ``(entries_newest_first, has_more)``.
         """
         if not self._validate_system(system):
             return ([], False)
@@ -406,11 +547,12 @@ class LogService:
         cutoff_date = cutoff.date()
         cutoff_str = cutoff.isoformat()
         excluded = excluded_categories or set()
+        min_level_val = LEVEL_VALUES.get(min_level, 20)
 
-        MAX_ENTRIES = MAX_DISK_QUERY_ENTRIES
         entries: list[LogEntry] = []
-        # Read files in REVERSE chronological order (newest first) so that
-        # if the 50K cap triggers, we keep the most recent entries.
+        skipped = 0
+        need = limit + 1  # collect one extra to detect has_more
+
         for log_file in sorted(system_dir.glob("*.log"), reverse=True):
             try:
                 file_date = datetime.strptime(log_file.stem, "%Y-%m-%d").date()
@@ -418,55 +560,45 @@ class LogService:
                     continue
             except ValueError:
                 continue
-            try:
-                f = open(log_file, "r")
-            except OSError:
-                logger.warning(f"Cannot open {log_file}, skipping")
-                continue
-            with f:
-                for raw_line in f:
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        data = json.loads(raw_line)
-                    except json.JSONDecodeError:
-                        logger.debug(f"Skipping malformed line in {log_file}")
-                        continue
-                    if not (
-                        isinstance(data, dict)
-                        and isinstance(data.get("ts"), str)
-                        and data.get("ts")
-                        and isinstance(data.get("line"), str)
-                        and type(data.get("seq")) is int
-                        and data.get("seq") >= 0
-                    ):
-                        continue
-                    # Always re-parse level and category for consistency
-                    data["level"] = self._parse_level(data.get("line", ""))
-                    data["category"] = self._classify_category(data.get("line", ""))
-                    # Apply timestamp cutoff
-                    if data.get("ts", "") < cutoff_str:
-                        continue
-                    # Apply level filter
-                    entry_level_val = LEVEL_VALUES.get(data.get("level", "info"), 20)
-                    min_level_val = LEVEL_VALUES.get(min_level, 20)
-                    if entry_level_val < min_level_val:
-                        continue
-                    # Apply category filter
-                    entry_cat = data.get("category", CATEGORY_GENERAL)
-                    if entry_cat in ALWAYS_HIDDEN or entry_cat in excluded:
-                        continue
-                    entries.append(data)
-                    if len(entries) >= MAX_ENTRIES:
-                        break
-            if len(entries) >= MAX_ENTRIES:
-                break
 
-        capped = len(entries) >= MAX_ENTRIES
-        # Sort newest first
-        entries.sort(key=lambda e: e.get("ts", ""), reverse=True)
-        return entries, capped
+            for raw_line in self._reverse_readline(log_file):
+                try:
+                    data = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not (
+                    isinstance(data, dict)
+                    and isinstance(data.get("ts"), str)
+                    and data.get("ts")
+                    and isinstance(data.get("line"), str)
+                    and type(data.get("seq")) is int
+                    and data.get("seq") >= 0
+                ):
+                    continue
+                data["level"] = self._parse_level(data.get("line", ""))
+                data["category"] = self._classify_category(data.get("line", ""))
+                if data["ts"] < cutoff_str:
+                    break  # remaining entries in this file are older
+                if LEVEL_VALUES.get(data["level"], 20) < min_level_val:
+                    continue
+                entry_cat = data.get("category", CATEGORY_GENERAL)
+                if entry_cat in ALWAYS_HIDDEN or entry_cat in excluded:
+                    continue
+
+                # Pagination: skip `offset` entries, then collect `limit`
+                if skipped < offset:
+                    skipped += 1
+                    continue
+                entries.append(data)
+                if len(entries) >= need:
+                    # Got limit+1 → there are more entries on disk
+                    return (entries[:limit], True)
+
+            # If we've filled the page, stop reading more files
+            if len(entries) >= need:
+                return (entries[:limit], True)
+
+        return (entries, False)
 
     def get_disk_systems(self) -> list[str]:
         """Return system names that have log directories on disk."""
@@ -478,3 +610,15 @@ class LogService:
                 if any(d.glob("*.log")):
                     systems.append(d.name)
         return systems
+
+    def has_older_on_disk(self, system: str) -> bool:
+        """Fast check: are there log entries on disk beyond the in-memory buffer?"""
+        system_dir = self.log_dir / system
+        if not system_dir.is_dir():
+            return False
+        buf = self._logs.get(system)
+        # If the buffer is at capacity, there are almost certainly more on disk
+        if buf and len(buf) >= self.buffer_size:
+            return True
+        # Otherwise check if any log files exist at all
+        return any(system_dir.glob("*.log"))

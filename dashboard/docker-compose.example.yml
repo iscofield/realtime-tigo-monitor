@@ -35,6 +35,10 @@ services:
       # In-memory buffer size per system (entries kept for WebSocket initial payloads).
       # Min: 100, Max: 5000. REST queries always read from disk regardless of buffer size.
       - LOG_BUFFER_SIZE=500
+      # Memory guard thresholds (MB). Soft: gc + malloc_trim. Hard: force exit.
+      # Set to 0 to disable. Container auto-restarts on exit (restart: unless-stopped).
+      - MEM_SOFT_LIMIT_MB=150
+      - MEM_HARD_LIMIT_MB=500
     volumes:
       # Config directory - writable for setup wizard to save YAML configs
       - ../config:/app/config
@@ -50,6 +54,12 @@ services:
       # Update these paths if your tigo-mqtt data directory is elsewhere
       - ../tigo-mqtt/data/primary:/app/state/primary:ro
       - ../tigo-mqtt/data/secondary:/app/state/secondary:ro
+    # Cap Docker container log size to prevent unbounded growth from application logs.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - solar-network
     restart: unless-stopped

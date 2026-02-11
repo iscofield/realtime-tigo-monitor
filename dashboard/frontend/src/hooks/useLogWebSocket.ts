@@ -23,7 +23,6 @@ interface UseLogWebSocketResult {
   systems: string[];
   status: LogConnectionStatus;
   hasDebug: Record<string, boolean>;
-  totalBySystem: Record<string, number>;
   loadingOlder: boolean;
   hasOlderBySystem: Record<string, boolean>;
   fetchOlderLogs: (system: string) => Promise<void>;
@@ -54,7 +53,6 @@ export function useLogWebSocket(
   const [systems, setSystems] = useState<string[]>([]);
   const [status, setStatus] = useState<LogConnectionStatus>('connecting');
   const [hasDebug, setHasDebug] = useState<Record<string, boolean>>({});
-  const [totalBySystem, setTotalBySystem] = useState<Record<string, number>>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasOlderBySystem, setHasOlderBySystem] = useState<Record<string, boolean>>({});
   const [olderOffsetBySystem, setOlderOffsetBySystem] = useState<Record<string, number>>({});
@@ -110,7 +108,6 @@ export function useLogWebSocket(
               setLogsBySystem(data.logs || {});
               setSystems(data.systems || []);
               setHasDebug(data.has_debug || {});
-              setTotalBySystem(data.total || {});
               if (data.categories) {
                 setCategories(data.categories);
               }
@@ -120,7 +117,7 @@ export function useLogWebSocket(
               for (const sys of data.systems || []) {
                 const loaded = (data.logs?.[sys] || []).length;
                 offsets[sys] = loaded;
-                hasOlder[sys] = loaded < (data.total?.[sys] || 0);
+                hasOlder[sys] = data.has_older?.[sys] || false;
               }
               setOlderOffsetBySystem(offsets);
               setHasOlderBySystem(hasOlder);
@@ -136,10 +133,6 @@ export function useLogWebSocket(
                     : updated,
                 };
               });
-              setTotalBySystem((prev) => ({
-                ...prev,
-                [system]: (prev[system] || 0) + 1,
-              }));
               setSystems((prev) =>
                 prev.includes(system) ? prev : [...prev, system]
               );
@@ -212,7 +205,14 @@ export function useLogWebSocket(
         const existing = prev[system] || [];
         const existingSeqs = new Set(existing.map((e: LogEntry) => e.seq));
         const newEntries = olderEntries.filter((e: LogEntry) => !existingSeqs.has(e.seq));
-        return { ...prev, [system]: [...newEntries, ...existing] };
+        const combined = [...newEntries, ...existing];
+        // Cap total entries to prevent unbounded memory growth
+        return {
+          ...prev,
+          [system]: combined.length > BUFFER_CAP
+            ? combined.slice(combined.length - BUFFER_CAP)
+            : combined,
+        };
       });
 
       setOlderOffsetBySystem((prev) => ({
@@ -229,5 +229,5 @@ export function useLogWebSocket(
     }
   }, [level, excludeKey]);
 
-  return { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs, categories };
+  return { logsBySystem, systems, status, hasDebug, loadingOlder, hasOlderBySystem, fetchOlderLogs, categories };
 }

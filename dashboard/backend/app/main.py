@@ -153,6 +153,8 @@ async def lifespan(app: FastAPI):
         settings.log_dir,
         retention=settings.retention_timedelta,
         buffer_size=settings.log_buffer_size,
+        mem_soft_limit_mb=settings.mem_soft_limit_mb,
+        mem_hard_limit_mb=settings.mem_hard_limit_mb,
     )
     try:
         log_service.prune_old_logs()
@@ -160,6 +162,7 @@ async def lifespan(app: FastAPI):
         logger.exception("Initial prune failed, continuing with stale files")
     log_service.load_from_disk()
     pruning_task = asyncio.create_task(log_service._pruning_loop())
+    memory_task = asyncio.create_task(log_service._memory_monitor_loop())
 
     # Deprecation warning for old env var
     if os.environ.get("LOG_RETENTION_DAYS"):
@@ -193,8 +196,21 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     pruning_task.cancel()
+    memory_task.cancel()
+    # Close persistent log file handles
+    if log_service is not None:
+        for fh in log_service._write_handles.values():
+            try:
+                fh.close()
+            except OSError:
+                pass
+        log_service._write_handles.clear()
     try:
         await pruning_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await memory_task
     except asyncio.CancelledError:
         pass
     await ws_manager.stop_background_tasks()
@@ -425,26 +441,14 @@ async def logs_websocket(websocket: WebSocket):
             filtered = LogService.filter_by_category(filtered, excluded)
             filtered_logs[sys] = filtered[-WS_INITIAL_LOG_LIMIT:]
 
-        # Disk-based totals for lazy-loading — parallelized across systems
-        async def _count_system(s: str) -> tuple[str, int]:
-            try:
-                entries, _ = await asyncio.to_thread(
-                    log_service.query_logs_from_disk,
-                    s, None, level, excluded,
-                )
-                return (s, len(entries))
-            except Exception:
-                logger.warning(f"Failed to count logs for {s}, defaulting to 0")
-                return (s, 0)
-
-        count_results = await asyncio.gather(*[_count_system(s) for s in all_systems])
-        total_counts = dict(count_results)
+        # Quick boolean check per system — no disk scanning
+        has_older = {s: log_service.has_older_on_disk(s) for s in all_systems}
 
         initial = {
             "type": "initial",
             "systems": all_systems,
             "logs": filtered_logs,
-            "total": total_counts,
+            "has_older": has_older,
             "has_debug": log_service.get_has_debug(),
             "categories": FILTERABLE_CATEGORIES,
         }
@@ -489,27 +493,22 @@ async def get_logs(
     excluded = {c.strip() for c in exclude.split(",") if c.strip()}
     excluded = excluded & set(FILTERABLE_CATEGORIES.keys())
 
-    # Read from disk instead of memory, capped by server retention
+    # Read from disk with pagination — only reads as much data as needed
     requested = timedelta(days=days)
     retention = min(requested, log_service.retention)
     try:
-        all_filtered, capped = await asyncio.to_thread(
+        entries, has_more = await asyncio.to_thread(
             log_service.query_logs_from_disk,
-            system, retention, req_level, excluded,
+            system, retention, req_level, excluded, offset, limit,
         )
     except Exception:
         logger.exception(f"Failed to query logs for {system}")
         raise HTTPException(status_code=500, detail="Failed to read log files")
 
-    total = len(all_filtered)
-    entries = all_filtered[offset : offset + limit]
-
     return {
         "system": system,
         "entries": entries,
-        "total": total,
-        "has_more": offset + limit < total,
-        "capped": capped,
+        "has_more": has_more,
     }
 
 

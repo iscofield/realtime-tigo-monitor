@@ -200,7 +200,7 @@ function LogViewer() {
   const [excludedCategories, setExcludedCategories] = useState<Set<string>>(new Set());
   const [categoriesInitialized, setCategoriesInitialized] = useState(false);
 
-  const { logsBySystem, systems, status, hasDebug, totalBySystem, loadingOlder, hasOlderBySystem, fetchOlderLogs, categories } = useLogWebSocket(logLevel, excludedCategories);
+  const { logsBySystem, systems, status, hasDebug, loadingOlder, hasOlderBySystem, fetchOlderLogs, categories } = useLogWebSocket(logLevel, excludedCategories);
   const [activeSystem, setActiveSystem] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [newEntryCount, setNewEntryCount] = useState(0);
@@ -377,8 +377,8 @@ function LogViewer() {
         <div style={countStyle} aria-live="polite">
           {search
             ? `Showing ${filteredCount} of ${totalEntries} entries`
-            : currentSystem && totalBySystem[currentSystem] && totalBySystem[currentSystem] > totalEntries
-              ? `${totalEntries} of ${totalBySystem[currentSystem]} entries`
+            : currentSystem && hasOlderBySystem[currentSystem]
+              ? `${totalEntries} entries (more available)`
               : `${totalEntries} entries`}
         </div>
       )}

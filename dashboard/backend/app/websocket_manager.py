@@ -79,7 +79,7 @@ class ConnectionManager:
             await asyncio.sleep(self.batch_interval_ms / 1000.0)
             async with self._lock:
                 if self._pending_update and self._panel_data:
-                    logger.info(f"Batch loop: broadcasting to {len(self.active_connections)} clients")
+                    logger.debug(f"Batch loop: broadcasting to {len(self.active_connections)} clients")
                     await self.broadcast(self._panel_data)
                     self._pending_update = False
 
