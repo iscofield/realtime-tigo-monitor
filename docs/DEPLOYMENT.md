@@ -7,7 +7,7 @@ This guide walks you through deploying Realtime Tigo Monitor from scratch.
 Before you begin, ensure you have:
 
 - **Docker** and **Docker Compose** installed on all devices
-- **Raspberry Pi** (3B+ or newer) with Tigo CCA connected via USB
+- **Data collection device** with Tigo CCA connected via USB (e.g., Raspberry Pi 3B+ or newer)
 - **MQTT Broker** accessible on your network
 - Basic familiarity with command line and Docker
 
@@ -65,7 +65,7 @@ For more details, see:
 
 ## Step 1: Deploy the Dashboard
 
-The dashboard can run on the same Raspberry Pi or a separate server.
+The dashboard can run on the same device or a separate server.
 
 ### 1.1 Clone the Repository
 
@@ -173,7 +173,7 @@ The tigo-mqtt service runs on the device connected to your Tigo CCA hardware (ty
 ### 3.1 Clone the Repository
 
 ```bash
-ssh pi@your-raspberry-pi
+ssh user@your-device
 git clone https://github.com/iscofield/solar_tigo_viewer.git
 cd solar_tigo_viewer/tigo-mqtt
 ```
@@ -196,7 +196,7 @@ Note the device paths (e.g., `/dev/ttyACM0`, `/dev/ttyACM1`).
 
 ### 3.3 Deploy Generated Configuration
 
-Copy the configuration files downloaded from the Setup Wizard (Step 2.4) to your Raspberry Pi:
+Copy the configuration files downloaded from the Setup Wizard (Step 2.4) to your data collection device:
 
 ```bash
 # Copy docker-compose.yml and config files to tigo-mqtt directory
@@ -239,7 +239,7 @@ docker compose up --build -d
 ### Update tigo-mqtt
 
 ```bash
-ssh pi@your-raspberry-pi
+ssh user@your-device
 cd solar_tigo_viewer/tigo-mqtt
 git pull
 docker compose down
