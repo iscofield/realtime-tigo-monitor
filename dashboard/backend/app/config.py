@@ -64,8 +64,8 @@ class Settings(BaseSettings):
 
     # Memory guard thresholds (MB). Set to 0 to disable.
     # Soft: gc.collect + malloc_trim + prune buffers. Hard: force exit.
-    mem_soft_limit_mb: int = Field(default=150, ge=0)
-    mem_hard_limit_mb: int = Field(default=500, ge=0)
+    mem_soft_limit_mb: int = Field(default=100, ge=0)
+    mem_hard_limit_mb: int = Field(default=200, ge=0)
 
     @field_validator("log_retention")
     @classmethod

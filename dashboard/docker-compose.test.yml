@@ -19,11 +19,15 @@ services:
     environment:
       - USE_MOCK_DATA=true
       - LOG_LEVEL=DEBUG
-      - MEM_SOFT_LIMIT_MB=150
-      - MEM_HARD_LIMIT_MB=500
+      - MEM_SOFT_LIMIT_MB=100
+      - MEM_HARD_LIMIT_MB=200
     volumes:
       - ../config/panel_mapping.json:/app/config/panel_mapping.json:ro
       - ../assets/layout.png:/app/static/layout.png:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     logging:
       driver: json-file
       options:
@@ -31,6 +35,10 @@ services:
         max-file: "3"
 
   frontend:
+    deploy:
+      resources:
+        limits:
+          memory: 128m
     build:
       context: ./frontend
       dockerfile: Dockerfile
