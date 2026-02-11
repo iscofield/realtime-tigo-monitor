@@ -15,7 +15,7 @@ export interface CategoryInfo {
   default: boolean;
 }
 
-const BUFFER_CAP = 2000;
+const BUFFER_CAP = 500;
 const LAZY_LOAD_BATCH = 200;
 
 interface UseLogWebSocketResult {
