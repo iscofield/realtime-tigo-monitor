@@ -60,6 +60,11 @@ _TS_LEVEL_RE = re.compile(
 
 def _is_sensor_reset(line: str) -> bool:
     """Return True if *line* is a sensor-reset message that the frontend never shows."""
+    # Fast pre-check: skip regex if the line can't possibly contain a reset prefix.
+    # The prefix always appears either at start (no timestamp) or after the
+    # timestamp+level (e.g. "2025-01-15 12:34:56.789 INFO: Calling reset_...").
+    if "Calling reset_" not in line:
+        return False
     m = _TS_LEVEL_RE.match(line)
     msg = m.group(1) if m else line
     return msg.startswith(_RESET_PREFIXES)
@@ -121,13 +126,10 @@ async def monitor_container(container_name: str, system: str):
     seq = 0
     log_topic = f"{MQTT_TOPIC_PREFIX}/{system}/logs"
 
-    # Phase 1: Parse historical logs to recover state on startup
-    historical_lines: list[str] = []
-    dedup_set: set[str] | None = None
-    dedup_phase_active = False
-    before_phase1_ts = datetime.now(timezone.utc)
-
-    logger.info(f"Parsing historical logs for {container_name}...")
+    # Scan historical logs to recover enumeration state (temp nodes + mappings).
+    # We only extract enumeration events — we do NOT replay log lines to MQTT,
+    # since the frontend doesn't need historical logs on startup.
+    logger.info(f"Scanning historical logs for {container_name} enumeration state...")
     try:
         hist_process = await asyncio.create_subprocess_exec(
             "docker", "logs", "--tail", str(HISTORY_TAIL_LINES), container_name,
@@ -136,16 +138,12 @@ async def monitor_container(container_name: str, system: str):
         )
         stdout, _ = await hist_process.communicate()
 
-        reset_count = 0
         for line in stdout.decode(errors="replace").splitlines():
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            # Truncate long lines
-            if len(line_stripped) > MAX_LINE_LENGTH:
-                line_stripped = line_stripped[:MAX_LINE_LENGTH] + " [truncated]"
 
-            # Parse enumeration events from ALL lines (including resets)
+            # Only parse enumeration events — skip everything else
             if temp_match := TEMP_PATTERN.search(line_stripped):
                 temp_nodes.add(int(temp_match.group(1)))
             elif perm_match := PERM_SERIAL_PATTERN.search(line_stripped):
@@ -154,18 +152,10 @@ async def monitor_container(container_name: str, system: str):
                 temp_nodes.discard(int(node_id))
                 node_mappings[node_id] = serial
 
-            # Filter sensor_reset lines from replay (never shown in frontend)
-            if _is_sensor_reset(line_stripped):
-                reset_count += 1
-                continue
-
-            historical_lines.append(line_stripped)
-
         if hist_process.returncode == 0:
             logger.info(
                 f"Recovered from {container_name} history: "
-                f"{len(temp_nodes)} temp nodes, {len(node_mappings)} mappings, "
-                f"{len(historical_lines)} log lines ({reset_count} sensor_reset filtered)"
+                f"{len(temp_nodes)} temp nodes, {len(node_mappings)} mappings"
             )
         else:
             logger.warning(f"Docker logs failed for {container_name} (exit code {hist_process.returncode})")
@@ -179,11 +169,7 @@ async def monitor_container(container_name: str, system: str):
     except Exception as e:
         logger.warning(f"Failed to parse historical logs for {container_name}: {e}")
 
-    # Build dedup set from last 100 lines
-    dedup_set = set(historical_lines[-100:])
-    dedup_phase_active = True
-
-    # Phase 2: Connect MQTT, replay historical, then follow real-time
+    # Follow only new logs from this point forward
     while True:
         try:
             logger.info(f"Starting real-time log monitoring for {container_name}...")
@@ -198,29 +184,9 @@ async def monitor_container(container_name: str, system: str):
                 await publish_temp_nodes(mqtt, system, temp_nodes)
                 await publish_node_mappings(mqtt, system, node_mappings)
 
-                # Replay historical lines in batches
-                base_ts = datetime.now(timezone.utc)
-                batch: list[dict] = []
-                for i, line_str in enumerate(historical_lines):
-                    entry_ts = base_ts + timedelta(microseconds=i)
-                    batch.append({
-                        "ts": entry_ts.isoformat(),
-                        "line": line_str,
-                        "seq": seq,
-                    })
-                    seq += 1
-                    if len(batch) >= HISTORY_BATCH_SIZE:
-                        await mqtt.publish(log_topic, json.dumps(batch), qos=0, retain=False)
-                        batch = []
-                        await asyncio.sleep(0)
-                if batch:
-                    await mqtt.publish(log_topic, json.dumps(batch), qos=0, retain=False)
-                historical_lines = []  # Free memory
-
-                # Follow new logs with dedup
-                since_ts = before_phase1_ts.isoformat()
+                # Follow only NEW logs (--tail 0 skips all existing lines)
                 process = await asyncio.create_subprocess_exec(
-                    "docker", "logs", "-f", "--since", since_ts, container_name,
+                    "docker", "logs", "-f", "--tail", "0", container_name,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     limit=STREAM_LINE_LIMIT,
@@ -228,6 +194,7 @@ async def monitor_container(container_name: str, system: str):
 
                 realtime_buf: list[dict] = []
                 last_flush = asyncio.get_event_loop().time()
+                lines_since_yield = 0
 
                 async def flush_buf():
                     nonlocal realtime_buf, last_flush
@@ -243,19 +210,6 @@ async def monitor_container(container_name: str, system: str):
 
                     if len(line_str) > MAX_LINE_LENGTH:
                         line_str = line_str[:MAX_LINE_LENGTH] + " [truncated]"
-
-                    # Dedup during phase transition
-                    if dedup_phase_active and dedup_set is not None and line_str in dedup_set:
-                        dedup_set.discard(line_str)
-                        # Still parse for enumeration events even during dedup
-                        if temp_match := TEMP_PATTERN.search(line_str):
-                            pass  # Already parsed in Phase 1
-                        elif perm_match := PERM_SERIAL_PATTERN.search(line_str):
-                            pass  # Already parsed in Phase 1
-                        continue
-                    if dedup_phase_active and dedup_set is not None and not dedup_set:
-                        dedup_phase_active = False
-                        dedup_set = None
 
                     # Enumeration parsing (always runs, even for filtered lines)
                     if temp_match := TEMP_PATTERN.search(line_str):
@@ -279,6 +233,10 @@ async def monitor_container(container_name: str, system: str):
 
                     # Filter sensor_reset lines (never shown in frontend)
                     if _is_sensor_reset(line_str):
+                        lines_since_yield += 1
+                        if lines_since_yield >= 50:
+                            lines_since_yield = 0
+                            await asyncio.sleep(0)
                         continue
 
                     # Buffer log entry for batched publish
@@ -288,6 +246,12 @@ async def monitor_container(container_name: str, system: str):
                         "seq": seq,
                     })
                     seq += 1
+
+                    # Yield to event loop periodically to avoid pegging CPU
+                    lines_since_yield += 1
+                    if lines_since_yield >= 50:
+                        lines_since_yield = 0
+                        await asyncio.sleep(0)
 
                     # Flush buffer if interval elapsed
                     now = asyncio.get_event_loop().time()
