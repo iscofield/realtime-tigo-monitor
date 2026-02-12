@@ -61,11 +61,10 @@ Intuitive visual editor for positioning panels:
 ### Setup Wizard
 Guided configuration for first-time setup:
 - MQTT broker connection testing
-- CCA device topology configuration
+- CCA device topology configuration with **panel serial number entry** (manual, bulk import, or placeholder mode)
 - **Auto-generates tigo-mqtt docker-compose files** for your data collection device
-- **Automatic panel discovery** — scans your Tigo optimizers via MQTT and auto-detects all panels, feeding discovered serials directly into string assignment
-- **String mapping with drag-and-drop** — visually reassign panels across strings to ensure your physical wiring topology matches the depicted layout (useful when installers wire panels differently than the design)
-- Panel validation and serial number mapping
+- **Automatic panel discovery** — scans your Tigo optimizers via MQTT and auto-detects all panels
+- **Panel mapping with drag-and-drop** — visually map discovered panels to expected topology positions, with auto-matching for panels that already align
 - **Mismatch detection** — identifies panels that may be misconfigured (wrong string assignment) or underperforming due to shading by analyzing power output deviations within each string
 
 ![Setup Wizard - Panel Validation](https://github.com/iscofield/realtime-tigo-monitor/blob/assets/setup-wizard.gif?raw=true)
@@ -207,20 +206,10 @@ docker compose up --build -d
 
 Open `http://your-server:5174` and follow the setup wizard to:
 1. Configure MQTT connection
-2. Define your CCA topology (names, serial ports, strings)
+2. Define your CCA topology and enter panel serial numbers
 3. **Download generated docker-compose files** for tigo-mqtt
-4. Discover and validate panels
-
-### 4. Deploy tigo-mqtt Service
-
-Copy the generated files to the device hosting your tigo-mqtt containers:
-
-```bash
-# On your data collection device
-cd solar_tigo_viewer/tigo-mqtt
-# Copy the downloaded docker-compose.yml and config files here
-docker compose up --build -d
-```
+4. **Deploy tigo-mqtt** on your data collection device (copy the generated files and run `docker compose up --build -d`)
+5. Discover and map panels
 
 For detailed instructions, see the [Deployment Guide](docs/DEPLOYMENT.md).
 
