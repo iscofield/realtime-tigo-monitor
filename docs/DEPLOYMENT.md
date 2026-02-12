@@ -128,9 +128,11 @@ Enter your MQTT broker details and test the connection:
 - **Port**: Usually 1883
 - **Username/Password**: Your MQTT credentials
 
-### 2.3 System Topology
+### 2.3 System Setup
 
-Define your CCA devices and their strings:
+This step covers defining your hardware topology and entering panel serial numbers.
+
+**Define your CCA devices and their strings:**
 
 1. Add each CCA device with a name and serial port
 2. For each CCA, add the strings (groups of panels)
@@ -138,83 +140,86 @@ Define your CCA devices and their strings:
 
 Example topology:
 ```
-CCA: "inverter1" on /dev/ttyACM0
+CCA: "primary" on /dev/ttyACM2
   - String A: 8 panels
   - String B: 10 panels
 
-CCA: "inverter2" on /dev/ttyACM1
+CCA: "secondary" on /dev/ttyACM3
   - String C: 6 panels
   - String D: 8 panels
 ```
 
+**Enter panel serial numbers:**
+
+After defining your topology, you'll enter the serial number for each panel position. Serial numbers are printed on the back of each Tigo optimizer (e.g., `4-C3F2CCZ`).
+
+- **Manual entry:** Type each serial into the table, organized by CCA and string
+- **Bulk import:** Paste tab-separated label-serial pairs (e.g., `B4<tab>4-C3F2CCY`), or a plain list of serials assigned sequentially
+- **Skip:** If you don't have serial numbers available, choose "Use Placeholders" — you'll need to manually edit the generated config files on your device later
+
 ### 2.4 Download Generated Configurations
 
-The wizard will generate docker-compose and configuration files for the tigo-mqtt service. Download these files — you'll deploy them in Step 3.
+The wizard will generate docker-compose and configuration files for the tigo-mqtt service. Download these files — you'll deploy them in the next step before continuing the wizard.
 
-### 2.5 Panel Discovery
+### 2.5 Deploy tigo-mqtt Service
 
-Once tigo-mqtt is running with the new configuration, the wizard will discover panels as they report in. Wait for all panels to appear (this may take a few minutes during daylight hours).
+Before the wizard can discover your panels, the tigo-mqtt service must be running on the device connected to your Tigo CCA hardware.
 
-### 2.6 Panel Validation
+**On your data collection device:**
 
-Review and confirm the discovered panels:
-- Verify serial numbers match your installation
-- Assign labels if needed
-- Confirm string assignments
+1. Clone the repository (if not already done):
 
-### 2.7 Save Configuration
+   ```bash
+   ssh user@your-device
+   git clone https://github.com/iscofield/solar_tigo_viewer.git
+   cd solar_tigo_viewer/tigo-mqtt
+   ```
+
+2. Identify your serial devices:
+
+   ```bash
+   ls -la /dev/ttyACM*
+   # or
+   dmesg | grep ttyACM
+   ```
+
+   **Note:** Device paths vary by hardware. Common paths include:
+   - `/dev/ttyACM0`, `/dev/ttyACM1` — CDC ACM devices (most common)
+   - `/dev/ttyUSB0`, `/dev/ttyUSB1` — FTDI/CH340 USB-to-serial adapters
+
+3. Copy the configuration files downloaded in step 2.4 to the `tigo-mqtt/` directory, then start the service:
+
+   ```bash
+   docker compose up --build -d
+   ```
+
+4. Verify the service is running:
+
+   ```bash
+   docker compose logs -f
+   ```
+
+   You should see messages indicating connection to the CCA devices and MQTT publishing.
+
+Once tigo-mqtt is running, return to the wizard in your browser and continue to the next step.
+
+### 2.6 Panel Discovery
+
+The wizard will discover panels as they report in via MQTT. Wait for all panels to appear (this may take a few minutes during daylight hours).
+
+### 2.7 Panel Mapping
+
+Map discovered panels to their expected topology positions:
+- Panels that match expected positions are auto-placed
+- Drag and drop unassigned panels into the correct slots
+- Swap panels between slots if needed
+- Review the summary bar showing auto-matched, user-mapped, and empty slots
+
+### 2.8 Save Configuration
 
 Review the final configuration and save. The dashboard is now ready to use.
 
-## Step 3: Deploy tigo-mqtt Service
-
-The tigo-mqtt service runs on the device connected to your Tigo CCA hardware (typically a Raspberry Pi).
-
-### 3.1 Clone the Repository
-
-```bash
-ssh user@your-device
-git clone https://github.com/iscofield/solar_tigo_viewer.git
-cd solar_tigo_viewer/tigo-mqtt
-```
-
-### 3.2 Identify Serial Devices
-
-Connect your Tigo CCA device(s) via USB and identify the serial ports:
-
-```bash
-ls -la /dev/ttyACM*
-# or
-dmesg | grep ttyACM
-```
-
-Note the device paths (e.g., `/dev/ttyACM0`, `/dev/ttyACM1`).
-
-**Note:** Your serial device paths may vary depending on your USB adapter and system configuration. Common device paths include:
-- `/dev/ttyACM0`, `/dev/ttyACM1` — for CDC ACM devices (most common)
-- `/dev/ttyUSB0`, `/dev/ttyUSB1` — for FTDI/CH340 USB-to-serial adapters
-
-### 3.3 Deploy Generated Configuration
-
-Copy the configuration files downloaded from the Setup Wizard (Step 2.4) to your data collection device:
-
-```bash
-# Copy docker-compose.yml and config files to tigo-mqtt directory
-# Then start the service
-docker compose up --build -d
-```
-
-### 3.4 Verify Operation
-
-Check the logs to ensure it's running:
-
-```bash
-docker compose logs -f
-```
-
-You should see messages indicating connection to the CCA devices and MQTT publishing.
-
-## Step 4: Upload Layout Image
+## Step 3: Upload Layout Image
 
 After setup, upload your solar array layout image:
 
