@@ -79,12 +79,36 @@ const systemSectionStyle: CSSProperties = {
 };
 
 const systemHeaderStyle: CSSProperties = {
-  fontSize: '18px',
-  fontWeight: 'bold',
   padding: '8px 12px',
   backgroundColor: '#2a2a2a',
   borderRadius: '4px',
   marginBottom: '12px',
+};
+
+const systemHeaderTopRowStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'baseline',
+};
+
+const systemNameStyle: CSSProperties = {
+  fontSize: '18px',
+  fontWeight: 'bold',
+};
+
+const systemPanelCountStyle: CSSProperties = {
+  fontSize: '14px',
+  fontWeight: 'normal',
+  color: '#aaa',
+};
+
+const systemStatsStyle: CSSProperties = {
+  display: 'flex',
+  gap: '16px',
+  fontSize: '14px',
+  fontWeight: 'normal',
+  color: '#aaa',
+  marginTop: '2px',
 };
 
 // Screen reader only style for aria-live region
@@ -147,6 +171,28 @@ export function TableView({ panels }: TableViewProps) {
 
     return bySystem;
   }, [panels]);
+
+  // Compute system-level summaries
+  const systemSummaries = useMemo(() => {
+    const summaries: Record<string, { power: number; voltage: number; current: number | null; onlineCount: number; totalCount: number }> = {};
+    for (const system of ['primary', 'secondary']) {
+      const systemStrings = grouped[system] || {};
+      const allPanels = Object.values(systemStrings).flat();
+      const onlinePanels = allPanels.filter(p => p.online !== false);
+      const totalPower = onlinePanels.reduce((sum, p) => sum + (p.watts || 0), 0);
+      const totalVoltage = onlinePanels.reduce((sum, p) => sum + ((p.voltage_in ?? p.voltage) || 0), 0);
+      const currents = onlinePanels.map(p => p.current_in).filter(c => c != null) as number[];
+      const avgCurrent = currents.length > 0 ? currents.reduce((a, b) => a + b, 0) / currents.length : null;
+      summaries[system] = {
+        power: totalPower,
+        voltage: totalVoltage,
+        current: avgCurrent,
+        onlineCount: onlinePanels.length,
+        totalCount: allPanels.length,
+      };
+    }
+    return summaries;
+  }, [grouped]);
 
   // Get all string IDs
   const allStringIds = useMemo(() => {
@@ -267,7 +313,23 @@ export function TableView({ panels }: TableViewProps) {
         .map(system => (
           <div key={system} style={systemSectionStyle}>
             <div style={systemHeaderStyle}>
-              {system === 'primary' ? 'Primary System' : 'Secondary System'}
+              <div style={systemHeaderTopRowStyle}>
+                <span style={systemNameStyle}>
+                  {system === 'primary' ? 'Primary System' : 'Secondary System'}
+                </span>
+                {systemSummaries[system] && (
+                  <span style={systemPanelCountStyle}>
+                    ({systemSummaries[system].onlineCount}/{systemSummaries[system].totalCount} panels)
+                  </span>
+                )}
+              </div>
+              {systemSummaries[system] && (
+                <div style={systemStatsStyle}>
+                  <span>{Math.round(systemSummaries[system].power)}W</span>
+                  <span>{systemSummaries[system].voltage.toFixed(1)}V</span>
+                  <span>{(systemSummaries[system].current ?? 0).toFixed(2)}A</span>
+                </div>
+              )}
             </div>
 
             {/* String sections */}
