@@ -27,13 +27,15 @@ interface StringConfig {
 
 **FR-1.2:** When `series_count` and `parallel_count` are both omitted or null, the string SHALL be treated as all-series: `series_count = panel_count`, `parallel_count = 1`. This ensures backward compatibility with existing configs.
 
+> **Note:** `StringConfig.name` is constrained to a single uppercase letter (A-Z) in the current implementation (`max_length=1`, regex `^[A-Z]$`), despite the Phase 1 multi-user config spec allowing 1-2 letters. This spec depends on the single-letter constraint for correct wiring badge display and string-to-wiring lookup by name.
+
 **FR-1.3:** The invariant `series_count * parallel_count === panel_count` MUST hold. The backend SHALL enforce this via a Pydantic model validator. The frontend SHALL prevent invalid states through constrained UI controls (FR-2).
 
 **FR-1.4:** The YAML serialization SHALL omit `series_count` and `parallel_count` when they equal the all-series default (`series_count == panel_count` and `parallel_count == 1`), keeping existing config files clean.
 
 ### FR-2: Topology Step UI — Wiring Badge with Popover
 
-**FR-2.1:** Each string row in the Topology Step SHALL display a **wiring badge** after the "panels" label. The badge shows the current configuration in `xSyP` shorthand notation (e.g., `10S1P`, `5S2P`).
+**FR-2.1:** Each string row in the Topology Step SHALL display a **wiring badge** after the "panels" label. The badge shows the current configuration in `xSyP` shorthand notation (e.g., `10S1P`, `5S2P`). The WiringBadge SHALL treat `undefined`, `null`, and omitted `series_count`/`parallel_count` identically — all cases default to all-series (`series_count = panel_count`, `parallel_count = 1`). This ensures correct behavior for newly added strings which are created without wiring fields.
 
 **FR-2.2:** The wiring badge SHALL have two visual states:
 
@@ -60,7 +62,9 @@ interface StringConfig {
 | 10 | 10S1P, 5S2P, 2S5P, 1S10P |
 | 12 | 12S1P, 6S2P, 4S3P, 3S4P, 2S6P, 1S12P |
 
-**FR-2.5:** Selecting a radio option SHALL immediately update the string's `series_count` and `parallel_count`, close the popover after a 200ms delay (to show the selection visually), and update the badge text.
+**FR-2.4.1:** If the number of wiring options exceeds 6, the radio group within the popover SHALL be scrollable with a `max-height` of 300px and `overflow-y: auto`. In practice, solar strings rarely have more than 20 panels, and most panel counts have few factor pairs, so this is an edge case for highly composite numbers (e.g., 48, 60).
+
+**FR-2.5:** Selecting a radio option SHALL immediately update the string's `series_count` and `parallel_count`, close the popover after a 200ms delay (to show the selection visually), and update the badge text. During the 200ms close delay, further option selections SHALL be ignored (the radio group becomes read-only). If the popover is reopened before the timer completes, the timer SHALL be cancelled.
 
 **FR-2.6:** For `panel_count = 1`, the badge SHALL show `1S1P` in muted style and SHALL NOT be clickable (no popover, `cursor: default`, no hover effect). There is only one possible configuration.
 
@@ -88,7 +92,7 @@ The badge occupies approximately 60px of horizontal width. On viewports narrower
 
 **FR-3.2:** Only one popover SHALL be open at a time. Opening a popover for one string SHALL close any other open popover.
 
-**FR-3.3:** The popover SHALL be rendered as a positioned `div` with `position: absolute`, anchored below the badge. If insufficient space exists below (badge is near the bottom of the viewport), the popover SHALL flip to open above the badge.
+**FR-3.3:** The popover SHALL be rendered via `ReactDOM.createPortal` to `document.body` to avoid clipping by overflow containers (the TopologyStep form may be scrollable). The popover position SHALL be calculated from the badge's `getBoundingClientRect()` and applied as `position: fixed` relative to the viewport. If insufficient space exists below the badge, the popover SHALL flip to open above it.
 
 **FR-3.4:** The wiring badge SHALL be keyboard-accessible:
 - `tabIndex={0}` for focus
@@ -102,26 +106,42 @@ The badge occupies approximately 60px of horizontal width. On viewports narrower
 
 ### FR-4: TableView Voltage and Current Corrections
 
-**FR-4.1:** The backend SHALL include `series_count` and `parallel_count` in the WebSocket message for each panel, sourced from the string's configuration. These fields SHALL be added to the `PanelData` model.
+**FR-4.1:** The wiring configuration SHALL be made available to the TableView for summary calculations. Two approaches are viable:
+
+- **Option A (Recommended): Frontend lookup.** The frontend SHALL load the `SystemConfig` (already available via `GET /api/config/system`) and build a lookup map of string name → `{series_count, parallel_count}`. The `StringSection` and `TableView` components SHALL use this map to look up wiring config by the panel's `string` field. This avoids adding per-panel fields to every WebSocket broadcast.
+
+- **Option B: Backend injection.** The backend's `panel_service` SHALL load `StringConfig` data from `system.yaml` via `config_service` on startup and config reload, cache it as a `dict[str, StringConfig]` keyed by string name, and populate `series_count`/`parallel_count` on each `PanelData` instance in `_load_yaml_config()` and `update_panel()` by looking up the panel's string name. The fields SHALL be added to the `PanelData` model as optional integers.
+
+The implementer SHALL choose one approach. Option A is recommended because it avoids increasing WebSocket message size and doesn't require modifying `panel_service`'s data flow.
 
 **FR-4.2:** The `StringSection` component's summary calculation SHALL use the wiring configuration to compute correct aggregates:
 
 **For a string with configuration `SsPp` (S panels in series, P parallel groups):**
 
 - **String Voltage** = Sum of all online panel voltages / P
-  - Rationale: Total voltage across all panels divided by the number of parallel groups gives the voltage of one series leg, which equals the string's output voltage.
-- **String Current** = Sum of all online panel currents
-  - Rationale: In a series-parallel configuration, the string's output current is the sum of the currents from each parallel group. Since individual panel currents are measured at the optimizer level, summing them gives the total output current.
-  - Note: This replaces the current "average" calculation. For a pure series string (P=1), the sum of all currents equals N times the average — but the sum is the physically correct value (all panels carry the same current, and the string carries that same current). The average was a simplification that happened to be close for display but was not electrically accurate. For P>1, the sum correctly reflects parallel addition.
+  - Rationale: The string output voltage equals the voltage across one series group (S panels in series). Since the monitoring system does not track which physical panels belong to which parallel group, we approximate by dividing the total voltage sum by P. This assumes approximately uniform voltage distribution across parallel groups, which holds under normal operating conditions. Mathematically, Sum(all) / P = Sum(one group of S) when groups are balanced.
+  - Note: This is an approximation. If panels in one parallel group are significantly shaded while another group is not, the actual string voltage may differ from this estimate.
+- **String Current** = Average of all online panel currents × P
+  - Rationale: In a series circuit, the same current flows through all panels — the current at any point equals the current at every other point. Therefore, averaging the panel-level current readings gives the best estimate of the current through one series group. Multiplying by P accounts for the parallel groups whose currents add at the string output.
+  - For P=1 (all-series): String Current = Average of panel currents (identical to the existing calculation — no behavioral change on deployment).
+  - For P>1: String Current = Average × P. Example: 10 panels as 5S2P, each reading ~8A → average = 8A, string current = 8A × 2 = 16A.
+  - Note: This formula is an approximation assuming the optimizer-reported currents are representative of the current at each panel's position. With DC-DC optimizers, the actual current at each panel output may differ from the optimizer input current.
 - **String Power** = Sum of all online panel watts (unchanged — power is always additive regardless of wiring topology)
 
-**FR-4.3:** The system-level summary (Primary System / Secondary System headers) SHALL apply the same corrections, summing the corrected string voltages and currents across all strings in the system:
+**FR-4.3:** The system-level summary (Primary System / Secondary System headers) SHALL use a two-level aggregation — first computing per-string corrected values, then aggregating to the system level:
 
-- **System Voltage** = Sum of corrected string voltages
-- **System Current** = Average of corrected string currents (since strings connect to the inverter independently, averaging reflects the per-string current the inverter sees)
-- **System Power** = Sum of all panel watts (unchanged)
+1. **For each string in the system**, compute:
+   - `corrected_voltage = sum(panel voltages in string) / P_string`
+   - `corrected_current = avg(panel currents in string) × P_string`
+2. **System Voltage** = Sum of all `corrected_voltage` values across strings in the system
+3. **System Current** = Average of all `corrected_current` values across strings (since strings connect to the inverter independently, averaging reflects the per-string current the inverter sees)
+4. **System Power** = Sum of all panel watts across all strings (unchanged — power is always additive)
 
-**FR-4.4:** When `series_count` and `parallel_count` are not present on panel data (e.g., during the transition period before config is updated), the calculation SHALL fall back to the current behavior (all-series assumption): voltage = sum, current = average.
+This replaces the current flat-reduce pattern (which iterates over all panels in a system without string-level grouping) with a two-pass approach: group panels by string, compute per-string summaries, then aggregate.
+
+> **Note:** The existing `STRING_TO_INVERTER` hardcoded mapping in `TableView.tsx` determines which strings belong to which system. This is a pre-existing issue outside the scope of this spec — the mapping should eventually be replaced with the `panel.system` field from MQTT data. Implementers should be aware that system-level grouping currently depends on this mapping.
+
+**FR-4.4:** When wiring configuration is not available for a string (e.g., during the transition period before config is updated), the calculation SHALL fall back to the all-series assumption (`P = 1`): voltage = sum of panel voltages, current = average of panel currents. This matches both the current behavior and the corrected formula for P=1, ensuring no visible change in displayed values when the feature is deployed without configuration changes.
 
 ### FR-5: Backup and Restore Compatibility
 
@@ -163,9 +183,9 @@ ccas:
 
 **NFR-2:** The popover SHALL render within 16ms of click (single frame). No loading state is needed — factor pair computation is O(sqrt(N)) and completes in microseconds.
 
-**NFR-3:** The feature SHALL not increase the WebSocket message size by more than 20 bytes per panel (two small integer fields). For a 69-panel system, this is ~1.4KB additional per broadcast — negligible.
+**NFR-3:** If FR-4.1 Option B (backend injection) is chosen, the feature SHALL not increase the WebSocket message size by more than 20 bytes per panel (two small integer fields). For a 69-panel system, this is ~1.4KB additional per broadcast — negligible. If FR-4.1 Option A (frontend lookup) is chosen, WebSocket message size is unchanged.
 
-**NFR-4:** The wiring badge and popover SHALL be implemented without adding external dependencies. The popover uses standard DOM positioning (`getBoundingClientRect` + absolute positioning).
+**NFR-4:** The wiring badge and popover SHALL be implemented without adding external dependencies. The popover uses `ReactDOM.createPortal` (built-in React API) with standard DOM positioning (`getBoundingClientRect` + fixed positioning).
 
 **NFR-5:** The popover SHALL be usable on mobile viewports (375px+). On viewports narrower than 640px, the popover MAY render as a full-width element below the string row rather than an absolutely-positioned overlay, to avoid horizontal overflow.
 
@@ -194,14 +214,15 @@ sequenceDiagram
     Popover->>Badge: Close, update to "5S2P" (blue)
 
     User->>Wizard: Clicks Next (completes wizard)
-    Wizard->>Backend: POST /api/config/save
+    Wizard->>Backend: PUT /api/config/system (saveSystemConfig)
     Backend->>YAML: Write system.yaml with wiring fields
 
-    Note over Backend: On startup / config reload
-    Backend->>WS: Include series_count, parallel_count per panel
-    WS->>Table: Panel data with wiring info
-    Table->>Table: Correct voltage/current aggregates
-    Note over Table: String G: V = sum/2, I = sum
+    Note over Table: Option A (recommended): frontend lookup
+    Table->>Backend: GET /api/config/system (on mount)
+    Backend->>Table: SystemConfig with wiring fields
+    Table->>Table: Build string→wiring lookup, correct V/I aggregates
+    Note over Table: String G: V = sum/2, I = avg×2
+    Note over Table: Option B (alternative): Backend injects<br/>series_count/parallel_count into<br/>WebSocket PanelData per panel
 ```
 
 ### Factor Pair Computation
@@ -244,6 +265,7 @@ function getWiringOptions(panelCount: number): WiringOption[] {
 
 ```typescript
 // In StringSection.tsx summary computation
+// wiringConfig is looked up from SystemConfig by string name (see FR-4.1 Option A)
 const summary = useMemo(() => {
   const onlinePanels = panels.filter(p => p.online !== false);
   const totalVoltageRaw = onlinePanels.reduce(
@@ -252,22 +274,26 @@ const summary = useMemo(() => {
   const totalPower = onlinePanels.reduce(
     (sum, p) => sum + (p.watts || 0), 0
   );
-  const totalCurrentRaw = onlinePanels
+  const currents = onlinePanels
     .map(p => p.current_in)
-    .filter(c => c != null)
-    .reduce((sum, c) => sum + c, 0);
+    .filter((c): c is number => c != null);
+  const avgCurrent = currents.length > 0
+    ? currents.reduce((a, b) => a + b, 0) / currents.length
+    : null;
 
-  // Get wiring config from first panel (all panels in a string share it)
-  const parallelCount = onlinePanels[0]?.parallel_count ?? 1;
+  // Get wiring config — default to all-series if not configured
+  const parallelCount = wiringConfig?.parallel_count ?? 1;
 
   return {
-    voltage: totalVoltageRaw / parallelCount,  // Divide by parallel groups
+    voltage: totalVoltageRaw / parallelCount,       // Divide by parallel groups
     power: totalPower,
-    current: totalCurrentRaw,                   // Sum (not average)
+    current: avgCurrent != null
+      ? avgCurrent * parallelCount                  // Average × P
+      : null,
     onlineCount: onlinePanels.length,
     totalCount: panels.length,
   };
-}, [panels]);
+}, [panels, wiringConfig]);
 ```
 
 ### Backend Model Changes
@@ -283,22 +309,51 @@ class StringConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_wiring(self) -> 'StringConfig':
-        # Apply defaults
-        if self.series_count is None:
-            self.series_count = self.panel_count
-        if self.parallel_count is None:
-            self.parallel_count = 1
-        # Validate invariant
-        if self.series_count * self.parallel_count != self.panel_count:
-            raise ValueError(
-                f"series_count ({self.series_count}) * parallel_count "
-                f"({self.parallel_count}) must equal panel_count ({self.panel_count})"
-            )
+        # Validate invariant only when both fields are explicitly provided.
+        # Do NOT mutate None → defaults here — preserving None allows
+        # the @model_serializer to omit default wiring fields in YAML.
+        if self.series_count is not None and self.parallel_count is not None:
+            if self.series_count * self.parallel_count != self.panel_count:
+                raise ValueError(
+                    f"series_count ({self.series_count}) * parallel_count "
+                    f"({self.parallel_count}) must equal panel_count ({self.panel_count})"
+                )
+        elif self.series_count is not None or self.parallel_count is not None:
+            # One provided without the other — fill the missing one
+            if self.series_count is not None:
+                if self.panel_count % self.series_count != 0:
+                    raise ValueError(
+                        f"series_count ({self.series_count}) must evenly divide "
+                        f"panel_count ({self.panel_count})"
+                    )
+                self.parallel_count = self.panel_count // self.series_count
+            else:
+                if self.panel_count % self.parallel_count != 0:
+                    raise ValueError(
+                        f"parallel_count ({self.parallel_count}) must evenly divide "
+                        f"panel_count ({self.panel_count})"
+                    )
+                self.series_count = self.panel_count // self.parallel_count
+        # When both are None, the string is all-series. Consumers apply defaults
+        # at read time: series_count ?? panel_count, parallel_count ?? 1.
         return self
+
+    @property
+    def effective_series(self) -> int:
+        """Series count with default applied."""
+        return self.series_count if self.series_count is not None else self.panel_count
+
+    @property
+    def effective_parallel(self) -> int:
+        """Parallel count with default applied."""
+        return self.parallel_count if self.parallel_count is not None else 1
 ```
 
+The `effective_series` and `effective_parallel` properties provide default-applied values for use in calculations, while keeping the raw fields as `None` for clean serialization via the `@model_serializer` (see YAML Serialization below).
+
 ```python
-# models.py — PanelData extension
+# models.py — PanelData extension (only needed if using FR-4.1 Option B)
+# If using Option A (frontend lookup), PanelData does not need these fields.
 class PanelData(BaseModel):
     # ... existing fields ...
     series_count: Optional[int] = None    # From string config
@@ -307,22 +362,40 @@ class PanelData(BaseModel):
 
 ### YAML Serialization
 
+Since the model_validator preserves `None` for default wiring configurations (see Backend Model Changes above), serialization must omit None-valued wiring fields without affecting other Optional fields in the `SystemConfig` hierarchy (e.g., `MQTTConfig.username`, `MQTTConfig.password`).
+
+The approach uses Pydantic v2's `@model_serializer(mode='wrap')` decorator on `StringConfig`, which integrates with the compiled Rust serialization pipeline and is invoked during nested serialization from parent `model_dump()` calls:
+
 ```python
-# In config saving logic — exclude defaults to keep YAML clean
-def serialize_string_config(sc: StringConfig) -> dict:
-    d = {"name": sc.name, "panel_count": sc.panel_count}
-    # Only include wiring fields when non-default
-    if sc.parallel_count and sc.parallel_count > 1:
-        d["series_count"] = sc.series_count
-        d["parallel_count"] = sc.parallel_count
-    return d
+from pydantic import model_serializer
+
+# config_models.py — StringConfig addition
+class StringConfig(BaseModel):
+    # ... existing fields and validator ...
+
+    @model_serializer(mode='wrap')
+    def _serialize(self, handler):
+        d = handler(self)
+        # Remove None wiring fields (all-series defaults)
+        if d.get('series_count') is None:
+            d.pop('series_count', None)
+        if d.get('parallel_count') is None:
+            d.pop('parallel_count', None)
+        return d
 ```
+
+**Why `@model_serializer` and not `model_dump()` override:** Pydantic v2 uses a pre-compiled Rust serializer for nested models. Overriding `model_dump()` on a child class does NOT affect serialization when the parent's `model_dump()` is called — the Rust serializer bypasses Python-level method overrides. The `@model_serializer` decorator correctly hooks into this pipeline.
+
+This scoped approach ensures:
+- `StringConfig` serialization omits `series_count`/`parallel_count` when they are `None` (all-series default)
+- Other `Optional` fields elsewhere in `SystemConfig` (like `MQTTConfig.username: null`) continue to serialize as before
+- The existing `save_system_config()` call (`config.model_dump()`) requires no change
 
 ## Task Breakdown
 
 1. **Extend backend `StringConfig` model** — Add `series_count` and `parallel_count` optional fields with model validator. Update YAML serialization to conditionally include fields.
 
-2. **Extend `PanelData` model** — Add `series_count` and `parallel_count` fields. Populate from string config in `panel_service.py` when building panel data for WebSocket broadcast.
+2. **Wire up wiring config access in frontend** — If using FR-4.1 Option A (recommended): fetch `SystemConfig` via `getSystemConfig()` and build a string-name-to-wiring lookup map for use by `StringSection` and `TableView`. If using FR-4.1 Option B: extend `PanelData` model with `series_count` and `parallel_count` fields, populate from string config in `panel_service.py`.
 
 3. **Extend frontend `StringConfig` type** — Add optional `series_count` and `parallel_count` to `types/config.ts`.
 
@@ -334,11 +407,11 @@ def serialize_string_config(sc: StringConfig) -> dict:
 
 7. **Integrate badge into `TopologyStep`** — Add `WiringBadge` to each string row. Wire up state updates for `series_count` and `parallel_count`. Handle panel count changes (revalidation/reset logic).
 
-8. **Fix `StringSection` summary calculation** — Use `parallel_count` from panel data to correct voltage division and switch current from average to sum.
+8. **Fix `StringSection` summary calculation** — Use wiring config to correct voltage (divide by P) and current (average × P) aggregates per FR-4.2.
 
 9. **Fix system-level summary in `TableView`** — Update `systemSummaries` computation to use corrected per-string values.
 
-10. **Update backup/restore** — Ensure `series_count` and `parallel_count` round-trip through backup export and restore. Verify backward compatibility with pre-feature backups.
+10. **Update backup/restore** — Ensure `series_count` and `parallel_count` round-trip through backup export and restore. Verify backward compatibility with pre-feature backups. Specifically test: restore a backup created before this feature (no `series_count`/`parallel_count` in `StringConfig`) and verify the restored config has correct all-series defaults applied (both fields are `None`, effective values are `panel_count`/`1`).
 
 11. **Playwright verification** — Test the full flow: set a string to 5S2P in the wizard, verify badge appearance, verify corrected voltage/current in TableView. Test at mobile viewport (375px).
 
@@ -346,6 +419,9 @@ def serialize_string_config(sc: StringConfig) -> dict:
 
 | Spec | Relationship | Notes |
 |------|-------------|-------|
+| [Multi-User Config Phase 1](implemented/2026-01-17-multi-user-config-phase1.md) | extends | Extends `StringConfig` and `SystemConfig` types; modifies TopologyStep UI and YAML serialization |
+| [Backup & Restore](implemented/2026-01-24-backup-restore.md) | compatible | New optional fields round-trip through backup; no version bump needed (FR-7.4 safe-default rule) |
+| [Table View UX Overhaul](implemented/2026-01-31-table-view-ux-overhaul.md) | modifies | Changes `StringSection` summary calculations (voltage/current formulas) |
 | [Wizard Serial Entry](2026-02-08-wizard-serial-entry.md) | related | Serial entry step follows topology step where wiring is configured |
 
 ## Context / Documentation
@@ -360,11 +436,27 @@ def serialize_string_config(sc: StringConfig) -> dict:
 
 ---
 
-**Specification Version:** 1.0
+**Specification Version:** 1.1
 **Last Updated:** February 2026
 **Authors:** Claude (Lead Architect), Claude (UX Designer)
 
 ## Changelog
+
+### v1.1 (February 2026)
+**Summary:** Review fixes — corrected electrical formulas, improved architecture
+
+**Changes:**
+- **[CRITICAL]** Fixed string current formula from `sum(all currents)` to `avg(currents) × P` — the original was electrically incorrect (would display N× actual value for series strings)
+- **[HIGH]** Added approximation disclaimer to voltage formula rationale
+- **[HIGH]** Introduced two implementation options for wiring config lookup (FR-4.1): frontend config lookup (recommended) vs backend PanelData injection
+- **[HIGH]** Added two-level aggregation pseudocode for system-level summaries (FR-4.3)
+- **[HIGH]** Added note about single-letter string name constraint dependency
+- **[MEDIUM]** Changed model_validator to preserve None for default wiring (no mutation when both fields omitted; one-field-provided still derives the other), added `effective_series`/`effective_parallel` properties, added `@model_serializer(mode='wrap')` on StringConfig to omit None wiring fields in YAML
+- **[MEDIUM]** Changed popover to use `ReactDOM.createPortal` with fixed positioning to avoid overflow clipping
+- **[MEDIUM]** Added scrollability for popover radio group when >6 options (FR-2.4.1)
+- **[MEDIUM]** Added undefined field handling for WiringBadge (FR-2.1)
+- **[MEDIUM]** Expanded Related Specifications table with multi-user-config, backup-restore, and table-view-ux-overhaul specs
+- **[LOW]** Added click lock during popover close delay, pre-feature backup test case, out-of-scope note for STRING_TO_INVERTER mapping
 
 ### v1.0 (February 2026)
 **Summary:** Initial specification
