@@ -38,7 +38,7 @@ interface StringConfig {
 >
 > **Migration path:** If string names are expanded to multi-character in the future, the wiring badge display needs only minor CSS adjustment (the badge already uses `white-space: nowrap`), and the lookup map key type (`string`) requires no change. The coupling is limited to badge visual sizing, not architectural.
 
-**FR-1.3:** The invariant `series_count * parallel_count === panel_count` MUST hold. The backend SHALL enforce this via a Pydantic model validator. The `PUT /api/config/system` endpoint SHALL reject any `SystemConfig` where this invariant is violated, returning HTTP 422 with the standard error response shape (`{"detail": [{"loc": [...], "msg": "...", "type": "value_error"}]}`). This format matches Pydantic's default `ValidationError` serialization as used by FastAPI's built-in request validation handler. If the project has a custom error envelope middleware that wraps Pydantic errors, that middleware applies here too — the spec describes the pre-middleware Pydantic shape. The frontend SHALL prevent invalid states through constrained UI controls (FR-2), but the backend is the authoritative validation boundary — direct API submissions and manual `system.yaml` edits are validated on load.
+**FR-1.3:** The invariant `series_count * parallel_count === panel_count` MUST hold. The backend SHALL enforce this via a Pydantic model validator. The `PUT /api/config/system` endpoint SHALL reject any `SystemConfig` where this invariant is violated, returning HTTP 422 with the standard error response shape (`{"detail": [{"loc": [...], "msg": "...", "type": "value_error"}]}`). This format matches Pydantic's default `ValidationError` serialization as used by FastAPI's built-in request validation handler. Note on `loc` path formats: the `model_validator` produces `loc` entries like `["validate_wiring"]` (validator name), while field-level constraint violations (e.g., `series_count: -1` hitting `ge=1`) produce `loc` entries like `["series_count"]` (field name). The frontend error renderer must handle both `loc` formats for wiring-related errors — `["validate_wiring"]` won't match any field name directly. If the project has a custom error envelope middleware that wraps Pydantic errors, that middleware applies here too — the spec describes the pre-middleware Pydantic shape. The frontend SHALL prevent invalid states through constrained UI controls (FR-2), but the backend is the authoritative validation boundary — direct API submissions and manual `system.yaml` edits are validated on load.
 
 **FR-1.4:** The YAML serialization SHALL omit `series_count` and `parallel_count` when they equal the all-series default (`series_count == panel_count` and `parallel_count == 1`), keeping existing config files clean. This is a conscious design decision: if a user explicitly selects the default configuration (e.g., `10S1P` for a 10-panel string), their explicit choice is normalized to the implicit default on save. The round-trip behavior is functionally identical — the string behaves as all-series in both cases — but the user's intent to "confirm the default" is not preserved in YAML. This keeps config files minimal and avoids false diffs.
 
@@ -76,7 +76,7 @@ interface StringConfig {
 
 **FR-2.4.1:** If the number of wiring options exceeds 6, the radio group within the popover SHALL be scrollable with a `max-height` of 300px and `overflow-y: auto`. In practice, solar strings rarely have more than 20 panels, and most panel counts have few factor pairs, so this is an edge case for highly composite numbers (e.g., 48, 60).
 
-**FR-2.5:** Selecting a radio option SHALL immediately update the string's `series_count` and `parallel_count`, close the popover after a 200ms delay (to show the selection visually), and update the badge text. Re-selecting the already-active option SHALL close the popover immediately without the 200ms delay (no state change occurs, so no visual confirmation is needed). During the 200ms close delay:
+**FR-2.5:** Selecting a radio option SHALL immediately update the string's `series_count` and `parallel_count`, close the popover after a 200ms delay (to show the selection visually), and update the badge text. Re-selecting the already-active option SHALL close the popover immediately without the 200ms delay (no state change occurs, so no visual confirmation is needed). Implementation note: React radio `onChange` does not fire on re-selection (no value change = no change event). Use an `onClick` handler on each radio option with a current-value comparison to detect re-selection. During the 200ms close delay:
 - The radio group becomes read-only (further option selections are ignored).
 - The badge click handler SHALL be a no-op (clicking the badge does not cancel or restart the close sequence).
 - If the user clicks outside the popover during the delay, the popover closes immediately (the selection is already applied, so no data is lost).
@@ -134,7 +134,7 @@ The badge SHALL have `min-width: 48px`, `text-align: center`, and `white-space: 
 
 ### FR-4: TableView Voltage and Current Corrections
 
-**FR-4.1:** The wiring configuration SHALL be made available to the TableView via **frontend config lookup**. The frontend SHALL load the `SystemConfig` (via `GET /api/config/system`, which already includes all `StringConfig` fields in its response) and build a lookup `Map<string, {series_count, parallel_count}>` keyed by string name. String names are unique across the entire `SystemConfig` (not just per-CCA) — the existing topology step validation enforces global uniqueness across all CCAs, so a flat `Map<string, wiring>` is safe with no key collisions. The Map is built by iterating all `ccas[].strings[]` and inserting each string's name and wiring fields. The `StringSection` and `TableView` components SHALL use this map to look up wiring config by the panel's `string` field. This avoids adding per-panel fields to every WebSocket broadcast and avoids modifying `panel_service`'s data flow.
+**FR-4.1:** The wiring configuration SHALL be made available to the TableView via **frontend config lookup**. The frontend SHALL load the `SystemConfig` (via `GET /api/config/system`, which already includes all `StringConfig` fields in its response) and build a lookup `Map<string, {series_count?: number | null, parallel_count?: number | null}>` keyed by string name. String names are unique across the entire `SystemConfig` (not just per-CCA) — the existing topology step validation enforces global uniqueness across all CCAs, so a flat `Map<string, wiring>` is safe with no key collisions. The Map is built by iterating all `ccas[].strings[]` and inserting each string's name and wiring fields. The `StringSection` and `TableView` components SHALL use this map to look up wiring config by the panel's `string` field. This avoids adding per-panel fields to every WebSocket broadcast and avoids modifying `panel_service`'s data flow.
 
 **Stale config handling:** The `SystemConfig` is fetched once on TableView mount. If the user changes wiring configuration in the setup wizard (in the same or another tab), or if an admin edits `system.yaml` directly on disk, the TableView will use stale config until page refresh. The `PUT /api/config/system` endpoint writes to `system.yaml` AND updates the backend's in-memory config state, ensuring subsequent `GET` requests from any client return the new values immediately (no backend restart needed for wizard saves). Direct YAML edits on disk are NOT picked up until backend restart, since the backend reads `system.yaml` into memory at startup. This is acceptable because: (a) wiring config changes are rare (initial setup only), (b) the wizard requires completing all steps and saving before changes take effect, (c) direct YAML edits require a backend restart for the backend to pick up changes, and (d) adding a config-change polling or WebSocket event is out of scope for this feature. A manual page refresh after wizard completion is the expected flow.
 
@@ -170,7 +170,7 @@ The badge SHALL have `min-width: 48px`, `text-align: center`, and `white-space: 
 3. **System Current** = Average of all `corrected_current` values across strings. This is a monitoring convenience metric — averaging currents across strings with different configurations (e.g., one 5S2P and one 10S1P) does not represent a single physical measurement, but provides a useful per-string current indicator for the inverter. If the strings array is empty (no strings in system), system current SHALL display as null/dash rather than NaN. Guard: `strings.length > 0 ? sum / strings.length : null`.
 4. **System Power** = Sum of all panel watts across all strings (unchanged — power is always additive)
 
-This replaces the current flat-reduce pattern (which iterates over all panels in a system without string-level grouping) with a two-pass approach: group panels by string, compute per-string summaries, then aggregate. Panels without a `string` field (undefined or null) are excluded from string-level grouping and do not contribute to system-level aggregates.
+This replaces the current flat-reduce pattern (which iterates over all panels in a system without string-level grouping) with a two-pass approach: group panels by string, compute per-string summaries, then aggregate. Panels without a valid `string` field (undefined, null, or empty string) are excluded from string-level grouping and do not contribute to system-level aggregates.
 
 ```typescript
 // System-level aggregation — in TableView systemSummaries computation
@@ -182,32 +182,39 @@ function computeSystemSummary(
   // Step 1: Group panels by string name (exclude panels without a string field)
   const byString = new Map<string, PanelData[]>();
   for (const panel of systemPanels) {
-    if (panel.string == null) continue; // Skip ungroupable panels
+    if (!panel.string) continue; // Skip ungroupable panels (null, undefined, and "")
     const existing = byString.get(panel.string) ?? [];
     existing.push(panel);
     byString.set(panel.string, existing);
   }
 
   // Step 2: Compute per-string corrected summaries
-  const stringSummaries: { voltage: number; current: number | null; power: number }[] = [];
+  // stringName included for debuggability — allows tracing which string
+  // contributed which values to system-level aggregates.
+  const stringSummaries: { stringName: string; voltage: number; current: number | null; power: number }[] = [];
   for (const [stringName, panels] of byString) {
     const wiring = wiringMap.get(stringName);
     const { parallel: P } = getEffectiveWiring(wiring ?? {});
+    // Stale panels (online=true, stale=true) included — matches StringSection behavior.
+    // See note in StringSection code sample for rationale.
     const onlinePanels = panels.filter(p => p.online !== false);
 
     const voltage = onlinePanels.reduce(
-      (sum, p) => sum + ((p.voltage_in ?? p.voltage) ?? 0), 0
+      (sum, p) => {
+        const v = (p.voltage_in ?? p.voltage) ?? 0;
+        return sum + (Number.isNaN(v) ? 0 : v);
+      }, 0
     ) / P;
 
     const currents = onlinePanels
       .map(p => p.current_in)
-      .filter((c): c is number => c != null);
+      .filter((c): c is number => c != null && !Number.isNaN(c));
     const current = currents.length > 0
       ? (currents.reduce((a, b) => a + b, 0) / currents.length) * P
       : null;
 
     const power = onlinePanels.reduce((sum, p) => sum + (p.watts ?? 0), 0);
-    stringSummaries.push({ voltage, current, power });
+    stringSummaries.push({ stringName, voltage, current, power });
   }
 
   // Step 3: Aggregate to system level
@@ -222,7 +229,12 @@ function computeSystemSummary(
 }
 ```
 
-> **Note:** The existing `STRING_TO_INVERTER` hardcoded mapping in `TableView.tsx` determines which strings belong to which system. This is a pre-existing issue outside the scope of this spec — the mapping should eventually be replaced with the `panel.system` field from MQTT data. Implementers should be aware that system-level grouping currently depends on this mapping.
+> **Note:** The existing `STRING_TO_INVERTER` hardcoded mapping in `TableView.tsx` determines which strings belong to which system. Example call site:
+> ```typescript
+> // In TableView systemSummaries computation
+> const primaryPanels = allPanels.filter(p => STRING_TO_INVERTER[p.string ?? ''] === 'primary');
+> const primarySummary = computeSystemSummary(primaryPanels, wiringMap);
+> ``` This is a pre-existing issue outside the scope of this spec — the mapping should eventually be replaced with the `panel.system` field from MQTT data. Implementers should be aware that system-level grouping currently depends on this mapping.
 
 **FR-4.4:** When wiring configuration is not available for a string (e.g., during the transition period before config is updated, or while the `GET /api/config/system` fetch is in-flight), the calculation SHALL fall back to the all-series assumption (`P = 1`): voltage = sum of panel voltages, current = average of panel currents. This matches both the current behavior and the corrected formula for P=1, ensuring no visible change in displayed values when the feature is deployed without configuration changes.
 
@@ -232,7 +244,7 @@ function computeSystemSummary(
 
 **FR-5.1:** The backup export SHALL include `series_count` and `parallel_count` in the `SystemConfig` portion of the backup manifest when they differ from the all-series default.
 
-**FR-5.2:** On restore, if `series_count` and `parallel_count` are absent from the backup data, the system SHALL treat the string as all-series (backward compatibility with pre-feature backups). On restore, the backend SHALL validate the invariant `series_count * parallel_count == panel_count` for each string via the existing Pydantic model validation (the restore deserializes through `SystemConfig` model via `SystemConfig.model_validate()`, which validates all strings in a single pass). If validation fails, the restore SHALL reject the entire backup atomically (no partial application) with a descriptive error that includes the string name and specific invariant violation (e.g., "String G: series_count (5) x parallel_count (3) does not equal panel_count (10)"). The Pydantic `ValidationError` is surfaced to the restore API response — the frontend displays the error message from the response body.
+**FR-5.2:** On restore, if `series_count` and `parallel_count` are absent from the backup data, the system SHALL treat the string as all-series (backward compatibility with pre-feature backups). On restore, the backend SHALL validate the invariant `series_count * parallel_count == panel_count` for each string via the existing Pydantic model validation (the restore deserializes through `SystemConfig` model via `SystemConfig.model_validate()`, which validates all strings in a single pass). If validation fails, the restore SHALL reject the entire backup atomically (no partial application) with a descriptive error. The Pydantic `ValidationError` is surfaced to the restore API response — the frontend displays the error message from the response body. Note: Pydantic's `ValidationError` for a `model_validator` error includes a `loc` path identifying the string by index position (e.g., `["ccas", 0, "strings", 2, "validate_wiring"]`), not by its `name` field. The raw error message format is: `"series_count (5) * parallel_count (3) must equal panel_count (10)"`. The restore handler SHALL catch `ValidationError` and enrich each error's message with the affected string name by looking up `string.name` at the path indicated by the error's `loc` field, producing user-friendly messages like "String G: series_count (5) x parallel_count (3) does not equal panel_count (10)".
 
 **FR-5.3:** The backup version number SHALL NOT be incremented — the new fields are optional and additive, requiring no migration. This relies on the existing `SystemConfig` model using Pydantic's default `extra='ignore'` behavior, which silently ignores unknown fields during deserialization.
 
@@ -274,7 +286,7 @@ ccas:
 
 **NFR-4:** The wiring badge and popover SHALL be implemented without adding external **runtime** dependencies. Dev dependencies (e.g., testing utilities like `@testing-library/user-event`) are acceptable. The popover uses `ReactDOM.createPortal` (built-in React API) with standard DOM positioning (`getBoundingClientRect` + fixed positioning).
 
-**NFR-5:** The popover SHALL be usable on mobile viewports (375px+). On viewports narrower than 480px (same breakpoint as the badge wrapping in FR-2.8), the popover SHALL render as a portal with `position: fixed; left: 0; width: 100%; max-height: 50vh; overflow-y: auto` anchored below the badge's vertical position (via `getBoundingClientRect().bottom`). The flip-above logic (FR-3.3) SHALL NOT apply on the mobile path — if insufficient space exists below, the popover SHALL scroll within its `max-height` rather than flipping above (flipping on small screens risks pushing the popover off-screen entirely). A single 480px breakpoint governs both badge wrapping and popover rendering mode, avoiding awkward intermediate states.
+**NFR-5:** The popover SHALL be usable on mobile viewports (375px+). On viewports narrower than 480px (same breakpoint as the badge wrapping in FR-2.8), the popover SHALL render as a portal with `position: fixed; left: 0; width: 100%; max-height: 50vh; overflow-y: auto; overscroll-behavior: contain; z-index: 1000` anchored below the badge's vertical position (via `getBoundingClientRect().bottom`). The `overscroll-behavior: contain` prevents scroll chaining on iOS Safari — without it, scrolling past the end of the radio option list causes the page behind the popover to scroll, which can trigger the scroll-to-close behavior (FR-3.1). The `z-index: 1000` ensures the portal stacks above any fixed-position headers or footers. The flip-above logic (FR-3.3) SHALL NOT apply on the mobile path — if insufficient space exists below, the popover SHALL scroll within its `max-height` rather than flipping above (flipping on small screens risks pushing the popover off-screen entirely). A single 480px breakpoint governs both badge wrapping and popover rendering mode, avoiding awkward intermediate states.
 
 ## High Level Design
 
@@ -331,7 +343,7 @@ function getWiringOptions(panelCount: number): WiringOption[] {
   // For panelCount = 1, returns a single-element array [{label: '1S1P', ...}].
   // The badge uses `options.length > 1` (not `> 0`) to determine clickability,
   // since a single option means no choice is available (FR-2.6).
-  if (panelCount < 1) return [];
+  if (panelCount < 1 || !Number.isInteger(panelCount)) return [];
   const options: WiringOption[] = [];
   for (let s = panelCount; s >= 1; s--) {
     if (panelCount % s === 0) {
@@ -369,6 +381,9 @@ function getWiringOptions(panelCount: number): WiringOption[] {
 // (legacy alias) and `voltage_in`. The `??` fallback handles both naming
 // conventions. All numeric coalescing uses `?? 0` consistently (not `||`)
 // to correctly handle legitimate zero values.
+// Extract primitive parallelCount for stable useMemo dependency (see identity note below).
+const parallelCount = getEffectiveWiring(wiringConfig ?? {}).parallel;
+
 const summary = useMemo(() => {
   // Includes panels where online is true, undefined, or null (see note below).
   // Stale panels (online=true, stale=true) are included — excluding them would
@@ -380,25 +395,29 @@ const summary = useMemo(() => {
   // `current_in` are excluded from the current average (to avoid diluting the
   // average with zeros, which would undercount string current). This asymmetry
   // is intentional and matches the mathematical properties of sum vs average.
+  // NaN guard: A single corrupt panel value (NaN from parse error or sensor fault)
+  // would poison the entire sum/average. Nullish coalescing (??) doesn't catch NaN,
+  // so explicit Number.isNaN checks are required.
   const totalVoltageRaw = onlinePanels.reduce(
-    (sum, p) => sum + ((p.voltage_in ?? p.voltage) ?? 0), 0
+    (sum, p) => {
+      const v = (p.voltage_in ?? p.voltage) ?? 0;
+      return sum + (Number.isNaN(v) ? 0 : v);
+    }, 0
   );
   const totalPower = onlinePanels.reduce(
     (sum, p) => sum + (p.watts ?? 0), 0
   );
   const currents = onlinePanels
     .map(p => p.current_in)
-    .filter((c): c is number => c != null);
+    .filter((c): c is number => c != null && !Number.isNaN(c));
   const avgCurrent = currents.length > 0
     ? currents.reduce((a, b) => a + b, 0) / currents.length
     : null;
 
-  // Get wiring config — default to all-series if not configured.
-  // Uses getEffectiveWiring for DRY defaulting (see utility definition above).
-  // Math.max inside getEffectiveWiring guards against a hypothetical
-  // parallel_count of 0 (which Pydantic prevents with ge=1, but
-  // defense-in-depth avoids division by zero).
-  const { parallel: parallelCount } = getEffectiveWiring(wiringConfig ?? {});
+  // parallelCount is extracted before the useMemo for dependency stability
+  // (see note below on identity stability). Math.max inside getEffectiveWiring
+  // guards against a hypothetical parallel_count of 0 (which Pydantic prevents
+  // with ge=1, but defense-in-depth avoids division by zero).
 
   return {
     voltage: totalVoltageRaw / parallelCount,       // Divide by parallel groups
@@ -409,11 +428,18 @@ const summary = useMemo(() => {
     onlineCount: onlinePanels.length,
     totalCount: panels.length,
   };
-}, [panels, wiringConfig]);
+}, [panels, parallelCount]);
 // Note: `panels` must be a new array reference on each WebSocket update for the
 // memo to recompute. The existing WebSocket handler creates a new array via
 // spread/map, so this is satisfied. If the data flow changes to mutate the array
 // in place, the memo would produce stale results.
+//
+// Identity stability: The dependency uses the primitive `parallelCount` number
+// (extracted via `getEffectiveWiring` before the useMemo) instead of the
+// `wiringConfig` object. This avoids unnecessary recomputation when the config
+// Map is rebuilt with new object references but identical values. Extract as:
+//   const parallelCount = getEffectiveWiring(wiringConfig ?? {}).parallel;
+// Then use `parallelCount` in the dependency array and inside the memo body.
 ```
 
 ### Backend Model Changes
@@ -508,6 +534,11 @@ function getEffectiveWiring(
 // Note: The summary calculation only uses `parallel` from the effective wiring.
 // `series` is available for future use (e.g., per-group voltage display) but
 // requires `panel_count` for the default, which the lookup Map entry may not include.
+//
+// IMPORTANT: The `series` return value is `number | null`. Do NOT use it for
+// division without a null check. The WiringBadge component has direct access
+// to `panel_count` from string row props — for the aria-label (FR-3.5), use
+// `series_count ?? panel_count` from the StringConfig props, not `getEffectiveWiring`.
 ```
 
 Since FR-4.1 uses the frontend lookup approach, the backend `PanelData` model does NOT need `series_count`/`parallel_count` fields. The WebSocket broadcast format is unchanged.
@@ -556,6 +587,11 @@ class StringConfig(BaseModel):
         #   Case B: Both non-None, s==pc and p==1 — explicitly set to default
         #   Case C: Both non-None, non-default (e.g., s=5, p=2) — preserve
         #
+        # Note: If handler was called with exclude_none=True (e.g., from a
+        # parent's model_dump(exclude_none=True)), None fields are already
+        # absent. The d.get() returns None (default for missing key), and
+        # d.pop() is a no-op. The behavior is safe and idempotent.
+        #
         # Note: The "one-field-provided" validator path always fills the
         # missing field, so after validation both are either None (Case A)
         # or both non-None (Case B or C). The `s is None` check only fires
@@ -575,7 +611,7 @@ class StringConfig(BaseModel):
 
 **Serialization paths:** The `@model_serializer` is invoked in all three serialization contexts:
 1. **YAML save/load** — `config.model_dump()` → YAML write. On reload, absent fields become `None` → validator's "both None" path.
-2. **API PUT/GET** — FastAPI's response serialization calls `model_dump()` on the `SystemConfig` response model, which invokes the `@model_serializer` on nested `StringConfig` instances. The `GET /api/config/system` response therefore omits wiring fields for default configs and includes them for non-default configs, consistent with YAML behavior. The frontend wiring lookup Map receives `series_count`/`parallel_count` only for non-default strings.
+2. **API PUT/GET** — FastAPI's response serialization calls `model_dump()` on the `SystemConfig` response model, which invokes the `@model_serializer` on nested `StringConfig` instances. The `GET /api/config/system` response therefore omits wiring fields for default configs and includes them for non-default configs, consistent with YAML behavior. The frontend wiring lookup Map receives `series_count`/`parallel_count` only for non-default strings. The endpoint SHALL return the `SystemConfig` model instance directly (e.g., `return config`), not a pre-serialized dict (e.g., `return config.model_dump()`), to ensure FastAPI invokes the full model serializer pipeline. Both patterns produce the same output, but returning the model instance is the canonical pattern and avoids double-serialization if FastAPI internally calls `jsonable_encoder()`.
 3. **Backup export/restore** — Uses `model_dump()` for export (serializer strips defaults) and `model_validate()` for restore (validator fills gaps). Pre-feature backups (no wiring fields) round-trip correctly via the "both None" path.
 
 The round-trip is lossy but functionally equivalent for default configs (explicitly-set defaults are normalized to omitted — see FR-1.4). Non-default configs round-trip with full fidelity.
@@ -611,14 +647,19 @@ This scoped approach ensures:
 
 12. **Unit tests** — Write unit tests for:
     - `getWiringOptions()`:
-      - Edge cases: `panel_count` of 1, primes, large composites, and 0
+      - Edge cases: `panel_count` of 1, 2 (binary choice — exactly 2 options), primes, large composites, and 0
+      - Non-integer input: `getWiringOptions(10.5)` returns `[]` (integer guard)
       - Ordering: verify strictly descending by `S` for all cases
       - `isDefault`: true for exactly one option (the first, P=1)
       - `isUncommon`: true for at most one option (S=1, only when P>1)
       - `label`: format matches `${S}S${P}P` pattern
       - `description`: correct text for all three branches (all-series, all-parallel, mixed)
     - `StringConfig` model validator: all branches (both fields present, one present, neither present, invalid invariant, non-divisor)
-    - `StringConfig` serializer: verify default wiring fields are omitted, non-default fields are preserved, forward compatibility with unknown fields (FR-5.3-T1)
+    - `StringConfig` serializer round-trip fidelity:
+      - Verify default wiring fields are omitted, non-default fields are preserved
+      - Forward compatibility with unknown fields (FR-5.3-T1)
+      - Explicit default normalization: `StringConfig(name="A", panel_count=10, series_count=10, parallel_count=1)` → `model_dump()` → omits wiring → `model_validate()` → both None. Verify functional equivalence.
+      - One-field-provided preservation: `series_count=5` on 10-panel → validator fills `parallel_count=2` → `model_dump()` → both preserved. Verify non-default round-trip fidelity.
     - String-level summary calculation:
       - Voltage/current formulas with P=1 and P=2
       - All panels offline → zero voltage, null current
@@ -626,15 +667,21 @@ This scoped approach ensures:
       - Mixed online/offline panels in P>1 string (approximation limitation)
       - All panels have `current_in: null` → string current is null
       - Some panels have `current_in: null`, others non-null → average excludes nulls
+      - `current_in: 0` (legitimate zero) → included in average (not excluded by filter)
+      - `current_in: NaN` (corrupt data) → excluded by NaN guard, does not poison average
+      - `voltage: NaN` or `voltage_in: NaN` → treated as 0, does not poison voltage sum
       - `voltage_in` present vs absent (fallback to `voltage` field)
       - `wiringConfig` is `undefined` (lookup miss) → P=1 fallback
     - System-level aggregation:
       - Single string system
       - Multiple strings with mixed P values
       - Empty strings array → null current (not NaN)
+      - ALL strings have null current → system current is null (not NaN from 0/0)
+      - SOME strings null current, others valid → system current averages only valid strings
       - Panels without `string` field excluded from grouping
+      - Panels with `string: ""` (empty string) excluded from grouping
 
-13. **Playwright verification** — Test the full flow: set a string to 5S2P in the wizard, verify badge appearance, verify corrected voltage/current in TableView. Test at mobile viewport (375px). Verify touch target size by running the mobile viewport test with `hasTouch: true` and confirming that clicks at the edge of the 44px boundary around the badge register correctly (via `elementHandle.boundingBox()` or by clicking at offset coordinates near the badge edge).
+13. **Playwright verification** — Test the full flow: set a string to 5S2P in the wizard, verify badge appearance, verify corrected voltage/current in TableView. The Playwright test SHALL inject mock WebSocket data with known values (e.g., 10 panels each at 35.0V and 8.0A `current_in`) and verify the string summary displays the expected corrected values (e.g., for 5S2P: voltage = 175.0V, current = 16.0A). This ensures the E2E test validates calculation correctness, not just rendering. Test at mobile viewport (375px). Verify touch target size by running the mobile viewport test with `hasTouch: true` and confirming that clicks at the edge of the 44px boundary around the badge register correctly (via `elementHandle.boundingBox()` or by clicking at offset coordinates near the badge edge).
 
 14. **Rollback safety verification** — Confirm that `system.yaml` files with wiring fields are safely ignored by a pre-feature version of the backend (i.e., unknown fields in YAML don't cause errors). This is a manual verification step during implementation.
 
@@ -659,11 +706,34 @@ This scoped approach ensures:
 
 ---
 
-**Specification Version:** 1.3
+**Specification Version:** 1.4
 **Last Updated:** February 2026
 **Authors:** Claude (Lead Architect), Claude (UX Designer)
 
 ## Changelog
+
+### v1.4 (February 2026)
+**Summary:** Fourth review pass — addressed 18 comments covering NaN data poisoning defense, code-prose type consistency, mobile CSS hardening, serialization path completeness, test matrix expansion, and debuggability improvements.
+
+**Changes:**
+- **[HIGH]** Added `Number.isNaN()` guards to voltage and current calculations in both `StringSection` and `computeSystemSummary` code samples — a single corrupt panel value (NaN) would previously poison the entire string/system summary
+- **[HIGH]** Expanded test matrix (Task 12) with 10+ additional scenarios: serializer round-trip fidelity, `current_in: 0` vs `NaN`, all-null-current system aggregation, empty-string panel exclusion, non-integer panelCount
+- **[HIGH]** Added error enrichment specification to FR-5.2: restore handler SHALL cross-reference Pydantic `ValidationError` `loc` paths with string names for user-friendly error messages
+- **[HIGH]** Added Playwright test deterministic value assertion requirement (Task 13): mock WebSocket data with known values and verify expected corrected calculations
+- **[MEDIUM]** Added `overscroll-behavior: contain` and `z-index: 1000` to mobile popover CSS (NFR-5) — prevents iOS Safari scroll chaining and ensures portal stacking order
+- **[MEDIUM]** Added serialization Path 4 — FastAPI endpoint return pattern: endpoint SHALL return model instance directly for consistent serializer pipeline invocation
+- **[MEDIUM]** Fixed Map type in FR-4.1 prose to match code: `Map<string, {series_count?: number | null, parallel_count?: number | null}>` (was non-optional)
+- **[MEDIUM]** Added `Number.isInteger()` guard to `getWiringOptions` input validation — JavaScript `%` with floats produces incorrect factor pairs (e.g., `10.5 % 3.5 === 0`)
+- **[MEDIUM]** Changed `panel.string == null` guard to falsy check (`!panel.string`) in `computeSystemSummary` — excludes empty string names from grouping
+- **[MEDIUM]** Added Pydantic `loc` path format note to FR-1.3 — `model_validator` produces `["validate_wiring"]` loc vs field-level `["series_count"]` loc, frontend must handle both
+- **[MEDIUM]** Added `getEffectiveWiring` series null footgun warning — badge aria-label should use `series_count ?? panel_count` from props, not `getEffectiveWiring().series`
+- **[MEDIUM]** Refactored `useMemo` dependency from `wiringConfig` object to primitive `parallelCount` for identity stability — avoids unnecessary recomputation on Map rebuild
+- **[MEDIUM]** Added React `onChange` re-select implementation note to FR-2.5 — `onChange` doesn't fire on re-selection, use `onClick` with value comparison
+- **[LOW]** Added `stringName` to `stringSummaries` type in `computeSystemSummary` for debuggability
+- **[LOW]** Added stale panel inclusion comment to `computeSystemSummary` code — matches StringSection behavior
+- **[LOW]** Added `@model_serializer` `exclude_none=True` idempotency note — behavior is safe when parent calls `model_dump(exclude_none=True)`
+- **[LOW]** Added `computeSystemSummary` call-site example showing `STRING_TO_INVERTER` filtering → wiring correction data flow
+- **[LOW]** Changed changelog v1.3 entry: "Fixed `getEffectiveWiring` type signature" → "Changed" (design change, not bug fix)
 
 ### v1.3 (February 2026)
 **Summary:** Third review pass — addressed 25 comments covering code-prose consistency, Pydantic round-trip verification, breakpoint details, backup/restore error handling, frontend data flow, NFR testability, and edge cases.
@@ -682,7 +752,7 @@ This scoped approach ensures:
 - **[MEDIUM]** Added mobile popover rendering details: `position: fixed; left: 0; width: 100%; max-height: 50vh`, no flip-above on mobile (NFR-5)
 - **[MEDIUM]** Added wrapped row visual order clarification: delete button stays pinned right on first row (FR-2.8)
 - **[MEDIUM]** Elevated FR-5.3 `extra='ignore'` verification to testable requirement with explicit test case (FR-5.3-T1)
-- **[MEDIUM]** Fixed `getEffectiveWiring` type signature to accept partial wiring entries from lookup Map
+- **[MEDIUM]** Changed `getEffectiveWiring` type signature to accept partial wiring entries from lookup Map
 - **[MEDIUM]** Updated summary calculation code to use `getEffectiveWiring` for DRY defaulting
 - **[MEDIUM]** Added PUT endpoint behavior clarification: writes disk AND updates in-memory config (FR-4.1 stale config)
 - **[MEDIUM]** Fixed NFR-2 testability: 100ms user-facing contract, 1000ms Playwright timeout
