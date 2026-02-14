@@ -3,9 +3,12 @@
  * Collects CCA devices and string configuration.
  */
 
-import { useState } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import type { MQTTConfig, SystemConfig, CCAConfig, StringConfig } from '../../../types/config';
+import { getWiringOptions } from '../../../utils/wiringConfig';
+import { WiringBadge } from './WiringBadge';
+import { WiringPopover } from './WiringPopover';
 
 const formStyle: CSSProperties = {
   display: 'flex',
@@ -61,7 +64,8 @@ const smallInputStyle: CSSProperties = {
 const stringRowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: '12px',
+  flexWrap: 'wrap',
+  gap: '4px',
   padding: '8px 0',
 };
 
@@ -83,6 +87,7 @@ const removeButtonStyle: CSSProperties = {
   border: 'none',
   borderRadius: '4px',
   cursor: 'pointer',
+  marginLeft: 'auto',
 };
 
 const buttonGroupStyle: CSSProperties = {
@@ -132,6 +137,10 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     ]
   );
 
+  // Track which popover is open: "ccaIndex-stringIndex" or null
+  const [openPopover, setOpenPopover] = useState<string | null>(null);
+  const popoverAnchorRef = useRef<React.RefObject<HTMLSpanElement | null> | null>(null);
+
   const addCca = () => {
     const nextDeviceNum = ccas.length + 2; // Start from ACM2
     setCcas([
@@ -146,6 +155,7 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
 
   const removeCca = (index: number) => {
     setCcas(ccas.filter((_, i) => i !== index));
+    setOpenPopover(null);
   };
 
   const updateCca = (index: number, updates: Partial<CCAConfig>) => {
@@ -170,14 +180,79 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     updateCca(ccaIndex, {
       strings: cca.strings.filter((_, i) => i !== stringIndex),
     });
+    setOpenPopover(null);
   };
 
-  const updateString = (ccaIndex: number, stringIndex: number, updates: Partial<StringConfig>) => {
-    const cca = ccas[ccaIndex];
-    updateCca(ccaIndex, {
-      strings: cca.strings.map((s, i) => (i === stringIndex ? { ...s, ...updates } : s)),
-    });
-  };
+  const updateString = useCallback((ccaIndex: number, stringIndex: number, updates: Partial<StringConfig>) => {
+    setCcas(prev => prev.map((cca, i) => {
+      if (i !== ccaIndex) return cca;
+      return {
+        ...cca,
+        strings: cca.strings.map((s, j) => {
+          if (j !== stringIndex) return s;
+          const updated = { ...s, ...updates };
+
+          // If panel_count changed, validate/reset wiring
+          if ('panel_count' in updates && updates.panel_count !== s.panel_count) {
+            const newCount = updates.panel_count!;
+            const currentSeries = s.series_count ?? s.panel_count;
+            const currentParallel = s.parallel_count ?? 1;
+
+            // Close any open popover
+            setOpenPopover(null);
+
+            // Check if current wiring is still a valid factor pair
+            if (
+              currentSeries >= 1 &&
+              currentParallel >= 1 &&
+              currentSeries * currentParallel === newCount
+            ) {
+              // Preserve existing wiring
+              updated.series_count = currentSeries;
+              updated.parallel_count = currentParallel;
+            } else {
+              // Reset to all-series
+              updated.series_count = undefined;
+              updated.parallel_count = undefined;
+            }
+          }
+
+          return updated;
+        }),
+      };
+    }));
+  }, []);
+
+  const handleWiringSelect = useCallback((ccaIndex: number, stringIndex: number, series: number, parallel: number) => {
+    setCcas(prev => prev.map((cca, i) => {
+      if (i !== ccaIndex) return cca;
+      return {
+        ...cca,
+        strings: cca.strings.map((s, j) => {
+          if (j !== stringIndex) return s;
+          // If all-series, omit wiring fields (normalize to default)
+          if (parallel === 1) {
+            return { ...s, series_count: undefined, parallel_count: undefined };
+          }
+          return { ...s, series_count: series, parallel_count: parallel };
+        }),
+      };
+    }));
+  }, []);
+
+  const handleBadgeOpen = useCallback((ccaIndex: number, stringIndex: number, anchorRef: React.RefObject<HTMLSpanElement | null>) => {
+    const key = `${ccaIndex}-${stringIndex}`;
+    if (openPopover === key) {
+      setOpenPopover(null);
+    } else {
+      setOpenPopover(key);
+      popoverAnchorRef.current = anchorRef;
+    }
+  }, [openPopover]);
+
+  const handlePopoverClose = useCallback(() => {
+    setOpenPopover(null);
+  }, []);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -258,45 +333,74 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
           <div style={{ marginTop: '16px' }}>
             <label style={{ ...labelStyle, marginBottom: '8px', display: 'block' }}>Strings</label>
 
-            {cca.strings.map((string, stringIndex) => (
-              <div key={stringIndex} style={stringRowStyle}>
-                <div style={fieldStyle}>
-                  <input
-                    type="text"
-                    value={string.name}
-                    onChange={(e) => updateString(ccaIndex, stringIndex, { name: e.target.value.toUpperCase() })}
-                    placeholder="A"
-                    style={smallInputStyle}
-                    pattern="^[A-Z]$"
-                    title="Single uppercase letter (A-Z)"
-                    maxLength={1}
-                    required
-                  />
+            {cca.strings.map((string, stringIndex) => {
+              const popoverKey = `${ccaIndex}-${stringIndex}`;
+              const isPopoverOpen = openPopover === popoverKey;
+              const options = getWiringOptions(string.panel_count);
+              const effectiveSeries = string.series_count ?? string.panel_count;
+              const effectiveParallel = string.parallel_count ?? 1;
+
+              return (
+                <div key={stringIndex} style={stringRowStyle}>
+                  <div style={fieldStyle}>
+                    <input
+                      type="text"
+                      value={string.name}
+                      onChange={(e) => updateString(ccaIndex, stringIndex, { name: e.target.value.toUpperCase() })}
+                      placeholder="A"
+                      style={smallInputStyle}
+                      pattern="^[A-Z]$"
+                      title="Single uppercase letter (A-Z)"
+                      maxLength={1}
+                      required
+                    />
+                  </div>
+                  <span style={{ color: '#666' }}>:</span>
+                  <div style={fieldStyle}>
+                    <input
+                      type="number"
+                      value={string.panel_count}
+                      onChange={(e) => updateString(ccaIndex, stringIndex, { panel_count: parseInt(e.target.value, 10) || 1 })}
+                      style={smallInputStyle}
+                      min={1}
+                      max={100}
+                      required
+                    />
+                  </div>
+                  <span style={{ color: '#666' }}>panels</span>
+                  {string.panel_count >= 1 && (
+                    <WiringBadge
+                      stringName={string.name}
+                      panelCount={string.panel_count}
+                      seriesCount={string.series_count}
+                      parallelCount={string.parallel_count}
+                      onOpen={(anchorRef) => handleBadgeOpen(ccaIndex, stringIndex, anchorRef)}
+                      isOpen={isPopoverOpen}
+                    />
+                  )}
+                  {isPopoverOpen && popoverAnchorRef.current && options.length > 1 && (
+                    <WiringPopover
+                      anchorRef={popoverAnchorRef.current}
+                      options={options}
+                      selectedSeries={effectiveSeries}
+                      selectedParallel={effectiveParallel}
+                      onSelect={(series, parallel) => handleWiringSelect(ccaIndex, stringIndex, series, parallel)}
+                      onClose={handlePopoverClose}
+                      stringName={string.name}
+                    />
+                  )}
+                  {cca.strings.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeString(ccaIndex, stringIndex)}
+                      style={removeButtonStyle}
+                    >
+                      x
+                    </button>
+                  )}
                 </div>
-                <span style={{ color: '#666' }}>:</span>
-                <div style={fieldStyle}>
-                  <input
-                    type="number"
-                    value={string.panel_count}
-                    onChange={(e) => updateString(ccaIndex, stringIndex, { panel_count: parseInt(e.target.value, 10) || 1 })}
-                    style={smallInputStyle}
-                    min={1}
-                    max={100}
-                    required
-                  />
-                </div>
-                <span style={{ color: '#666' }}>panels</span>
-                {cca.strings.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeString(ccaIndex, stringIndex)}
-                    style={removeButtonStyle}
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
 
             <button type="button" onClick={() => addString(ccaIndex)} style={{ ...addButtonStyle, marginTop: '8px' }}>
               + Add String

@@ -5,6 +5,7 @@ import type { SortState, Density } from '../../hooks/useTablePreferences';
 import type { StringAnalysis } from '../../utils/mismatchDetection';
 import { STRING_TO_INVERTER, COLUMN_DEFINITIONS } from './TableLayout';
 import { TileLayout } from './TileLayout';
+import { getEffectiveWiring } from '../../utils/wiringConfig';
 
 interface StringSectionProps {
   stringId: string;
@@ -17,6 +18,7 @@ interface StringSectionProps {
   collapsed: boolean;
   onToggleCollapse: () => void;
   isMobile: boolean;
+  wiringConfig?: { series_count?: number | null; parallel_count?: number | null };
 }
 
 // Styles
@@ -382,23 +384,40 @@ export function StringSection({
   collapsed,
   onToggleCollapse,
   isMobile,
+  wiringConfig,
 }: StringSectionProps) {
-  // Calculate string summary
+  // Extract primitive parallelCount for stable useMemo dependency
+  const parallelCount = getEffectiveWiring(wiringConfig ?? {}).parallel;
+
+  // Calculate string summary with wiring correction
   const summary = useMemo(() => {
     const onlinePanels = panels.filter(p => p.online !== false);
-    const totalVoltage = onlinePanels.reduce((sum, p) => sum + ((p.voltage_in ?? p.voltage) || 0), 0);
-    const totalPower = onlinePanels.reduce((sum, p) => sum + (p.watts || 0), 0);
-    const currents = onlinePanels.map(p => p.current_in).filter(c => c != null) as number[];
-    const avgCurrent = currents.length > 0 ? currents.reduce((a, b) => a + b, 0) / currents.length : null;
+    const totalVoltageRaw = onlinePanels.reduce(
+      (sum, p) => {
+        const v = (p.voltage_in ?? p.voltage) ?? 0;
+        return sum + (Number.isNaN(v) ? 0 : v);
+      }, 0
+    );
+    const totalPower = onlinePanels.reduce(
+      (sum, p) => sum + (p.watts ?? 0), 0
+    );
+    const currents = onlinePanels
+      .map(p => p.current_in)
+      .filter((c): c is number => c != null && !Number.isNaN(c));
+    const avgCurrent = currents.length > 0
+      ? currents.reduce((a, b) => a + b, 0) / currents.length
+      : null;
 
     return {
-      voltage: totalVoltage,
+      voltage: totalVoltageRaw / parallelCount,
       power: totalPower,
-      current: avgCurrent,
+      current: avgCurrent != null
+        ? avgCurrent * parallelCount
+        : null,
       onlineCount: onlinePanels.length,
       totalCount: panels.length,
     };
-  }, [panels]);
+  }, [panels, parallelCount]);
 
   // Get mismatched panel IDs from analysis
   const mismatchedPanels = useMemo(() => {
