@@ -527,8 +527,10 @@ class ConfigService:
         from .config_models import CCAConfig, StringConfig, MQTTConfig
 
         ccas = []
-        # Assign default serial devices based on CCA name
-        device_map = {"primary": "/dev/ttyACM2", "secondary": "/dev/ttyACM3"}
+        # Assign default serial devices using udev symlink naming convention.
+        # Users should create persistent symlinks via udev rules instead of using
+        # raw /dev/ttyACM* paths. See docs/DEPLOYMENT.md#usb-device-persistence.
+        device_map = {"primary": "/dev/tigo-primary", "secondary": "/dev/tigo-secondary"}
 
         for cca_name, strings_dict in ccas_dict.items():
             strings = [
@@ -537,7 +539,7 @@ class ConfigService:
             ]
             ccas.append(CCAConfig(
                 name=cca_name,
-                serial_device=device_map.get(cca_name, f"/dev/ttyACM{len(ccas) + 2}"),
+                serial_device=device_map.get(cca_name, f"/dev/tigo-{cca_name}"),
                 strings=strings,
             ))
 

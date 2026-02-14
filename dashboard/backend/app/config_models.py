@@ -92,10 +92,16 @@ class CCAConfig(BaseModel):
     @field_validator("serial_device")
     @classmethod
     def validate_serial_device(cls, v: str) -> str:
-        """Validate serial device path format."""
-        if not re.match(r'^/dev/(ttyACM|ttyUSB)\d+$', v):
+        """Validate serial device path format.
+
+        Accepts both raw kernel paths (/dev/ttyACM0, /dev/ttyUSB0) and
+        persistent udev symlinks (/dev/tigo-primary, /dev/inverter-secondary-top).
+        Symlinks are recommended — see docs/DEPLOYMENT.md#usb-device-persistence.
+        """
+        if not re.match(r'^/dev/[a-zA-Z][a-zA-Z0-9_-]*$', v):
             raise ValueError(
-                f"Serial device must be /dev/ttyACMn or /dev/ttyUSBn, got: {v}"
+                f"Serial device must be a /dev/ path "
+                f"(e.g., /dev/tigo-primary or /dev/ttyACM0), got: {v}"
             )
         return v
 

@@ -20,7 +20,7 @@ export interface StringConfig {
 // Configuration for a Tigo CCA device
 export interface CCAConfig {
   name: string;           // lowercase alphanumeric + hyphens
-  serial_device: string;  // e.g., /dev/ttyACM2
+  serial_device: string;  // e.g., /dev/tigo-primary (udev symlink) or /dev/ttyACM0
   strings: StringConfig[];
 }
 

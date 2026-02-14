@@ -126,19 +126,19 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     topology?.ccas || [
       {
         name: 'primary',
-        serial_device: '/dev/ttyACM2',
+        serial_device: '/dev/tigo-primary',
         strings: [{ name: 'A', panel_count: 8 }],
       },
     ]
   );
 
   const addCca = () => {
-    const nextDeviceNum = ccas.length + 2; // Start from ACM2
+    const ccaName = ccas.length === 0 ? 'primary' : 'secondary';
     setCcas([
       ...ccas,
       {
-        name: ccas.length === 0 ? 'primary' : 'secondary',
-        serial_device: `/dev/ttyACM${nextDeviceNum}`,
+        name: ccaName,
+        serial_device: `/dev/tigo-${ccaName}`,
         strings: [{ name: 'A', panel_count: 8 }],
       },
     ]);
@@ -208,6 +208,32 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
         Define your Tigo CCA devices and the strings of panels connected to each.
       </p>
 
+      <div style={{
+        margin: '0 0 20px',
+        padding: '12px 16px',
+        backgroundColor: '#e8f4fd',
+        border: '1px solid #b3d7f2',
+        borderRadius: '6px',
+        fontSize: '13px',
+        lineHeight: '1.5',
+        color: '#1a3a4a',
+      }}>
+        <strong>Tip:</strong> Use persistent udev symlinks (e.g., <code>/dev/tigo-primary</code>)
+        instead of raw device paths like <code>/dev/ttyACM0</code>. The kernel-assigned
+        numbers shift when USB devices are added or removed, or on reboot. Symlinks
+        match on hardware IDs so they always resolve to the correct physical port.
+        See the{' '}
+        <a
+          href="https://github.com/iscofield/solar_tigo_viewer/blob/main/docs/DEPLOYMENT.md#usb-device-persistence"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: '#0066cc' }}
+        >
+          USB Device Persistence
+        </a>{' '}
+        section of the deployment guide for setup instructions.
+      </div>
+
       {ccas.map((cca, ccaIndex) => (
         <div key={ccaIndex} style={ccaCardStyle}>
           <div style={ccaHeaderStyle}>
@@ -245,13 +271,13 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
                 type="text"
                 value={cca.serial_device}
                 onChange={(e) => updateCca(ccaIndex, { serial_device: e.target.value })}
-                placeholder="/dev/ttyACM2"
+                placeholder="/dev/tigo-primary"
                 style={inputStyle}
-                pattern="^/dev/(ttyACM|ttyUSB)\d+$"
-                title="Must be /dev/ttyACMn or /dev/ttyUSBn"
+                pattern="^/dev/[a-zA-Z][a-zA-Z0-9_-]*$"
+                title="Must be a /dev/ path (e.g., /dev/tigo-primary or /dev/ttyACM0)"
                 required
               />
-              <span style={hintStyle}>Serial port on your device</span>
+              <span style={hintStyle}>Serial port or udev symlink on your device</span>
             </div>
           </div>
 

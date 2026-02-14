@@ -21,8 +21,8 @@ See the main `CLAUDE.md` for the full architecture overview.
 | SSH User | solar-assistant |
 | Project Path (Pi) | /path/to/solar_tigo_viewer/tigo-mqtt |
 | Project Path (NAS) | /path/to/solar_tigo_viewer/tigo-mqtt |
-| Primary Serial | /dev/ttyACM2 |
-| Secondary Serial | /dev/ttyACM3 |
+| Primary Serial | /dev/tigo-primary (udev symlink) |
+| Secondary Serial | /dev/tigo-secondary (udev symlink) |
 | MQTT Broker | <MQTT_HOST>:1883 |
 
 ## Prerequisites
@@ -110,7 +110,7 @@ ssh $PI_USER@$PI_HOST "ls -la /dev/ttyACM*"
 ### Test taptap Binary Directly
 ```bash
 # Run taptap binary directly (outside Docker) to verify serial works
-ssh $PI_USER@$PI_HOST "sudo timeout 10 /usr/local/bin/taptap observe --serial /dev/ttyACM2 || true"
+ssh $PI_USER@$PI_HOST "sudo timeout 10 /usr/local/bin/taptap observe --serial /dev/tigo-primary || true"
 ```
 
 ### Check Health Status

@@ -140,14 +140,16 @@ This step covers defining your hardware topology and entering panel serial numbe
 
 Example topology:
 ```
-CCA: "primary" on /dev/ttyACM2
+CCA: "primary" on /dev/tigo-primary
   - String A: 8 panels
   - String B: 10 panels
 
-CCA: "secondary" on /dev/ttyACM3
+CCA: "secondary" on /dev/tigo-secondary
   - String C: 6 panels
   - String D: 8 panels
 ```
+
+> **Recommended:** Use persistent udev symlinks (e.g., `/dev/tigo-primary`) instead of raw device paths (e.g., `/dev/ttyACM0`). The kernel-assigned `ttyACM*` numbers shift when USB devices are added/removed or on reboot. See [USB Device Persistence](#usb-device-persistence) below for setup instructions.
 
 **Enter panel serial numbers:**
 
@@ -175,17 +177,13 @@ Before the wizard can discover your panels, the tigo-mqtt service must be runnin
    cd solar_tigo_viewer/tigo-mqtt
    ```
 
-2. Identify your serial devices:
+2. Set up persistent device symlinks (see [USB Device Persistence](#usb-device-persistence) below), then verify they resolve correctly:
 
    ```bash
-   ls -la /dev/ttyACM*
-   # or
-   dmesg | grep ttyACM
+   ls -la /dev/tigo-*
+   # lrwxrwxrwx 1 root root 7 /dev/tigo-primary -> ttyACM4
+   # lrwxrwxrwx 1 root root 7 /dev/tigo-secondary -> ttyACM5
    ```
-
-   **Note:** Device paths vary by hardware. Common paths include:
-   - `/dev/ttyACM0`, `/dev/ttyACM1` — CDC ACM devices (most common)
-   - `/dev/ttyUSB0`, `/dev/ttyUSB1` — FTDI/CH340 USB-to-serial adapters
 
 3. Copy the configuration files downloaded in step 2.4 to the `tigo-mqtt/` directory, then start the service:
 
@@ -289,6 +287,100 @@ Regularly backup your configuration:
 3. Select **Backup Configuration**
 4. Save the ZIP file securely
 
+## USB Device Persistence
+
+Linux assigns `/dev/ttyACM*` and `/dev/ttyUSB*` numbers dynamically based on the order USB devices are discovered. These numbers **will shift** when you:
+- Add or remove a USB device
+- Reboot the system
+- Experience a USB hub re-enumeration (e.g., power glitch)
+
+If your serial device paths change, the taptap containers will either fail to start or communicate with the wrong device. The solution is to create **persistent udev symlinks** that match on hardware identifiers instead of kernel-assigned numbers.
+
+### Step 1: Discover Device Attributes
+
+SSH into your data collection device and identify each serial adapter's properties:
+
+```bash
+for dev in /dev/ttyACM* /dev/ttyUSB*; do
+    [ -e "$dev" ] || continue
+    echo "=== $dev ==="
+    udevadm info --query=property --name="$dev" | \
+        grep -E 'ID_SERIAL_SHORT|ID_USB_INTERFACE_NUM|ID_VENDOR|ID_MODEL'
+    echo ""
+done
+```
+
+Key fields:
+- **`ID_SERIAL_SHORT`** — unique serial number burned into the USB adapter chip. Identifies the physical adapter.
+- **`ID_USB_INTERFACE_NUM`** — for multi-port adapters, identifies which port on the adapter. Single-port adapters only have one interface, so this isn't needed.
+- **`ID_VENDOR`** / **`ID_MODEL`** — helpful for identifying what type of adapter it is.
+
+### Step 2: Create udev Rules
+
+Create a rules file that maps hardware IDs to stable symlink names:
+
+```bash
+sudo nano /etc/udev/rules.d/99-serial-devices.rules
+```
+
+**Example for a multi-port adapter** (e.g., WCH 4-port, serial `BC5697ABCD`):
+
+```udev
+# WCH 4-port USB-to-Serial adapter
+# Each interface number maps to a fixed physical port on the adapter.
+SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="BC5697ABCD", ENV{ID_USB_INTERFACE_NUM}=="00", SYMLINK+="tigo-primary"
+SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="BC5697ABCD", ENV{ID_USB_INTERFACE_NUM}=="02", SYMLINK+="tigo-secondary"
+```
+
+**Example for single-port FTDI adapters** (each has a unique serial):
+
+```udev
+# FTDI single USB-to-Serial adapters
+SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="BG018YLI", SYMLINK+="tigo-primary"
+SUBSYSTEM=="tty", ENV{ID_SERIAL_SHORT}=="BG01PT61", SYMLINK+="tigo-secondary"
+```
+
+### Step 3: Reload and Verify
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+ls -la /dev/tigo-*
+```
+
+You should see symlinks pointing to the current ttyACM/ttyUSB numbers:
+
+```
+lrwxrwxrwx 1 root root 7 /dev/tigo-primary -> ttyACM4
+lrwxrwxrwx 1 root root 7 /dev/tigo-secondary -> ttyACM5
+```
+
+### Step 4: Use Symlinks in Configuration
+
+In your taptap config files, reference the symlink:
+
+```ini
+[TAPTAP]
+SERIAL = /dev/tigo-primary
+```
+
+In `docker-compose.yml`, map the symlink into the container:
+
+```yaml
+devices:
+  - /dev/tigo-primary:/dev/tigo-primary
+```
+
+### Verifying After Reboot
+
+After rebooting, confirm the symlinks still resolve correctly:
+
+```bash
+ls -la /dev/tigo-*
+```
+
+The underlying `ttyACM*` number may change, but the symlink will always point to the correct physical port.
+
 ## Logging Configuration
 
 ### Log Levels
@@ -349,7 +441,7 @@ LOG_LEVEL = info   # Use "debug" only for short-term troubleshooting
 
 ## Docker Memory Limits
 
-The docker-compose files include memory limits (`deploy.resources.limits.memory`) as a safety net to prevent runaway containers from consuming all available RAM. These limits require the Linux **cgroup memory controller** to be enabled.
+The docker-compose files include memory limits (`deploy.resources.limits.memory`) as a general best practice for long-running services. These limits require the Linux **cgroup memory controller** to be enabled.
 
 ### Most Linux Distributions
 
@@ -357,31 +449,11 @@ Most x86 Linux distributions (Ubuntu, Debian, Fedora, etc.) have cgroup memory e
 
 ### Raspberry Pi and ARM Devices
 
-If running on a Raspberry Pi (or other ARM devices with Raspberry Pi OS), cgroup memory is often **disabled by default**. Without it, Docker memory limits are silently ignored.
+The Raspberry Pi kernel **intentionally disables** cgroup memory by default to reduce memory overhead on RAM-constrained devices. Without it, Docker memory limits are silently ignored — the containers will run normally, just without enforced memory caps.
 
-**Check if cgroup memory is enabled:**
+**This is fine.** The memory limits in the compose files are conservative guardrails, not required for correct operation. The tigo-mqtt and dashboard services have modest memory footprints and will run well within a Pi's available RAM without enforcement.
 
-```bash
-grep memory /proc/cgroups
-# The "enabled" column (4th) should be 1
-```
-
-**Enable cgroup memory:**
-
-1. Edit the kernel command line:
-   ```bash
-   sudo nano /boot/firmware/cmdline.txt
-   ```
-2. Append to the **same line** (space-separated, do not add a new line):
-   ```
-   cgroup_enable=memory cgroup_memory=1
-   ```
-3. Reboot:
-   ```bash
-   sudo reboot
-   ```
-
-After rebooting, verify with `grep memory /proc/cgroups` and confirm the enabled column is `1`.
+> **Warning:** Do **not** enable `cgroup_enable=memory cgroup_memory=1` in `/boot/firmware/cmdline.txt` on a Raspberry Pi. The memory accounting overhead can cause system instability, including hard lockups that require a power cycle to recover from. This is a [known issue](https://github.com/raspberrypi/linux/commit/9b0efcc1ec497b2985c6aaa60cd97f0d2d96d203) and the reason the Pi kernel disables it by default.
 
 ## Environment Variables Reference
 

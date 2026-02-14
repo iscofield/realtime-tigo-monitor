@@ -26,7 +26,7 @@
         ccas: [
           {
             name: 'primary',
-            serial_device: '/dev/ttyACM2',
+            serial_device: '/dev/tigo-primary',
             strings: [
               { name: 'A', panel_count: 8 },
               { name: 'B', panel_count: 8 },
@@ -38,7 +38,7 @@
           },
           {
             name: 'secondary',
-            serial_device: '/dev/ttyACM3',
+            serial_device: '/dev/tigo-secondary',
             strings: [
               { name: 'F', panel_count: 7 },
               { name: 'G', panel_count: 10 },

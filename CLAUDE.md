@@ -19,7 +19,8 @@ This repository contains two independent services that work together:
 **How it works:**
 - Runs the `taptap` binary which communicates with Tigo optimizer hardware via Modbus over serial
 - Wraps taptap with `taptap-mqtt.py` to publish data to an MQTT broker
-- Two containers: `taptap-primary` (CCA on /dev/ttyACM2) and `taptap-secondary` (CCA on /dev/ttyACM3)
+- Two containers: `taptap-primary` (CCA on /dev/tigo-primary) and `taptap-secondary` (CCA on /dev/tigo-secondary)
+- Persistent device symlinks are managed by udev rules on the Pi (`/etc/udev/rules.d/99-serial-devices.rules`)
 - Publishes to topics like `taptap/primary/nodes/<serial>` with power, voltage, and status data
 
 **Runtime:** Always on Raspberry Pi (<PI_HOST>) - requires physical serial connections to CCA devices
@@ -172,6 +173,28 @@ A diagnostic script that connects to the Pi and reports on all taptap CCA contai
 │           └─────────────┘                                           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+## Credentials & SSH Access
+
+**Pi SSH credentials and other secrets are stored in:** `.claude/env` (git-ignored)
+
+This file is also referenced by `tigo-mqtt/cca-status.sh` as a fallback. Always read credentials from this file rather than hardcoding them. Use `sshpass` for all SSH commands since the Pi uses password-based auth.
+
+## USB Serial Device Mapping
+
+All serial devices on the Pi use **persistent udev symlinks** instead of raw `/dev/ttyACM*` or `/dev/ttyUSB*` paths. The kernel-assigned numbers shift when USB devices are added/removed or on reboot. The symlinks match on hardware IDs (adapter serial number + interface number) so they always resolve to the correct physical port.
+
+**Udev rules:** `/etc/udev/rules.d/99-serial-devices.rules` on the Pi
+
+| Symlink | Adapter | Interface | Device |
+|---------|---------|-----------|--------|
+| `/dev/tigo-primary` | WCH quad `BC5697ABCD` | `04` (port 3) | Tigo CCA primary |
+| `/dev/tigo-secondary` | WCH quad `BC5697ABCD` | `06` (port 4) | Tigo CCA secondary |
+| `/dev/inverter-primary-top` | WCH quad `BC5697ABCD` | `00` (port 1) | EG4 inverter primary top |
+| `/dev/inverter-primary-bottom` | WCH quad `BC5697ABCD` | `02` (port 2) | EG4 inverter primary bottom |
+| `/dev/inverter-secondary-top` | FTDI `BG018YLI` | — | EG4 inverter secondary top |
+
+The inverter (ppg) containers are managed in a separate repo: `nas_docker/solar_assistant/PythonProtocolGateway/`
 
 ## Deployment Environments
 
@@ -425,6 +448,14 @@ See `docs/worktree-support.md` for project-specific worktree configuration.
 ## Restricted Files
 
 - **`docs/TODOs.md`** - Do NOT modify this file. Only the user should edit it. You may commit it when the user has made changes, but never add, remove, or change its contents.
+
+## WUD (What's Up Docker) Status
+
+The dashboard services (backend + frontend) use **local builds** and are **hidden from WUD** (`wud.watch=false`). WUD cannot check for updates since there are no registry images. Version management is manual — rebuild when making code changes.
+
+The tigo-mqtt services run on the Raspberry Pi and are not monitored by the goober WUD instance.
+
+See `wud/NEW_SERVICE_GUIDE.md` for WUD configuration reference.
 
 ## Notes
 

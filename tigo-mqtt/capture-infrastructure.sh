@@ -4,14 +4,17 @@
 #
 # Usage: ./capture-infrastructure.sh <serial_device> <output_state_file> [timeout_seconds]
 #
+# Use persistent udev symlinks (e.g., /dev/tigo-primary) instead of raw /dev/ttyACM* paths.
+# See docs/DEPLOYMENT.md#usb-device-persistence for setup instructions.
+#
 # Example:
-#   ./capture-infrastructure.sh /dev/ttyACM2 data/primary/taptap.state
-#   ./capture-infrastructure.sh /dev/ttyACM3 data/secondary/taptap.state 600
+#   ./capture-infrastructure.sh /dev/tigo-primary data/primary/taptap.state
+#   ./capture-infrastructure.sh /dev/tigo-secondary data/secondary/taptap.state 600
 #
 
 set -e
 
-SERIAL_DEVICE="${1:-/dev/ttyACM2}"
+SERIAL_DEVICE="${1:-/dev/tigo-primary}"
 OUTPUT_STATE_FILE="${2:-data/taptap.state}"
 TIMEOUT_SECONDS="${3:-600}"  # Default 10 minutes
 

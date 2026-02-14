@@ -13,7 +13,8 @@ Understanding the data flow is critical for troubleshooting:
 │  ┌──────────────┐     ┌──────────────┐     ┌──────────────────┐        │
 │  │ Tigo CCA     │     │ Tigo CCA     │     │                  │        │
 │  │ (Primary)    │     │ (Secondary)  │     │  temp-id-monitor │        │
-│  │ /dev/ttyACM2 │     │ /dev/ttyACM3 │     │                  │        │
+│  │ /dev/tigo-   │     │ /dev/tigo-   │     │                  │        │
+│  │   primary    │     │   secondary  │     │                  │        │
 │  └──────┬───────┘     └──────┬───────┘     └────────┬─────────┘        │
 │         │                    │                      │                   │
 │  ┌──────▼───────┐     ┌──────▼───────┐              │                   │
@@ -160,9 +161,9 @@ ssh $PI_USER@$PI_HOST "sudo docker rm -f taptap-primary taptap-secondary temp-id
    - Could be normal (panels in shade, different sun angle)
    - Could be stale container - try rebuilding
 
-4. **Verify serial device exists:**
+4. **Verify serial device symlinks exist:**
    ```bash
-   ssh $PI_USER@$PI_HOST "ls -la /dev/ttyACM3"
+   ssh $PI_USER@$PI_HOST "ls -la /dev/tigo-*"
    ```
 
 **Resolution:** If container was created before a repo restructure, rebuild:
@@ -265,8 +266,8 @@ ssh $PI_USER@$PI_HOST "sudo docker rm -f taptap-primary taptap-secondary temp-id
 | Secondary state file | `./data/secondary/taptap.state` |
 | Primary run file | `./run/primary/taptap.run` |
 | Secondary run file | `./run/secondary/taptap.run` |
-| Primary serial device | `/dev/ttyACM2` |
-| Secondary serial device | `/dev/ttyACM3` |
+| Primary serial device | `/dev/tigo-primary` (udev symlink) |
+| Secondary serial device | `/dev/tigo-secondary` (udev symlink) |
 
 ### NAS/Server (Dashboard)
 

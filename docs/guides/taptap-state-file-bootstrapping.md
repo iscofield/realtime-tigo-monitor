@@ -38,10 +38,11 @@ Use the provided capture script to run taptap directly and capture infrastructur
 cd /path/to/solar_tigo_viewer/tigo-mqtt
 
 # Capture primary CCA infrastructure (waits up to 10 minutes)
-./capture-infrastructure.sh /dev/ttyACM2 data/primary/taptap.state
+# Use udev symlinks instead of raw /dev/ttyACM* paths (see docs/DEPLOYMENT.md)
+./capture-infrastructure.sh /dev/tigo-primary data/primary/taptap.state
 
 # Capture secondary CCA infrastructure
-./capture-infrastructure.sh /dev/ttyACM3 data/secondary/taptap.state
+./capture-infrastructure.sh /dev/tigo-secondary data/secondary/taptap.state
 ```
 
 The script will:

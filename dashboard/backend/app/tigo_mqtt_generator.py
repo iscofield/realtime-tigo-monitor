@@ -53,7 +53,7 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
             "mem_limit": "256m",
             "group_add": ["dialout"],
             "env_file": [".env"],
-            "devices": [cca.serial_device],
+            "devices": [f"{cca.serial_device}:{cca.serial_device}"],
             "volumes": [
                 f"./config-{cca.name}.ini:/app/config-template.ini:ro",
                 f"./data/{cca.name}:/data",
@@ -112,8 +112,23 @@ def generate_docker_compose(system_config: SystemConfig) -> str:
 
     compose = {"services": services}
 
+    # Build device mapping comment from CCA configs
+    device_lines = [f"#   {cca.serial_device} -> taptap-{cca.name}" for cca in system_config.ccas]
+    device_comment = "\n".join(device_lines)
+
+    header = (
+        "# Device paths: use persistent udev symlinks (e.g., /dev/tigo-primary) instead of\n"
+        "# raw /dev/ttyACM* numbers, which shift when USB devices are added/removed or on reboot.\n"
+        "# Symlinks are defined in /etc/udev/rules.d/99-serial-devices.rules on your device.\n"
+        "# See docs/DEPLOYMENT.md#usb-device-persistence for setup instructions.\n"
+        "#\n"
+        "# Current mapping:\n"
+        f"{device_comment}\n"
+        "\n"
+    )
+
     # Use custom representer to get cleaner YAML output
-    return yaml.dump(compose, default_flow_style=False, sort_keys=False)
+    return header + yaml.dump(compose, default_flow_style=False, sort_keys=False)
 
 
 def generate_ini_config(
@@ -184,6 +199,10 @@ TIMEOUT = 30
 # in the dashboard's docker-compose.yml to avoid excessive disk usage.
 LOG_LEVEL = debug
 BINARY = /usr/local/bin/taptap
+# Use a persistent udev symlink (e.g., /dev/tigo-primary) instead of raw /dev/ttyACM*
+# paths, which shift when USB devices are added/removed or on reboot. Symlinks match
+# on hardware IDs so they always resolve to the correct physical port.
+# See docs/DEPLOYMENT.md#usb-device-persistence for setup instructions.
 SERIAL = {cca.serial_device}
 # WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
 ADDRESS =
@@ -345,7 +364,7 @@ Realtime Tigo Monitor setup wizard to continue with panel discovery.
 
 ### Services won't start
 
-- Check serial device paths: `ls -la /dev/ttyACM*`
+- Check serial device symlinks: `ls -la /dev/tigo-*`
 - Verify user is in dialout group: `groups`
 - Check Docker logs: `docker compose logs taptap-{cca_names[0]}`
 
@@ -460,6 +479,10 @@ TIMEOUT = 30
 # in the dashboard's docker-compose.yml to avoid excessive disk usage.
 LOG_LEVEL = debug
 BINARY = /usr/local/bin/taptap
+# Use a persistent udev symlink (e.g., /dev/tigo-primary) instead of raw /dev/ttyACM*
+# paths, which shift when USB devices are added/removed or on reboot. Symlinks match
+# on hardware IDs so they always resolve to the correct physical port.
+# See docs/DEPLOYMENT.md#usb-device-persistence for setup instructions.
 SERIAL = {cca.serial_device}
 # WORKAROUND: ADDRESS must be present (even empty) due to taptap-mqtt.py validation bug
 ADDRESS =
