@@ -3,12 +3,10 @@
  * Collects CCA devices and string configuration.
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import type { MQTTConfig, SystemConfig, CCAConfig, StringConfig } from '../../../types/config';
 import { getWiringOptions } from '../../../utils/wiringConfig';
-import { WiringBadge } from './WiringBadge';
-import { WiringPopover } from './WiringPopover';
 
 const formStyle: CSSProperties = {
   display: 'flex',
@@ -119,6 +117,24 @@ const hintStyle: CSSProperties = {
   color: '#666',
 };
 
+const wiringSelectStyle: CSSProperties = {
+  padding: '6px 10px',
+  fontSize: '14px',
+  border: '1px solid #ccc',
+  borderRadius: '6px',
+  backgroundColor: 'white',
+  color: '#333',
+  minWidth: '90px',
+  cursor: 'pointer',
+  outline: 'none',
+};
+
+const wiringLabelStyle: CSSProperties = {
+  fontSize: '13px',
+  color: '#999',
+  padding: '6px 0',
+};
+
 interface TopologyStepProps {
   topology: SystemConfig | null;
   mqttConfig: MQTTConfig;
@@ -137,10 +153,6 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     ]
   );
 
-  // Track which popover is open: "ccaIndex-stringIndex" or null
-  const [openPopover, setOpenPopover] = useState<string | null>(null);
-  const popoverAnchorRef = useRef<React.RefObject<HTMLSpanElement | null> | null>(null);
-
   const addCca = () => {
     const nextDeviceNum = ccas.length + 2; // Start from ACM2
     setCcas([
@@ -155,7 +167,6 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
 
   const removeCca = (index: number) => {
     setCcas(ccas.filter((_, i) => i !== index));
-    setOpenPopover(null);
   };
 
   const updateCca = (index: number, updates: Partial<CCAConfig>) => {
@@ -180,7 +191,6 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     updateCca(ccaIndex, {
       strings: cca.strings.filter((_, i) => i !== stringIndex),
     });
-    setOpenPopover(null);
   };
 
   const updateString = useCallback((ccaIndex: number, stringIndex: number, updates: Partial<StringConfig>) => {
@@ -197,9 +207,6 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
             const newCount = updates.panel_count!;
             const currentSeries = s.series_count ?? s.panel_count;
             const currentParallel = s.parallel_count ?? 1;
-
-            // Close any open popover
-            setOpenPopover(null);
 
             // Check if current wiring is still a valid factor pair
             if (
@@ -238,20 +245,6 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
         }),
       };
     }));
-  }, []);
-
-  const handleBadgeOpen = useCallback((ccaIndex: number, stringIndex: number, anchorRef: React.RefObject<HTMLSpanElement | null>) => {
-    const key = `${ccaIndex}-${stringIndex}`;
-    if (openPopover === key) {
-      setOpenPopover(null);
-    } else {
-      setOpenPopover(key);
-      popoverAnchorRef.current = anchorRef;
-    }
-  }, [openPopover]);
-
-  const handlePopoverClose = useCallback(() => {
-    setOpenPopover(null);
   }, []);
 
   const handleSubmit = (e: FormEvent) => {
@@ -334,11 +327,10 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
             <label style={{ ...labelStyle, marginBottom: '8px', display: 'block' }}>Strings</label>
 
             {cca.strings.map((string, stringIndex) => {
-              const popoverKey = `${ccaIndex}-${stringIndex}`;
-              const isPopoverOpen = openPopover === popoverKey;
               const options = getWiringOptions(string.panel_count);
               const effectiveSeries = string.series_count ?? string.panel_count;
               const effectiveParallel = string.parallel_count ?? 1;
+              const selectedValue = `${effectiveSeries}-${effectiveParallel}`;
 
               return (
                 <div key={stringIndex} style={stringRowStyle}>
@@ -368,27 +360,25 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
                     />
                   </div>
                   <span style={{ color: '#666' }}>panels</span>
-                  {string.panel_count >= 1 && (
-                    <WiringBadge
-                      stringName={string.name}
-                      panelCount={string.panel_count}
-                      seriesCount={string.series_count}
-                      parallelCount={string.parallel_count}
-                      onOpen={(anchorRef) => handleBadgeOpen(ccaIndex, stringIndex, anchorRef)}
-                      isOpen={isPopoverOpen}
-                    />
-                  )}
-                  {isPopoverOpen && popoverAnchorRef.current && options.length > 1 && (
-                    <WiringPopover
-                      anchorRef={popoverAnchorRef.current}
-                      options={options}
-                      selectedSeries={effectiveSeries}
-                      selectedParallel={effectiveParallel}
-                      onSelect={(series, parallel) => handleWiringSelect(ccaIndex, stringIndex, series, parallel)}
-                      onClose={handlePopoverClose}
-                      stringName={string.name}
-                    />
-                  )}
+                  {string.panel_count >= 1 && options.length > 1 ? (
+                    <select
+                      value={selectedValue}
+                      onChange={(e) => {
+                        const [s, p] = e.target.value.split('-').map(Number);
+                        handleWiringSelect(ccaIndex, stringIndex, s, p);
+                      }}
+                      style={wiringSelectStyle}
+                      aria-label={`Wiring configuration for String ${string.name}`}
+                    >
+                      {options.map((opt) => (
+                        <option key={opt.label} value={`${opt.series}-${opt.parallel}`}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : string.panel_count >= 1 ? (
+                    <span style={wiringLabelStyle}>{effectiveSeries}S{effectiveParallel}P</span>
+                  ) : null}
                   {cca.strings.length > 1 && (
                     <button
                       type="button"
