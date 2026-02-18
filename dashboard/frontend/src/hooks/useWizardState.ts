@@ -203,64 +203,61 @@ export function useWizardState(): UseWizardStateReturn {
     }
   }, [state.currentStep, goToStep]);
 
-  // Invalidate downstream state when editing previous steps
-  const invalidateDownstream = useCallback((changedStep: WizardStep) => {
+  // State setters with inline invalidation and restore-mode change detection
+  const setMqttConfig = useCallback((config: MQTTConfig) => {
     setState(prev => {
-      // Don't invalidate if restoring from backup - data is already complete
+      let newState = { ...prev, mqttConfig: config };
+
       if (prev.restoredFromBackup) {
-        return prev;
+        const changed = JSON.stringify(prev.mqttConfig) !== JSON.stringify(config);
+        if (!changed) return newState; // No real edit — preserve restore data
+        newState.restoredFromBackup = false; // Real edit — clear restore flag
       }
 
-      const changedIndex = getStepIndex(changedStep);
-      const newState = { ...prev };
-
-      // MQTT config changes affect everything downstream
-      if (changedStep === 'mqtt-config') {
-        newState.serialEntries = null;
-        newState.configDownloaded = false;
-        newState.discoveredPanels = {};
-        newState.validationResults = null;
+      // Invalidate downstream: MQTT changes affect everything
+      newState.serialEntries = null;
+      newState.configDownloaded = false;
+      newState.discoveredPanels = {};
+      newState.validationResults = null;
+      const changedIndex = getStepIndex('mqtt-config');
+      if (getStepIndex(prev.furthestStep) > changedIndex) {
+        newState.furthestStep = 'mqtt-config';
       }
-
-      // Topology changes affect download, discovery, and validation
-      if (changedStep === 'system-topology' || changedStep === 'mqtt-config') {
-        newState.serialEntries = null;
-        newState.configDownloaded = false;
-        newState.discoveredPanels = {};
-        newState.validationResults = null;
-      }
-
-      // Serial entry changes affect download
-      if (changedStep === 'panel-serials') {
-        newState.configDownloaded = false;
-      }
-
-      // Update furthestStep to not exceed the changed step
-      const furthestIndex = getStepIndex(prev.furthestStep);
-      if (furthestIndex > changedIndex) {
-        newState.furthestStep = changedStep;
-      }
-
       return newState;
     });
   }, []);
 
-  // State setters
-  const setMqttConfig = useCallback((config: MQTTConfig) => {
-    setState(prev => ({
-      ...prev,
-      mqttConfig: config,
-    }));
-    invalidateDownstream('mqtt-config');
-  }, [invalidateDownstream]);
-
   const setSystemTopology = useCallback((topology: SystemConfig) => {
-    setState(prev => ({
-      ...prev,
-      systemTopology: topology,
-    }));
-    invalidateDownstream('system-topology');
-  }, [invalidateDownstream]);
+    setState(prev => {
+      let newState = { ...prev, systemTopology: topology };
+
+      if (prev.restoredFromBackup && prev.systemTopology) {
+        // Compare topology excluding wiring-only fields (series_count, parallel_count)
+        // which don't affect downstream steps
+        const stripWiring = (t: SystemConfig) => ({
+          ...t,
+          ccas: t.ccas.map(cca => ({
+            ...cca,
+            strings: cca.strings.map(({ name, panel_count }) => ({ name, panel_count })),
+          })),
+        });
+        const changed = JSON.stringify(stripWiring(prev.systemTopology)) !== JSON.stringify(stripWiring(topology));
+        if (!changed) return newState; // No real edit — preserve restore data
+        newState.restoredFromBackup = false; // Real edit — clear restore flag
+      }
+
+      // Invalidate downstream: topology changes affect serials, download, discovery, validation
+      newState.serialEntries = null;
+      newState.configDownloaded = false;
+      newState.discoveredPanels = {};
+      newState.validationResults = null;
+      const changedIndex = getStepIndex('system-topology');
+      if (getStepIndex(prev.furthestStep) > changedIndex) {
+        newState.furthestStep = 'system-topology';
+      }
+      return newState;
+    });
+  }, []);
 
   const setConfigDownloaded = useCallback((downloaded: boolean) => {
     setState(prev => ({
@@ -398,20 +395,29 @@ export function useWizardState(): UseWizardStateReturn {
       tigo_label: panel.tigo_label,
     }));
 
+    // Reconstruct serialEntries from backup panels
+    const serialEntries: Record<string, Record<string, string>> = {};
+    for (const panel of data.panels) {
+      if (!serialEntries[panel.cca]) serialEntries[panel.cca] = {};
+      serialEntries[panel.cca][panel.tigo_label] = panel.serial;
+    }
+
     // Build topology from panels if system config not available
     let systemTopology: SystemConfig | null = data.system;
 
     // Set up new state with all data from backup
+    // Start at mqtt-config so user can review all steps, but furthestStep
+    // is review-save so all steps are clickable immediately
     const newState: WizardState = {
-      currentStep: 'review-save',
+      currentStep: 'mqtt-config',
       furthestStep: 'review-save',
       mqttConfig: data.system?.mqtt || null,
       systemTopology,
       discoveredPanels,
       translations,
       validationResults,
-      serialEntries: null,
-      configDownloaded: false, // User needs to re-download tigo-mqtt config
+      serialEntries: Object.keys(serialEntries).length > 0 ? serialEntries : null,
+      configDownloaded: true, // Config was previously generated
       restoredFromBackup: true,
       restoreImageToken: data.image_token,
       // Preserve overlay_size from backup layout config

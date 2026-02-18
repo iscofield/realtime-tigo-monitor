@@ -101,9 +101,6 @@ const restoreBannerIconStyle: CSSProperties = {
   flexShrink: 0,
 };
 
-// Steps to skip in restore mode (panel data already in backup)
-const RESTORE_SKIP_STEPS: WizardStep[] = ['panel-serials', 'discovery', 'validation'];
-
 interface SetupWizardProps {
   onComplete: () => void;
   initialRestoreData?: RestoreData;
@@ -177,32 +174,8 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
     setShowWelcome(false);
   }, [wizardState]);
 
-  // Step navigation with restore mode skipping
   const handleGoNext = useCallback(() => {
-    if (wizardState.state.restoredFromBackup) {
-      // Find next non-skipped step
-      const STEP_ORDER: WizardStep[] = [
-        'mqtt-config',
-        'system-topology',
-        'panel-serials',
-        'generate-download',
-        'discovery',
-        'validation',
-        'review-save',
-      ];
-      const currentIndex = STEP_ORDER.indexOf(wizardState.state.currentStep);
-      let nextIndex = currentIndex + 1;
-
-      while (nextIndex < STEP_ORDER.length && RESTORE_SKIP_STEPS.includes(STEP_ORDER[nextIndex])) {
-        nextIndex++;
-      }
-
-      if (nextIndex < STEP_ORDER.length) {
-        wizardState.goToStep(STEP_ORDER[nextIndex]);
-      }
-    } else {
-      wizardState.goNext();
-    }
+    wizardState.goNext();
     wizardState.saveState();
   }, [wizardState]);
 
@@ -417,7 +390,6 @@ export function SetupWizard({ onComplete, initialRestoreData }: SetupWizardProps
           currentStep={wizardState.state.currentStep}
           furthestStep={wizardState.state.furthestStep}
           onStepClick={handleStepClick}
-          restoredFromBackup={wizardState.state.restoredFromBackup}
         />
 
         <div style={contentStyle}>

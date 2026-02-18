@@ -16,9 +16,6 @@ const ALL_STEPS: { id: WizardStep; label: string }[] = [
   { id: 'review-save', label: 'Review & Save' },
 ];
 
-// Steps to hide in restore mode (panel data already in backup)
-const RESTORE_HIDDEN_STEPS: WizardStep[] = ['panel-serials', 'discovery', 'validation'];
-
 const containerStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'flex-start',
@@ -72,18 +69,14 @@ interface WizardStepIndicatorProps {
   currentStep: WizardStep;
   furthestStep: WizardStep;
   onStepClick: (step: WizardStep) => void;
-  restoredFromBackup?: boolean;
 }
 
 export function WizardStepIndicator({
   currentStep,
   furthestStep,
   onStepClick,
-  restoredFromBackup = false,
 }: WizardStepIndicatorProps) {
-  // Filter out hidden steps in restore mode and add display numbers
   const visibleSteps = ALL_STEPS
-    .filter(step => !restoredFromBackup || !RESTORE_HIDDEN_STEPS.includes(step.id))
     .map((step, index) => ({ ...step, shortLabel: String(index + 1) }));
 
   const currentIndex = visibleSteps.findIndex(s => s.id === currentStep);
