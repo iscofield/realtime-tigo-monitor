@@ -11,10 +11,12 @@ export interface MQTTConfig {
   password?: string;
 }
 
-// A string of panels connected in series
+// A string of panels with optional series-parallel wiring config
 export interface StringConfig {
   name: string;        // Single uppercase letter (A-Z)
   panel_count: number;
+  series_count?: number;    // S — panels in series per group
+  parallel_count?: number;  // P — number of parallel groups
 }
 
 // Configuration for a Tigo CCA device

@@ -43,3 +43,25 @@ body {
     min-height: 44px;
   }
 }
+
+/* Wiring badge touch target (NFR-1) */
+.wiring-badge {
+  position: relative;
+}
+
+.wiring-badge::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 44px;
+  min-height: 44px;
+}
+
+@media (pointer: fine) {
+  .wiring-badge::after {
+    min-width: unset;
+    min-height: unset;
+  }
+}

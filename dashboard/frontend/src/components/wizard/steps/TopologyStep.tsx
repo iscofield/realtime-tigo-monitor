@@ -3,9 +3,10 @@
  * Collects CCA devices and string configuration.
  */
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import type { MQTTConfig, SystemConfig, CCAConfig, StringConfig } from '../../../types/config';
+import { getWiringOptions } from '../../../utils/wiringConfig';
 
 const formStyle: CSSProperties = {
   display: 'flex',
@@ -61,7 +62,8 @@ const smallInputStyle: CSSProperties = {
 const stringRowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: '12px',
+  flexWrap: 'wrap',
+  gap: '4px',
   padding: '8px 0',
 };
 
@@ -83,6 +85,7 @@ const removeButtonStyle: CSSProperties = {
   border: 'none',
   borderRadius: '4px',
   cursor: 'pointer',
+  marginLeft: 'auto',
 };
 
 const buttonGroupStyle: CSSProperties = {
@@ -112,6 +115,24 @@ const secondaryButtonStyle: CSSProperties = {
 const hintStyle: CSSProperties = {
   fontSize: '12px',
   color: '#666',
+};
+
+const wiringSelectStyle: CSSProperties = {
+  padding: '6px 10px',
+  fontSize: '14px',
+  border: '1px solid #ccc',
+  borderRadius: '6px',
+  backgroundColor: 'white',
+  color: '#333',
+  minWidth: '90px',
+  cursor: 'pointer',
+  outline: 'none',
+};
+
+const wiringLabelStyle: CSSProperties = {
+  fontSize: '13px',
+  color: '#999',
+  padding: '6px 0',
 };
 
 interface TopologyStepProps {
@@ -172,12 +193,59 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
     });
   };
 
-  const updateString = (ccaIndex: number, stringIndex: number, updates: Partial<StringConfig>) => {
-    const cca = ccas[ccaIndex];
-    updateCca(ccaIndex, {
-      strings: cca.strings.map((s, i) => (i === stringIndex ? { ...s, ...updates } : s)),
-    });
-  };
+  const updateString = useCallback((ccaIndex: number, stringIndex: number, updates: Partial<StringConfig>) => {
+    setCcas(prev => prev.map((cca, i) => {
+      if (i !== ccaIndex) return cca;
+      return {
+        ...cca,
+        strings: cca.strings.map((s, j) => {
+          if (j !== stringIndex) return s;
+          const updated = { ...s, ...updates };
+
+          // If panel_count changed, validate/reset wiring
+          if ('panel_count' in updates && updates.panel_count !== s.panel_count) {
+            const newCount = updates.panel_count!;
+            const currentSeries = s.series_count ?? s.panel_count;
+            const currentParallel = s.parallel_count ?? 1;
+
+            // Check if current wiring is still a valid factor pair
+            if (
+              currentSeries >= 1 &&
+              currentParallel >= 1 &&
+              currentSeries * currentParallel === newCount
+            ) {
+              // Preserve existing wiring
+              updated.series_count = currentSeries;
+              updated.parallel_count = currentParallel;
+            } else {
+              // Reset to all-series
+              updated.series_count = undefined;
+              updated.parallel_count = undefined;
+            }
+          }
+
+          return updated;
+        }),
+      };
+    }));
+  }, []);
+
+  const handleWiringSelect = useCallback((ccaIndex: number, stringIndex: number, series: number, parallel: number) => {
+    setCcas(prev => prev.map((cca, i) => {
+      if (i !== ccaIndex) return cca;
+      return {
+        ...cca,
+        strings: cca.strings.map((s, j) => {
+          if (j !== stringIndex) return s;
+          // If all-series, omit wiring fields (normalize to default)
+          if (parallel === 1) {
+            return { ...s, series_count: undefined, parallel_count: undefined };
+          }
+          return { ...s, series_count: series, parallel_count: parallel };
+        }),
+      };
+    }));
+  }, []);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -284,45 +352,71 @@ export function TopologyStep({ topology, mqttConfig, onNext, onBack }: TopologyS
           <div style={{ marginTop: '16px' }}>
             <label style={{ ...labelStyle, marginBottom: '8px', display: 'block' }}>Strings</label>
 
-            {cca.strings.map((string, stringIndex) => (
-              <div key={stringIndex} style={stringRowStyle}>
-                <div style={fieldStyle}>
-                  <input
-                    type="text"
-                    value={string.name}
-                    onChange={(e) => updateString(ccaIndex, stringIndex, { name: e.target.value.toUpperCase() })}
-                    placeholder="A"
-                    style={smallInputStyle}
-                    pattern="^[A-Z]$"
-                    title="Single uppercase letter (A-Z)"
-                    maxLength={1}
-                    required
-                  />
+            {cca.strings.map((string, stringIndex) => {
+              const options = getWiringOptions(string.panel_count);
+              const effectiveSeries = string.series_count ?? string.panel_count;
+              const effectiveParallel = string.parallel_count ?? 1;
+              const selectedValue = `${effectiveSeries}-${effectiveParallel}`;
+
+              return (
+                <div key={stringIndex} style={stringRowStyle}>
+                  <div style={fieldStyle}>
+                    <input
+                      type="text"
+                      value={string.name}
+                      onChange={(e) => updateString(ccaIndex, stringIndex, { name: e.target.value.toUpperCase() })}
+                      placeholder="A"
+                      style={smallInputStyle}
+                      pattern="^[A-Z]$"
+                      title="Single uppercase letter (A-Z)"
+                      maxLength={1}
+                      required
+                    />
+                  </div>
+                  <span style={{ color: '#666' }}>:</span>
+                  <div style={fieldStyle}>
+                    <input
+                      type="number"
+                      value={string.panel_count}
+                      onChange={(e) => updateString(ccaIndex, stringIndex, { panel_count: parseInt(e.target.value, 10) || 1 })}
+                      style={smallInputStyle}
+                      min={1}
+                      max={100}
+                      required
+                    />
+                  </div>
+                  <span style={{ color: '#666' }}>panels</span>
+                  {string.panel_count >= 1 && options.length > 1 ? (
+                    <select
+                      value={selectedValue}
+                      onChange={(e) => {
+                        const [s, p] = e.target.value.split('-').map(Number);
+                        handleWiringSelect(ccaIndex, stringIndex, s, p);
+                      }}
+                      style={wiringSelectStyle}
+                      aria-label={`Wiring configuration for String ${string.name}`}
+                    >
+                      {options.map((opt) => (
+                        <option key={opt.label} value={`${opt.series}-${opt.parallel}`}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : string.panel_count >= 1 ? (
+                    <span style={wiringLabelStyle}>{effectiveSeries}S{effectiveParallel}P</span>
+                  ) : null}
+                  {cca.strings.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeString(ccaIndex, stringIndex)}
+                      style={removeButtonStyle}
+                    >
+                      x
+                    </button>
+                  )}
                 </div>
-                <span style={{ color: '#666' }}>:</span>
-                <div style={fieldStyle}>
-                  <input
-                    type="number"
-                    value={string.panel_count}
-                    onChange={(e) => updateString(ccaIndex, stringIndex, { panel_count: parseInt(e.target.value, 10) || 1 })}
-                    style={smallInputStyle}
-                    min={1}
-                    max={100}
-                    required
-                  />
-                </div>
-                <span style={{ color: '#666' }}>panels</span>
-                {cca.strings.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeString(ccaIndex, stringIndex)}
-                    style={removeButtonStyle}
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
 
             <button type="button" onClick={() => addString(ccaIndex)} style={{ ...addButtonStyle, marginTop: '8px' }}>
               + Add String

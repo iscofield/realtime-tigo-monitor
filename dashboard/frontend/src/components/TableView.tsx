@@ -1,9 +1,11 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import type { CSSProperties } from 'react';
 import type { PanelData } from '../hooks/useWebSocket';
 import { useMediaQuery } from '../hooks/useMediaQuery';
 import { useTablePreferences, VALID_THRESHOLDS } from '../hooks/useTablePreferences';
 import { analyzeStringForMismatches } from '../utils/mismatchDetection';
+import { getEffectiveWiring } from '../utils/wiringConfig';
+import { getSystemConfig } from '../api/config';
 import { MOBILE_BREAKPOINT } from '../constants';
 import { ColumnDropdown } from './TableView/ColumnDropdown';
 import { ExpandCollapseToggle } from './TableView/ExpandCollapseToggle';
@@ -141,6 +143,28 @@ export function TableView({ panels }: TableViewProps) {
   // Sort announcement for screen readers (FR-3.10)
   const [sortAnnouncement, setSortAnnouncement] = useState('');
 
+  // Wiring config lookup map (FR-4.1)
+  const [wiringMap, setWiringMap] = useState<Map<string, { series_count?: number | null; parallel_count?: number | null }>>(new Map());
+
+  useEffect(() => {
+    getSystemConfig()
+      .then(config => {
+        const map = new Map<string, { series_count?: number | null; parallel_count?: number | null }>();
+        for (const cca of config.ccas) {
+          for (const str of cca.strings) {
+            map.set(str.name, {
+              series_count: str.series_count,
+              parallel_count: str.parallel_count,
+            });
+          }
+        }
+        setWiringMap(map);
+      })
+      .catch(() => {
+        // Config not available — fall back to all-series (P=1)
+      });
+  }, []);
+
   // Group panels by string's expected inverter
   const grouped = useMemo(() => {
     const bySystem: Record<string, Record<string, PanelData[]>> = {
@@ -172,27 +196,66 @@ export function TableView({ panels }: TableViewProps) {
     return bySystem;
   }, [panels]);
 
-  // Compute system-level summaries
+  // Compute system-level summaries using two-level aggregation (FR-4.3)
   const systemSummaries = useMemo(() => {
     const summaries: Record<string, { power: number; voltage: number; current: number | null; onlineCount: number; totalCount: number }> = {};
     for (const system of ['primary', 'secondary']) {
       const systemStrings = grouped[system] || {};
       const allPanels = Object.values(systemStrings).flat();
-      const onlinePanels = allPanels.filter(p => p.online !== false);
-      const totalPower = onlinePanels.reduce((sum, p) => sum + (p.watts || 0), 0);
-      const totalVoltage = onlinePanels.reduce((sum, p) => sum + ((p.voltage_in ?? p.voltage) || 0), 0);
-      const currents = onlinePanels.map(p => p.current_in).filter(c => c != null) as number[];
-      const avgCurrent = currents.length > 0 ? currents.reduce((a, b) => a + b, 0) / currents.length : null;
+
+      // Group panels by string name
+      const byString = new Map<string, PanelData[]>();
+      for (const panel of allPanels) {
+        if (!panel.string) continue;
+        const existing = byString.get(panel.string) ?? [];
+        existing.push(panel);
+        byString.set(panel.string, existing);
+      }
+
+      // Compute per-string corrected summaries
+      const stringSummaries: { voltage: number; current: number | null; power: number }[] = [];
+      for (const [stringName, stringPanels] of byString) {
+        const wiring = wiringMap.get(stringName);
+        const { parallel: P } = getEffectiveWiring(wiring ?? {});
+        const onlinePanels = stringPanels.filter(p => p.online !== false);
+
+        const voltage = onlinePanels.reduce(
+          (sum, p) => {
+            const v = (p.voltage_in ?? p.voltage) ?? 0;
+            return sum + (Number.isNaN(v) ? 0 : v);
+          }, 0
+        ) / P;
+
+        const currents = onlinePanels
+          .map(p => p.current_in)
+          .filter((c): c is number => c != null && !Number.isNaN(c));
+        const current = currents.length > 0
+          ? (currents.reduce((a, b) => a + b, 0) / currents.length) * P
+          : null;
+
+        const power = onlinePanels.reduce((sum, p) => sum + (p.watts ?? 0), 0);
+        stringSummaries.push({ voltage, current, power });
+      }
+
+      // Aggregate to system level
+      const systemVoltage = stringSummaries.reduce((sum, s) => sum + s.voltage, 0);
+      const validCurrents = stringSummaries.filter(s => s.current != null);
+      const systemCurrent = validCurrents.length > 0
+        ? validCurrents.reduce((sum, s) => sum + s.current!, 0) / validCurrents.length
+        : null;
+      const systemPower = stringSummaries.reduce((sum, s) => sum + s.power, 0);
+
+      const onlineCount = allPanels.filter(p => p.online !== false).length;
       summaries[system] = {
-        power: totalPower,
-        voltage: totalVoltage,
-        current: avgCurrent,
-        onlineCount: onlinePanels.length,
+        power: systemPower,
+        voltage: systemVoltage,
+        current: systemCurrent,
+        onlineCount,
         totalCount: allPanels.length,
       };
     }
     return summaries;
-  }, [grouped]);
+  }, [grouped, wiringMap]);
 
   // Get all string IDs
   const allStringIds = useMemo(() => {
@@ -350,6 +413,7 @@ export function TableView({ panels }: TableViewProps) {
                     collapsed={collapsedStrings.has(stringId)}
                     onToggleCollapse={() => actions.toggleStringCollapse(stringId)}
                     isMobile={isMobile}
+                    wiringConfig={wiringMap.get(stringId)}
                   />
                 );
               })}

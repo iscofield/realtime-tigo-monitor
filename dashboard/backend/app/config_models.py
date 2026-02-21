@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_serializer, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +51,11 @@ def parse_tigo_label(label: str) -> tuple[str, int] | None:
 
 
 class StringConfig(BaseModel):
-    """A string of panels connected in series."""
+    """A string of panels with optional series-parallel wiring config."""
     name: str = Field(..., min_length=1, max_length=1)
     panel_count: int = Field(..., ge=1)
+    series_count: Optional[int] = Field(default=None, ge=1)
+    parallel_count: Optional[int] = Field(default=None, ge=1)
 
     @field_validator("name")
     @classmethod
@@ -65,6 +67,53 @@ class StringConfig(BaseModel):
                 f"String name must be a single uppercase letter (A-Z), got: {v}"
             )
         return v
+
+    @model_validator(mode='after')
+    def validate_wiring(self) -> 'StringConfig':
+        """Validate series-parallel wiring invariant."""
+        if self.series_count is not None and self.parallel_count is not None:
+            if self.series_count * self.parallel_count != self.panel_count:
+                raise ValueError(
+                    f"series_count ({self.series_count}) * parallel_count "
+                    f"({self.parallel_count}) must equal panel_count ({self.panel_count})"
+                )
+        elif self.series_count is not None:
+            if self.panel_count % self.series_count != 0:
+                raise ValueError(
+                    f"series_count ({self.series_count}) must evenly divide "
+                    f"panel_count ({self.panel_count})"
+                )
+            self.parallel_count = self.panel_count // self.series_count
+        elif self.parallel_count is not None:
+            if self.panel_count % self.parallel_count != 0:
+                raise ValueError(
+                    f"parallel_count ({self.parallel_count}) must evenly divide "
+                    f"panel_count ({self.panel_count})"
+                )
+            self.series_count = self.panel_count // self.parallel_count
+        return self
+
+    @property
+    def effective_series(self) -> int:
+        """Series count with default applied."""
+        return self.series_count if self.series_count is not None else self.panel_count
+
+    @property
+    def effective_parallel(self) -> int:
+        """Parallel count with default applied."""
+        return self.parallel_count if self.parallel_count is not None else 1
+
+    @model_serializer(mode='wrap')
+    def _serialize(self, handler):
+        d = handler(self)
+        s = d.get('series_count')
+        p = d.get('parallel_count')
+        pc = d.get('panel_count')
+        if s is None or (s == pc and p == 1):
+            d.pop('series_count', None)
+        if p is None or (s == pc and p == 1):
+            d.pop('parallel_count', None)
+        return d
 
 
 class CCAConfig(BaseModel):
