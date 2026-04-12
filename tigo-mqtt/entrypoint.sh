@@ -19,5 +19,9 @@ sed -e "s|\${MQTT_SERVER}|${MQTT_SERVER}|g" \
 
 echo "Generated config.ini from template"
 
+# Clean stale run file from previous instance to prevent
+# "File exists" error on restart after crash/MQTT disconnect
+rm -f /run/taptap/taptap.run
+
 # Run taptap-mqtt
 exec python3 taptap-mqtt.py config.ini
