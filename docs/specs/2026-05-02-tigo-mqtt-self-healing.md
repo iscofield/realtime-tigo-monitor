@@ -456,7 +456,7 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 **FR-5.3: README updates.** `README.md` at the repository root SHALL gain a new top-level section **"Self-Healing System"** placed after the existing operational sections. Required content:
 
 - One-paragraph overview of what the watchdog does and why it exists (mention the 5-minute silence threshold, autonomous bounce, circuit breaker).
-- Subsection **"Configuration"**: a table listing every watchdog environment variable (name, default, description) — at minimum `SILENCE_THRESHOLD_SEC`, `COOLDOWN_SEC`, `CIRCUIT_BREAKER_BOUNCES`, `CIRCUIT_BREAKER_WINDOW_SEC`, `MQTT_RECONNECT_GRACE_CUTOFF_SEC`, `BOUNCE_TOKEN`, `MQTT_CLIENT_ID`, `DOCKER_PROXY_URL`, `MQTT_SERVER`/`MQTT_USER`/`MQTT_PASS`. The table SHALL use placeholder values (e.g., `<PI_HOST>`) for any host-specific examples — see FR-5.5.
+- Subsection **"Configuration"**: a table listing every watchdog environment variable (name, default, description). The table SHALL match the authoritative env-var table in NFR-5.1 — at minimum `SILENCE_THRESHOLD_SEC`, `COOLDOWN_SEC`, `CIRCUIT_BREAKER_BOUNCES`, `CIRCUIT_BREAKER_WINDOW_SEC`, `MQTT_RECONNECT_GRACE_CUTOFF_SEC`, `PRIMARY_CONTAINER`, `SECONDARY_CONTAINER`, `BOUNCE_TOKEN`, `DOCKER_PROXY_URL`, `MQTT_SERVER`/`MQTT_USER`/`MQTT_PASS`, `WEBHOOK_PORT`. (Note: `MQTT_CLIENT_ID` is a taptap-container env var — see FR-2.2 — and belongs in the taptap section of the README, not the watchdog section.) The table SHALL use placeholder values (e.g., `<PI_HOST>`) for any host-specific examples — see FR-5.5.
 - Subsection **"Operating the watchdog"**: how to view logs (`sudo docker logs taptap-watchdog`), how to query state (`curl http://<PI_HOST>:8080/healthz | jq`), how to manually bounce (with `BOUNCE_TOKEN` example via `-H 'X-Bounce-Token: ...'`), and how to disable for planned maintenance (`docker compose stop taptap-watchdog`).
 - Subsection **"Optional Home Assistant integration"**: short description of the alerting flow, with a link to a new setup guide at `docs/guides/ha-integration.md`. The README itself SHALL NOT contain step-by-step HA YAML — that lives in the guide.
 
@@ -471,13 +471,22 @@ This requirement applies to: source code, Dockerfile, `docker-compose.sample.yml
 To verify before committing each PR, the implementer SHALL run a check (manually or via a pre-commit hook):
 
 ```bash
-# Find any IPs, common personal paths, or SSH aliases in tracked files.
+# Find IPs (all RFC 1918 ranges), common personal paths, mDNS hostnames, and SSH aliases in tracked files.
+# Operators with their own domain or SSH host aliases SHOULD extend the alternation accordingly.
 git ls-files \
-  | xargs grep -InE '\b192\.168\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\.casadesco\.|/Users/[a-z]+|/home/[a-z]+|~/code/' \
+  | xargs grep -InE '\b192\.168\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+\b|\.casadesco\.|/Users/[a-z]+|/home/[a-z]+|/Volumes/|~/code/|\b[a-z][a-z0-9-]*\.local\b' \
   | grep -vE '^\.gitignore|^\.claude/'
 ```
 
-This grep SHALL produce no output before the PR is merged. If a placeholder must contain a literal IP for context (e.g., a default value documented in the README), prefix it with the placeholder name in the same line so it's clearly marked as an example, e.g., `<PI_HOST>  # e.g. 192.168.1.50`.
+The regex covers:
+- All three RFC 1918 private ranges: `192.168/16`, `10/8`, and `172.16/12` (the `172.(16-31).x.x` clause).
+- The author's domain `.casadesco.` — operators forking this repo SHOULD replace this with their own domain pattern.
+- Common personal-path roots: `/Users/<name>` (macOS), `/home/<name>` (Linux), `/Volumes/` (macOS external mounts), and `~/code/`.
+- mDNS / `.local` hostnames (e.g., `pi.local`, `nas.local`).
+
+The grep SHALL produce no output before the PR is merged. **Known limitations:** the regex does not catch arbitrary SSH host aliases (e.g., `ssh nas1`, `ssh goober`) because they have no fixed lexical pattern — operators SHOULD extend the alternation with their own aliases, or handle these via the pre-commit hook by additionally scanning for `ssh\s+<alias>` patterns specific to their environment. Public IPs and arbitrary hostnames are also not covered — operators SHOULD review tracked files for these manually before first publish.
+
+If a placeholder must contain a literal IP for context (e.g., a default value documented in the README), prefix it with the placeholder name in the same line so it's clearly marked as an example, e.g., `<PI_HOST>  # e.g. 192.168.1.50`.
 
 The existing `.gitignore` already excludes `.claude/`, which is the canonical location for operator-specific values.
 
@@ -630,8 +639,8 @@ sequenceDiagram
 │         │ (state, nodes)   │ (state, nodes)                        │
 │         │                  │                                       │
 │  ┌──────┴──────────────────┴──────┐                                │
-│  │  Mosquitto broker on NAS       │                                │
-│  │  <MQTT_BROKER_HOST>:1883            │◀──────────┐                    │
+│  │  Mosquitto broker on host      │                                │
+│  │  <MQTT_BROKER_HOST>:1883       │◀──────────┐                    │
 │  └──────┬─────────────────────────┘           │                    │
 │         │                                     │                    │
 │         │ subscribe state + watchdog events   │ publish events     │
@@ -652,7 +661,7 @@ sequenceDiagram
           │
    ┌──────┴────────────┐
    │ Home Assistant    │
-   │ <HA_HOST>:8123 │
+   │ <HA_HOST>:8123    │
    │                   │     mobile_app push (NOT critical)
    │  - sensors        │────────────────────────▶  📱 user
    │  - binary_sensors │
@@ -928,10 +937,10 @@ Small. Can ship after PR 1 even if PR 2 and PR 3 are still in flight (the README
 1. Update `README.md` per FR-5.3 (overview paragraph, configuration table, operating subsection, optional HA integration link).
 2. Create `docs/guides/ha-integration.md` per FR-5.4 with placeholder values throughout.
 3. Update `CLAUDE.md` per FR-5.1.
-4. Update `docs/TROUBLESHOOTING.md` per FR-5.2.
-5. Run the FR-5.5 grep check on the entire tracked tree and resolve any matches before merging:
+4. Add FR-5.2 entries to `docs/TROUBLESHOOTING.md` (the "Watchdog circuit breaker tripped" and "HA notifications not arriving" entries). Note: the FR-1.2 "taptap container is dead and won't restart" entry is added in PR 1 task 2; this task only adds the watchdog/HA-related entries.
+5. Run the FR-5.5 grep check on the entire tracked tree and resolve any matches before merging (regex matches the FR-5.5 definition exactly):
    ```bash
-   git ls-files | xargs grep -InE '\b192\.168\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\.casadesco\.|/Users/[a-z]+|/home/[a-z]+|~/code/' | grep -vE '^\.gitignore|^\.claude/'
+   git ls-files | xargs grep -InE '\b192\.168\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\b172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+\b|\.casadesco\.|/Users/[a-z]+|/home/[a-z]+|/Volumes/|~/code/|\b[a-z][a-z0-9-]*\.local\b' | grep -vE '^\.gitignore|^\.claude/'
    ```
    Expected output: empty. Any matches in tracked files SHALL be either replaced with placeholders or removed before merge.
 6. (Optional but recommended) Add a pre-commit hook implementing the same check so future commits don't reintroduce hardcoded values.
@@ -984,11 +993,25 @@ State files (NEVER MODIFIED — see NFR-1.1):
 
 ---
 
-**Specification Version:** 1.3
+**Specification Version:** 1.4
 **Last Updated:** 2026-05-02
 **Authors:** Ian Scofield (with Claude)
 
 ## Changelog
+
+### v1.4 (May 2026)
+
+**Summary:** Pass-3 review fixes — env-var list correctness, regex completeness, ASCII alignment, task ownership clarity.
+
+**Changes:**
+- FR-5.3: README config-table env-var list corrected. `MQTT_CLIENT_ID` removed (it's a taptap-container env var per FR-2.2, not a watchdog one); `PRIMARY_CONTAINER`, `SECONDARY_CONTAINER`, `WEBHOOK_PORT` added. Wording now requires alignment with the authoritative table in NFR-5.1.
+- FR-5.5 grep regex extended to cover the full RFC 1918 space (including `172.16/12`), `/Volumes/` macOS external mounts, and `*.local` mDNS hostnames. Known limitations explicitly documented (arbitrary SSH host aliases, public IPs, non-author domains require operator-specific extension). PR 4 task 5 grep updated to match the FR-5.5 regex exactly.
+- Architecture diagram: ASCII box borders re-aligned after the v1.3 placeholder substitutions (`<MQTT_BROKER_HOST>:1883` and `<HA_HOST>:8123` shifted column widths). Top box restored to 70-col width; HA box restored to 24-col width.
+- PR 4 task 4 clarified: only adds the FR-5.2 watchdog/HA entries to `docs/TROUBLESHOOTING.md`. The FR-1.2 entry is owned by PR 1 task 2, eliminating the implicit duplicate ownership across PRs.
+
+**Rationale:** v1.3 introduced the placeholder convention and FR-5.5 grep but had three small carry-over issues: a wrong env-var category (`MQTT_CLIENT_ID` is taptap, not watchdog), gaps in the grep coverage (one of three RFC 1918 ranges missing, plus mDNS and macOS-mount paths), and ASCII-art alignment drift from the longer placeholder strings. None of these block implementation but each could mislead the implementer or let an operator-specific value slip through the FR-5.5 gate.
+
+**Impact:** No new requirements. README env-var table (PR 4 task 1) gains 3 vars and loses 1. Pre-commit hook (PR 4 task 6) catches more value classes. No state-file or HA-notification-criticality semantics changed.
 
 ### v1.3 (May 2026)
 
