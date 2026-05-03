@@ -35,6 +35,12 @@ services:
     env_file:
       - .env
 
+    # Per-service env vars (NOT in .env, since each service needs a different value).
+    environment:
+      # Static MQTT client ID — makes broker logs searchable for this CCA.
+      # Empty string would fall back to paho's random auto-generated IDs.
+      - MQTT_CLIENT_ID=taptap-primary
+
     # Serial device for this CCA - use a persistent udev symlink instead of raw
     # /dev/ttyACM* paths (which shift on reboot or when USB devices change).
     # See docs/DEPLOYMENT.md#usb-device-persistence for setup instructions.
@@ -77,6 +83,10 @@ services:
       - dialout
     env_file:
       - .env
+
+    # Per-service env vars (NOT in .env, since each service needs a different value).
+    environment:
+      - MQTT_CLIENT_ID=taptap-secondary
 
     # Second serial device - use a persistent udev symlink
     devices:
