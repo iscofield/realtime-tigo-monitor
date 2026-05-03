@@ -8,7 +8,6 @@
 > | `<PI_HOST>` | LAN IP/hostname of the Raspberry Pi running tigo-mqtt | `.claude/env` `PI_HOST` |
 > | `<MQTT_BROKER_HOST>` | LAN IP/hostname of the MQTT broker | `tigo-mqtt/.env` `MQTT_SERVER` |
 > | `<HA_HOST>` | LAN IP/hostname of the Home Assistant instance | operator-supplied |
-> | `<NAS_HOST>` | SSH alias / hostname of the NAS where the broker and HA configs live | operator-supplied (`~/.ssh/config`) |
 > | `<your-dashboard-host>` | Public DNS for the deployed dashboard frontend (e.g. behind a reverse proxy) | operator-supplied |
 > | `<HA_CONFIG_ROOT>` | Operator's local path to the Home Assistant config directory | operator-supplied |
 > | `<HA_DASHBOARDS_DIR>` | Path to the HA dashboards directory under `<HA_CONFIG_ROOT>` | derived |
@@ -546,7 +545,7 @@ The existing `.gitignore` already excludes `.claude/`, which is the canonical lo
 | `MQTT_SERVER`, `MQTT_USER`, `MQTT_PASS` | (required) | implementation | MQTT broker connection                          |
 | `WEBHOOK_PORT`                   | `8080`             | FR-3.10   | Webhook listen port                                  |
 
-**NFR-5.2: Static client IDs are an enabler.** Future debugging SHALL be able to grep `/volume1/docker/mosquitto/log/mosquitto.log` for `taptap-primary` and `taptap-secondary` to find connect/disconnect history. After this spec is implemented, the user SHALL be able to verify this by running `ssh <NAS_HOST> "tail -10000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` and seeing connect events.
+**NFR-5.2: Static client IDs are an enabler.** Future debugging SHALL be able to grep the Mosquitto broker log for `taptap-primary` and `taptap-secondary` to find connect/disconnect history. After this spec is implemented, the operator SHALL be able to verify this by tailing the broker log on the host where the broker runs (path is deployment-specific, e.g. `/mosquitto/log/mosquitto.log` for the official Eclipse Mosquitto image) and grepping for `taptap`. The access method (SSH, container exec, log-shipping pipeline, etc.) is left to the operator's environment.
 
 ## High Level Design
 
@@ -869,7 +868,7 @@ Small, low-risk. Land first to fix the immediate fragility.
 5. **FR-2.3, FR-2.4**: Add the fail-loud sed patch (with `diff -q` idempotency check) and `grep -q` post-verification to `Dockerfile`.
 6. **FR-2.5**: Update `dashboard/backend/app/services/tigo_mqtt_generator.py` (with TOPIC_NAME → CLIENT_ID slugification) and `scripts/check-config-sync.py`.
 7. Update the deployed `docker-compose.yml` on the Pi with `MQTT_CLIENT_ID` env vars; mirror in `docker-compose.sample.yml`.
-8. Verify in mosquitto broker logs: `ssh <NAS_HOST> "tail -1000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` SHALL show connect events with the new client IDs.
+8. Verify in mosquitto broker logs: tail the broker log on the host where Mosquitto runs and grep for `taptap`. Connect events with the new client IDs (`taptap-primary`, `taptap-secondary`) SHALL appear. Access method depends on the operator's deployment (SSH to broker host, `docker logs <broker-container>`, log-shipping pipeline, etc.).
 
 ### PR 2: Watchdog sidecar
 
@@ -996,7 +995,8 @@ State files (NEVER MODIFIED — see NFR-1.1):
 **Summary:** Public-repo readiness — placeholder convention for environment-specific values, explicit README and HA-integration guide requirements, automated grep check before merge.
 
 **Changes:**
-- Added a placeholder-convention preamble at the top of the spec listing all `<PLACEHOLDER>` values used throughout (PI_HOST, MQTT_BROKER_HOST, HA_HOST, NAS_HOST, your-dashboard-host, HA_CONFIG_ROOT, HA_DASHBOARDS_DIR, HA_CONFIG_MOUNT, MQTT_BROKER_CONFIG_DIR) and where the implementer sources each from.
+- Added a placeholder-convention preamble at the top of the spec listing all `<PLACEHOLDER>` values used throughout (PI_HOST, MQTT_BROKER_HOST, HA_HOST, your-dashboard-host, HA_CONFIG_ROOT, HA_DASHBOARDS_DIR, HA_CONFIG_MOUNT, MQTT_BROKER_CONFIG_DIR) and where the implementer sources each from.
+- Broker-log verification steps (NFR-5.2 and PR 1 task 8) rewritten to be access-method-agnostic — no longer prescribe SSH or any specific path. `<NAS_HOST>` removed entirely as it papered over a personal access pattern.
 - FR-5.3 expanded from "one-paragraph mention" to a full README structure: overview + Configuration table (env vars) + Operating subsection + optional HA integration link.
 - New FR-5.4 added: `docs/guides/ha-integration.md` setup guide with placeholder values throughout, separating HA setup detail from the README.
 - New FR-5.5 added: enforcement requirement — no operator-specific values in any tracked file. Includes a `git ls-files | grep` check that SHALL produce no output before any PR merges. Optional pre-commit hook recommended.
