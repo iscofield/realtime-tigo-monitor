@@ -29,7 +29,17 @@ A fourth observability gap is also addressed: the running taptap-mqtt clients us
 
 ### FR-1: Root Cause Investigation and Hardening
 
-**FR-1.1: Entrypoint hardening.** `tigo-mqtt/entrypoint.sh` SHALL replace the current `rm -f /run/taptap/taptap.run` line with `rm -rf /run/taptap` followed by `mkdir -p /run/taptap`. This handles both file and directory conflicts and creates a known-clean state regardless of what the previous instance left behind.
+**FR-1.1: Entrypoint hardening.** `tigo-mqtt/entrypoint.sh` SHALL replace the current `rm -f /run/taptap/taptap.run` line with a sequence that clears the `/run/taptap` contents (handling both file and directory conflicts) without removing the bind-mount point itself:
+
+```sh
+# Clear /run/taptap contents — handles file-vs-directory conflicts that blocked
+# the 2026-04-20 startup. The bind mount from ./run/{primary,secondary} on the
+# host is preserved (we clear contents, not the directory itself).
+rm -rf /run/taptap/* /run/taptap/.[!.]* 2>/dev/null || true
+mkdir -p /run/taptap
+```
+
+The `2>/dev/null || true` prevents the script from aborting if `/run/taptap` is empty (the glob `*` doesn't match anything). The dotfile glob `.[!.]*` covers hidden files except `.` and `..`. Note: the `/run/taptap` directory itself is bind-mounted from `./run/{primary,secondary}` on the host (per `docker-compose.sample.yml`), so clearing only its contents preserves the mount and avoids accidentally affecting the host filesystem layout. The directory is treated as exclusive scratch space for taptap; any files there will be removed on each container startup.
 
 **FR-1.2: Restart-policy investigation.** Before changing watchdog behavior, the implementer SHALL determine why `restart: always` did not loop the container after the 2026-04-20 exit. Required diagnostic steps:
 
@@ -37,9 +47,15 @@ A fourth observability gap is also addressed: the running taptap-mqtt clients us
 - Run `journalctl -u docker --since '2026-04-20 15:00' --until '2026-04-20 17:00'` on the Pi and capture any restart-related log entries.
 - Run `docker events --since '2026-04-20T15:00:00' --until '2026-04-20T17:00:00'` if event history is retained.
 
-The findings SHALL be recorded in `docs/TROUBLESHOOTING.md` under a new "Container Restart Policy" section. If the cause is determined to be a Docker daemon limitation (e.g., backoff cap), the watchdog (FR-3) is the authoritative recovery mechanism and `restart: always` is best-effort. If the cause is fixable (e.g., a `docker stop` was issued by an admin and never undone), the fix SHALL be applied.
+The findings SHALL be recorded in `docs/TROUBLESHOOTING.md` under a new "Container Restart Policy" section. Three possible outcomes:
 
-**FR-1.3: Image rebuild verification.** After FR-1.1, the implementer SHALL rebuild the `tigo-mqtt` image on the Pi and verify the new `entrypoint.sh` is present in the running container by running `docker exec taptap-primary cat /app/entrypoint.sh | grep 'rm -rf /run/taptap'`.
+1. **Cause found and fixable** (e.g., `docker stop` was issued by an admin and never undone, or a malformed compose entry): apply the fix and document.
+2. **Cause found but not fixable** (e.g., Docker daemon backoff cap, kernel-level OOM kill that prevented restart): the watchdog (FR-3) is the authoritative recovery mechanism and `restart: always` is best-effort. Document the limitation.
+3. **Cause indeterminate** (logs rolled over, journalctl history insufficient, docker events history not retained): document as "cause indeterminate due to log retention" in TROUBLESHOOTING.md. Proceed under the working hypothesis that FR-1.1's stale `/run/taptap` directory was the proximate cause, AND treat the watchdog (FR-3) as the authoritative recovery layer regardless of the underlying Docker behavior.
+
+In all three outcomes, FR-1.1's entrypoint hardening still ships and the watchdog still ships. FR-1.2 is satisfied by completing the diagnostic steps and recording outcome 1, 2, or 3.
+
+**FR-1.3: Image rebuild verification.** After FR-1.1, the implementer SHALL rebuild the `tigo-mqtt` image on the Pi and verify the new `entrypoint.sh` is present in the running container by running `docker exec taptap-primary cat /app/entrypoint.sh | grep -F 'rm -rf /run/taptap/*'` (the `-F` ensures the glob is matched literally, not interpreted by grep).
 
 ### FR-2: Static MQTT Client IDs
 
@@ -53,13 +69,36 @@ The findings SHALL be recorded in `docs/TROUBLESHOOTING.md` under a new "Contain
 mqtt.Client(client_id=config.get('MQTT', 'CLIENT_ID', fallback=''))
 ```
 
-The patch SHALL be applied immediately after the upstream tarball is extracted and before `pip install`. The patch SHALL be idempotent (a second application against an already-patched file SHALL be a no-op or fail loudly, not silently corrupt).
+The patch SHALL be applied immediately after the upstream tarball is extracted and before `pip install`. The patch SHALL **fail loudly** (non-zero exit, build aborts) if the expected pre-patch substring is not found — silent no-op behavior is forbidden because it would mask upstream changes that move or rewrite the constructor line.
 
-**FR-2.4: Patch verification at build.** The Dockerfile SHALL include a verification step (`grep -q "client_id=config.get" taptap-mqtt.py`) that fails the build if the patch did not apply. This catches upstream commit changes that move the `mqtt.Client()` line.
+**Exact Dockerfile commands** (both apply and verify in one chained step):
 
-**FR-2.5: Setup wizard sync.** The setup wizard's config generator (`dashboard/backend/app/services/tigo_mqtt_generator.py`) and the CI sync check (`scripts/check-config-sync.py`) SHALL be updated to include `CLIENT_ID` so wizard-generated configs and the template stay in sync. The wizard SHALL default `CLIENT_ID` to `taptap-${TOPIC_NAME}`.
+```dockerfile
+# Patch upstream taptap-mqtt.py to support a configurable MQTT client_id.
+# Fails the build if the expected pre-patch line is absent (i.e., upstream changed),
+# AND fails if post-patch verification doesn't find the new line.
+RUN cp taptap-mqtt.py taptap-mqtt.py.bak \
+ && sed -i 's|mqtt.Client()|mqtt.Client(client_id=config.get("MQTT", "CLIENT_ID", fallback=""))|' taptap-mqtt.py \
+ && if diff -q taptap-mqtt.py taptap-mqtt.py.bak > /dev/null; then \
+        echo "ERROR: sed patch did not modify taptap-mqtt.py — upstream may have changed the mqtt.Client() line" >&2; \
+        exit 1; \
+    fi \
+ && grep -q 'mqtt.Client(client_id=config.get("MQTT", "CLIENT_ID"' taptap-mqtt.py \
+ && rm taptap-mqtt.py.bak
+```
 
-**FR-2.6: Backward compatibility.** A `CLIENT_ID` value of empty string SHALL be treated as "no client_id" — paho will then auto-generate as before. This preserves behavior for any deployments that don't supply the env var.
+**FR-2.4: Patch verification at build.** The verification is integrated into FR-2.3's command chain above (the `diff -q ... && grep -q ...`). The `grep` matches the **exact** patched substring `mqtt.Client(client_id=config.get("MQTT", "CLIENT_ID"`, not a loose pattern, so a partial or wrong patch fails the build. Idempotency is achieved because (a) re-running on an already-patched file fails the `diff -q` check (file unchanged after sed → exit 1), making the Dockerfile build fail loudly rather than silently no-op.
+
+**FR-2.5: Setup wizard sync.** The setup wizard's config generator (`dashboard/backend/app/services/tigo_mqtt_generator.py`) and the CI sync check (`scripts/check-config-sync.py`) SHALL be updated to include `CLIENT_ID` so wizard-generated configs and the template stay in sync.
+
+The wizard SHALL default `CLIENT_ID` to `taptap-{slug(TOPIC_NAME)}`, where `slug()` lowercases the input, replaces any character not in `[a-z0-9_-]` with `-`, collapses runs of `-`, strips leading/trailing `-`, and truncates to 23 characters total (the `taptap-` prefix is 7 chars, leaving 16 for the slug — room for the longest expected names plus headroom). MQTT 3.1.1 servers MUST accept client IDs of 23 chars [A-Za-z0-9]; many brokers accept longer/more lenient strings, but 23 is the safe baseline. Mosquitto specifically allows up to 65535 chars and a wider charset, but the slug ensures portability.
+
+Examples:
+- `TOPIC_NAME = "primary"` → `CLIENT_ID = "taptap-primary"`
+- `TOPIC_NAME = "House Roof"` → `CLIENT_ID = "taptap-house-roof"`
+- `TOPIC_NAME = "Backyard #2"` → `CLIENT_ID = "taptap-backyard-2"`
+
+**FR-2.6: Backward compatibility.** A `CLIENT_ID` value of empty string SHALL be treated as "no client_id" — paho will then auto-generate as before. Per the [paho-mqtt 1.6.1 source](https://github.com/eclipse/paho.mqtt.python/blob/v1.6.1/src/paho/mqtt/client.py), the `Client(client_id, ...)` constructor checks `if not client_id:` and falls through to a generated ID using `clean_session=True` semantics. Empty string and `None` both trigger this branch. This preserves behavior for any deployments that don't supply the env var.
 
 ### FR-3: Watchdog Sidecar Container
 
@@ -71,11 +110,17 @@ The patch SHALL be applied immediately after the upstream tarball is extracted a
 
 **FR-3.4: Bounce trigger.** When a CCA's `now - last_seen_ts > 300` seconds (5 minutes), the watchdog SHALL initiate a bounce of that CCA's container, subject to FR-3.6 and FR-3.7.
 
-**FR-3.5: Bounce action.** A bounce SHALL execute `POST /containers/{name}/restart` against the Docker socket (via `docker-socket-proxy`, see FR-3.10), where `{name}` is `taptap-primary` or `taptap-secondary`. The bounce SHALL log the event with timestamp, container name, and trigger reason (`silence_threshold` or `manual_webhook`).
+**FR-3.5: Bounce action.** A bounce SHALL execute `POST /containers/{name}/restart` against the Docker socket (via `docker-socket-proxy`, see FR-3.10), where `{name}` resolves from environment variables `PRIMARY_CONTAINER` (default `taptap-primary`) and `SECONDARY_CONTAINER` (default `taptap-secondary`). This mirrors the existing pattern in `tigo-mqtt/temp-id-monitor` and lets the user rename the taptap containers without breaking the watchdog. The bounce SHALL log the event with timestamp, container name, and trigger reason (`silence_threshold` or `manual_webhook`).
 
-**FR-3.6: Cooldown.** After a bounce of a CCA's container completes, the watchdog SHALL NOT bounce that same container again for 15 minutes (`COOLDOWN_SEC=900`), regardless of trigger source — except a manual webhook (FR-3.10), which overrides the cooldown.
+**FR-3.6: Cooldown.** After a bounce of a CCA's container, the watchdog SHALL NOT bounce that same container again for 15 minutes (`COOLDOWN_SEC=900`), regardless of trigger source — except a manual webhook (FR-3.10), which overrides the cooldown. **Cooldown clock start:** the cooldown timer starts when the docker-socket-proxy returns success (HTTP 2xx) for the restart call, NOT when the container has finished restarting and republishing. The 15-minute cooldown is a wide enough margin that this distinction (~30s of restart time) is negligible.
 
-**FR-3.7: Circuit breaker.** If the watchdog has executed 3 or more bounces of a single container within the trailing 60-minute window, the watchdog SHALL trip a circuit breaker for that container. Tripped state means: no further automatic bounces of that container until the circuit breaker resets. The circuit breaker SHALL reset when no bounces have occurred in the trailing 60-minute window. Manual webhook bounces (FR-3.10) bypass the circuit breaker.
+**FR-3.7: Circuit breaker.** If the watchdog has executed `CIRCUIT_BREAKER_BOUNCES` (default 3) or more **automatic** bounces of a single container within the trailing `CIRCUIT_BREAKER_WINDOW_SEC` (default 60 min) window, the watchdog SHALL trip a circuit breaker for that container. Tripped state means: no further automatic bounces of that container until the breaker untrips.
+
+**Implementation: implicit trip/untrip via SQL count.** The breaker has no separate state row; it is computed on demand from the bounces table. On every bounce attempt, the watchdog computes `recent_bounces(container)` (see FR-3.13) and treats `>= CIRCUIT_BREAKER_BOUNCES` as "tripped". The breaker therefore "resets" automatically when older bounce rows age past the window or are pruned. This means the breaker survives watchdog restarts correctly without storing extra state.
+
+**Trip event publishing.** The first time `recent_bounces` first reaches the threshold during a bounce attempt (i.e., on a transition from "would have bounced" to "blocked"), the watchdog SHALL publish `circuit_breaker_tripped` (QoS 1, retain=true). Subsequent attempts in the tripped state SHALL NOT republish the same event (track an in-memory `breaker_tripped: set[str]` flag and only publish on transition closed→open). On the first attempt where `recent_bounces < CIRCUIT_BREAKER_BOUNCES` after being tripped, publish `circuit_breaker_reset` (also retain=true) and clear the in-memory flag.
+
+**Manual webhook bypass.** Manual webhook bounces (FR-3.10) bypass the breaker (do not increment it via the `reason='manual_webhook'` SQL filter in `recent_bounces`). They are still recorded as rows for audit but excluded from the rolling-window count.
 
 **FR-3.8: Bounce events.** Each bounce SHALL publish a JSON message to MQTT topic `taptap/watchdog/events` with this shape:
 
@@ -93,15 +138,35 @@ The patch SHALL be applied immediately after the upstream tarball is extracted a
 
 **FR-3.9: Circuit-breaker events.** Circuit-breaker trip and reset events SHALL be published to MQTT topic `taptap/watchdog/events` with the same envelope and `event` values of `circuit_breaker_tripped` and `circuit_breaker_reset`. Trip events SHALL include `bounces_in_window: 3`. These events SHALL be published with retain=true so a subscriber connecting later sees the current state.
 
+**FR-3.9b: Bounce-failed events.** When a bounce attempt fails (the docker-socket-proxy returns non-2xx, times out, or is unreachable), the watchdog SHALL publish an event to `taptap/watchdog/events`:
+
+```json
+{
+  "event": "bounce_failed",
+  "container": "taptap-primary",
+  "error_class": "HTTPStatusError",
+  "error_message": "Server error '503 Service Unavailable' for url ...",
+  "ts": "2026-05-02T18:30:42.123Z"
+}
+```
+
+QoS 1, retain=false. Per FR-3.13, a `bounce_failed` does NOT update the cooldown clock and is NOT recorded as a `bounces` row, so it does not contribute to circuit-breaker trip counts (the breaker is for "bounces that happened too often", not "bounces that failed"). The next silence-check loop iteration retries normally.
+
+`reason` enum values across all events: `silence_threshold` | `manual_webhook` (in `bounce` events only). `event` enum values: `bounce` | `bounce_failed` | `circuit_breaker_tripped` | `circuit_breaker_reset` | `reconnect_grace_applied` (the last from FR-3.12).
+
 **FR-3.10: Manual webhook.** The watchdog SHALL expose an HTTP endpoint `POST /bounce/{primary|secondary}` on port 8080 (configurable via env). This endpoint SHALL:
 
 - Bypass cooldown (FR-3.6) and circuit breaker (FR-3.7).
 - Bounce the requested container.
 - Publish a bounce event with `reason=manual_webhook`.
 - Return `{"ok": true, "bounced": "<container>"}` with HTTP 200 on success.
-- Return HTTP 400 if the path parameter is not `primary` or `secondary`.
+- Return HTTP 404 if the path parameter is not `primary` or `secondary` (use FastAPI `Path(regex='^(primary|secondary)$')` — FastAPI's default 422 on regex-fail SHOULD be customized to 404 via an exception handler so the response is REST-idiomatic).
 - Return HTTP 500 with the error message if the Docker call fails.
-- Be unauthenticated (LAN-only via Docker network exposure; see NFR-1.2).
+- Return HTTP 401 if the `X-Bounce-Token` header is absent or does not match the configured token.
+
+**Authentication.** Because the webhook port is LAN-reachable under host networking, the endpoint SHALL require a shared-secret token. The watchdog reads `BOUNCE_TOKEN` from its env (loaded from `.env` per existing convention). Every `POST /bounce/...` request SHALL be rejected with HTTP 401 if the `X-Bounce-Token` request header does not match `BOUNCE_TOKEN` exactly (constant-time compare via `hmac.compare_digest`). Token MUST be at least 32 random bytes (e.g., output of `openssl rand -hex 32`). This protects against any LAN device (guest Wi-Fi, IoT, compromised device) issuing unauthorized bounces.
+
+The `GET /healthz` endpoint SHALL remain unauthenticated (read-only state, useful for unprotected monitoring scrapers).
 
 **FR-3.11: Health endpoint.** The watchdog SHALL expose `GET /healthz` on the same port returning JSON:
 
@@ -116,47 +181,129 @@ The patch SHALL be applied immediately after the upstream tarball is extracted a
 }
 ```
 
-`status` SHALL be `"ok"` if MQTT is connected and no circuit breaker is tripped, `"degraded"` if any circuit breaker is tripped, or `"down"` if MQTT is disconnected.
+`status` SHALL be `"ok"` if MQTT is connected and no circuit breaker is tripped, `"degraded"` if MQTT is connected but at least one circuit breaker is tripped, or `"down"` if MQTT is disconnected. **Precedence (most severe wins):** if MQTT is disconnected AND a breaker is tripped, `status="down"` (the broker outage subsumes everything else).
 
-**FR-3.12: Broker-disconnect safety.** When the watchdog itself loses its MQTT connection to the broker, it SHALL NOT initiate any bounces. Rationale: a broker outage means we can't see liveness signals at all, and bouncing the taptap containers won't help — the broker is the problem. The watchdog SHALL keep retrying its own connection (paho's `loop_forever()` with default reconnect behavior). When MQTT reconnects, the per-CCA `last_seen_ts` values SHALL be reset to the current time (grace period — don't immediately bounce containers that *might* have been silent during the broker outage).
+**FR-3.12: Broker-disconnect safety.** When the watchdog itself loses its MQTT connection to the broker, it SHALL NOT initiate any bounces. Rationale: a broker outage means we can't see liveness signals at all, and bouncing the taptap containers won't help — the broker is the problem. The watchdog SHALL keep retrying its own connection (paho's `loop_forever()` with default reconnect behavior).
 
-**FR-3.13: State persistence.** The watchdog SHALL persist bounce history (timestamp + container) to `/data/watchdog.db` (SQLite) so that the circuit-breaker rolling window survives a watchdog restart. On startup, the watchdog SHALL load bounce history from SQLite and reconstruct the rolling-window counters. Schema:
+**Reconnect behavior (avoiding masked outages).** The watchdog cannot distinguish a broker outage (where every client is disconnected) from a watchdog-side network blip (where only the watchdog is offline, but the broker is fine and taptap may have ALSO died during that window). To avoid silently masking the latter:
+
+- If the disconnect duration was **short (≤ 60 seconds)**: treat as a watchdog-side hiccup. Do NOT reset `last_seen_ts` — preserve pre-disconnect timestamps so any genuine ongoing silence still triggers normally after threshold.
+- If the disconnect duration was **long (> 60 seconds)**: treat as ambiguous (likely broker outage). Reset `last_seen_ts` for both CCAs to `now()` (grace period) AND publish an event `event=reconnect_grace_applied` with envelope `{event, disconnect_seconds, ts}` for observability. After this grace period, the next genuine silence triggers a bounce normally at threshold + 5 min.
+
+The 60-second cutoff is configurable via `MQTT_RECONNECT_GRACE_CUTOFF_SEC` (default 60). The watchdog SHALL track the disconnect timestamp (when paho's `on_disconnect` callback fires) and compare to reconnect time (`on_connect` callback) to compute the duration.
+
+**FR-3.13: State persistence.** The watchdog SHALL persist bounce history (timestamp + container + reason) to `/data/watchdog.db` (SQLite) so that the circuit-breaker rolling window survives a watchdog restart. On startup, the watchdog SHALL load bounce history from SQLite and reconstruct the rolling-window counters. Schema:
 
 ```sql
 CREATE TABLE IF NOT EXISTS bounces (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   container TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  ts INTEGER NOT NULL  -- unix epoch seconds
+  reason TEXT NOT NULL,        -- 'silence_threshold' | 'manual_webhook' | 'bounce_failed'
+  ts INTEGER NOT NULL           -- unix epoch seconds
 );
 CREATE INDEX IF NOT EXISTS idx_bounces_ts ON bounces(ts);
 ```
 
-The watchdog SHALL prune rows older than 24 hours on startup.
+The watchdog SHALL prune rows older than 24 hours on startup AND every silence-check loop iteration (~30s) so the table remains bounded during long-running operation.
+
+**Volume mount.** The watchdog compose service SHALL mount a dedicated host directory `./watchdog-data:/data` for SQLite persistence. This volume SHALL NOT overlap with `tigo-mqtt/data/{primary,secondary}` (state files — see NFR-1.1).
+
+**Concurrency.** The watchdog has multiple async paths (MQTT message callbacks, FastAPI webhook handler, silence-check loop). All SQLite writes SHALL go through `asyncio.to_thread(...)` calls so the event loop is never blocked, with a single `sqlite3.Connection` opened with `check_same_thread=False` and serialized via an `asyncio.Lock`. Alternatively, `aiosqlite==0.20.0` MAY be used to avoid the manual locking — pick one approach in implementation and document. The default (FR-3.13's reference implementation) is `sqlite3 + asyncio.Lock` to minimize dependencies.
+
+**Operation ordering and helper signatures.** A bounce attempt SHALL execute in this exact order:
+
+1. **Precondition checks** (in-memory + SQLite):
+   - Cooldown check: `now - state.last_bounce[container] < COOLDOWN_SEC` → return `{skipped: "cooldown"}` (no SQLite write, no MQTT publish).
+   - Circuit breaker check: `recent_bounces(container) >= CIRCUIT_BREAKER_BOUNCES` → publish `circuit_breaker_tripped` event, return `{skipped: "circuit_breaker"}` (no bounce row written; the trip is implicit from the existing rows).
+   - Both checks bypassed when `override=True` (manual webhook).
+2. **Attempt Docker restart**: `httpx.post(f"{DOCKER_PROXY_URL}/containers/{container_name}/restart", timeout=10.0)`. On HTTP 2xx → continue; on any other outcome (connection error, timeout, non-2xx) → go to step 5b (failure path).
+3. **On success** (atomic-ish — log if any sub-step raises):
+   - SQLite INSERT into `bounces`.
+   - Update `state.last_bounce[container] = now`.
+   - Publish MQTT event with `event=bounce`, full envelope per FR-3.8.
+4. **Return success** to the caller (webhook or silence loop): `{ok: True, bounced: <name>}`.
+5. **Failure path (5b)**: log error at WARN level. Publish MQTT event with `event=bounce_failed` (envelope: `{event, container, error_class, error_message, ts}`, QoS 1, retain=false). Do NOT update cooldown. Do NOT increment circuit-breaker count (so a series of bounce_failed don't trip the breaker prematurely). The next silence-check iteration retries normally (subject to cooldown if a prior success exists).
+
+**Helper signatures** (used in the implementation sketch and the unit tests):
+
+```python
+def recent_bounces(container: str, window_sec: int = CIRCUIT_BREAKER_WINDOW_SEC) -> int:
+    """Count bounces of `container` in the last `window_sec` seconds.
+    Excludes manual_webhook bounces — those bypass the breaker per FR-3.7."""
+    cutoff = int(time.time()) - window_sec
+    cur = db.execute(
+        "SELECT COUNT(*) FROM bounces WHERE container=? AND ts > ? AND reason != 'manual_webhook'",
+        (container, cutoff))
+    return cur.fetchone()[0]
+
+def record_bounce(container: str, reason: str) -> None:
+    """Insert a bounce row. Called only on successful Docker restart."""
+    db.execute("INSERT INTO bounces (container, reason, ts) VALUES (?, ?, ?)",
+               (container, reason, int(time.time())))
+    db.commit()
+
+def publish_event(event: str, container: str, **fields) -> None:
+    """Publish a JSON event to taptap/watchdog/events. Retain=true for circuit_breaker_*,
+    retain=false for bounce/bounce_failed. QoS 1 for all."""
+    payload = {"event": event, "container": container,
+               "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), **fields}
+    retain = event.startswith("circuit_breaker_")
+    mqtt_client.publish("taptap/watchdog/events", json.dumps(payload), qos=1, retain=retain)
+```
 
 **FR-3.14: Watchdog restart policy.** The watchdog container SHALL have `restart: unless-stopped` in `docker-compose.yml`. Rationale: if the watchdog itself crashes, we want it back up; if the operator explicitly stopped it, we want it to stay stopped.
 
 **FR-3.15: Logging.** The watchdog SHALL log to stdout (captured by Docker) at `INFO` level by default. Bounce decisions, MQTT connect/disconnect, and circuit-breaker state changes SHALL log at `INFO`. Per-message liveness updates SHALL log at `DEBUG` only.
 
-**FR-3.16: Heartbeat.** The watchdog SHALL publish a heartbeat to MQTT topic `taptap/watchdog/heartbeat` every 30 seconds with `retain=true` and QoS 1. Payload:
+**FR-3.16: Heartbeat.** The watchdog SHALL publish a heartbeat to MQTT topic `taptap/watchdog/heartbeat` every 30 seconds with `retain=true` and `QoS=0` (best-effort; losing one heartbeat is harmless because another fires in 30s — QoS 1 would generate broker ACK traffic for no benefit). Payload:
 
 ```json
 { "ts": "2026-05-02T18:30:42.123Z", "uptime_seconds": 12345 }
 ```
 
-This allows external observers (HA in particular) to detect when the watchdog *itself* has gone silent — a failure mode the watchdog cannot self-report. The retain flag ensures a subscriber connecting after a watchdog outage immediately sees the stale timestamp.
+`uptime_seconds` is an integer (process wall-clock seconds since startup, no sub-second precision needed).
+
+This allows external observers (HA in particular) to detect when the watchdog *itself* has gone silent — a failure mode the watchdog cannot self-report. The retain flag ensures a subscriber connecting after a watchdog outage immediately sees the stale timestamp (HA must extract `value_json.ts` per FR-4.1, not use receipt time).
+
+**Known limitation: broker-outage false positives.** If the broker goes down (the watchdog's MQTT loop_forever() is disconnected), heartbeat publishes are dropped silently. After 2 minutes, HA's `binary_sensor.taptap_watchdog_dead` flips to `on` and FR-4.5b fires "watchdog itself is silent" — even though the watchdog process may be fully alive. Once the broker recovers, the next heartbeat publishes within 30s and the binary_sensor returns to `off`. This false-positive is acceptable because (a) a broker outage IS a user-visible failure (no panel data), so paging the user is appropriate either way; (b) HA itself cannot publish notifications during the broker outage, so the alert won't actually fire until the broker comes back, at which point user impact has typically already self-resolved.
 
 ### FR-4: Home Assistant Integration
 
 **Design intent.** HA is *not* the first responder. The watchdog (FR-3) handles common failures autonomously; HA only fires for events the watchdog cannot handle silently or cannot detect at all. Specifically: (a) post-fact bounce confirmations, (b) recovery-failed escalations, and (c) watchdog-itself-dead detection. The watchdog's 5-minute bounce threshold (FR-3.4) is the *first* automated response to silence; HA notifications all happen at or after that point.
 
-**FR-4.1: MQTT sensors.** Three HA `sensor` entities SHALL track timestamps via the MQTT integration:
+**FR-4.1: MQTT sensors.** Three HA `sensor` entities SHALL track timestamps via the MQTT integration. Two of these capture *receipt time* of taptap state messages (because `taptap/{primary,secondary}/state` is published by upstream taptap-mqtt and its payload format — likely `online`/`offline` strings or a Home Assistant availability JSON — does not contain a self-reported timestamp). The watchdog heartbeat sensor extracts the embedded timestamp from the JSON payload.
 
-- `sensor.taptap_primary_last_seen` — fed by `taptap/primary/state` message receipts
-- `sensor.taptap_secondary_last_seen` — fed by `taptap/secondary/state` message receipts
-- `sensor.taptap_watchdog_last_seen` — fed by `taptap/watchdog/heartbeat` message receipts (per FR-3.16)
+**Important:** Because `taptap/watchdog/heartbeat` is published with `retain=true` (FR-3.16), HA receives the *last* heartbeat message immediately on every reconnect. If we used the message *receipt time* as the sensor value, a stale retained heartbeat would always look fresh and silently break watchdog-dead detection. Extracting the embedded `ts` field via `value_template` avoids this trap.
 
-All three use `device_class: timestamp`.
+```yaml
+mqtt:
+  sensor:
+    # Primary CCA last-seen — uses message receipt time; payload format from upstream taptap-mqtt.
+    - name: "taptap_primary_last_seen"
+      state_topic: "taptap/primary/state"
+      value_template: "{{ now().isoformat() }}"  # overwrite state with ingest time on each receipt
+      device_class: timestamp
+      unique_id: taptap_primary_last_seen
+
+    # Secondary CCA last-seen — same pattern.
+    - name: "taptap_secondary_last_seen"
+      state_topic: "taptap/secondary/state"
+      value_template: "{{ now().isoformat() }}"
+      device_class: timestamp
+      unique_id: taptap_secondary_last_seen
+
+    # Watchdog heartbeat — extract embedded ts from the JSON payload (do NOT use receipt time
+    # because the heartbeat is retain=true and a stale retained value would look fresh on HA restart).
+    - name: "taptap_watchdog_last_seen"
+      state_topic: "taptap/watchdog/heartbeat"
+      value_template: "{{ value_json.ts }}"
+      device_class: timestamp
+      unique_id: taptap_watchdog_last_seen
+```
+
+The MQTT integration's `last_changed` semantics combined with `device_class: timestamp` allow the binary_sensors in FR-4.2 to compute staleness via `(now() - states('sensor.taptap_primary_last_seen') | as_datetime)`.
+
+**Caveat on the receipt-time approach (state sensors):** if HA itself disconnects from the broker for a period, on reconnect it does NOT receive missed non-retained messages, so the sensor stops updating until the next live message arrives. This is acceptable: HA's broker-disconnect is itself the failure being detected (the user would see no panel data either way), and the watchdog is still acting independently.
 
 **FR-4.2: Binary sensors.** Three HA template `binary_sensor` entities SHALL evaluate to `on` (problem) based on staleness of the corresponding sensor in FR-4.1:
 
@@ -166,7 +313,7 @@ All three use `device_class: timestamp`.
 
 All three use `device_class: problem`.
 
-**FR-4.3: Watchdog-failed-to-recover automation.** An HA automation SHALL trigger when either `binary_sensor.taptap_*_unrecovered` from FR-4.2 changes to `on` and stays on `for: 30 seconds` (debounce). The automation SHALL call `notify.mobile_app_<device>` with:
+**FR-4.3: Watchdog-failed-to-recover automation.** An HA automation SHALL trigger when either `binary_sensor.taptap_*_unrecovered` from FR-4.2 changes to `on` and stays on `for: 30 seconds` (debounce). The 30s debounce filters single-message flicker (e.g., a late state message arriving right at the 7-min boundary). Persistent failures fire correctly because the binary_sensor stays `on` indefinitely once the underlying staleness exceeds the threshold. The automation SHALL call `notify.mobile_app_<device>` with:
 
 - Title: `Tigo: <which> CCA still silent — watchdog didn't recover it`
 - Body: `Silent for <N> minutes. Watchdog should have bounced at 5 min. Check watchdog logs and CCA hardware.`
@@ -191,7 +338,7 @@ This is informational ("the system self-healed"), not an alert. It exists so the
 **FR-4.5b: Watchdog-dead automation.** An HA automation SHALL trigger when `binary_sensor.taptap_watchdog_dead` (FR-4.2) changes to `on` and stays on `for: 30 seconds` (debounce). The automation SHALL call `notify.mobile_app_<device>` with:
 
 - Title: `Tigo: watchdog itself is silent`
-- Body: `No heartbeat for >2 min. Auto-recovery is offline. Check the watchdog container.`
+- Body: `No heartbeat for >2 min. Watchdog or broker may be down. Check container logs.`
 - Same non-critical notification level as FR-4.3.
 
 This is the only failure mode the watchdog cannot self-report — without HA monitoring the heartbeat, watchdog death would go undetected.
@@ -219,7 +366,7 @@ The Panels view is currently `type: panel`, which permits only one card. The exi
                   action: call-service
                   service: rest_command.taptap_bounce_primary
                   confirmation:
-                    text: "Restart taptap-primary container?"
+                    text: "Force-restart taptap-primary? This bypasses cooldown and circuit-breaker."
               - type: button
                 name: Bounce Secondary
                 icon: mdi:restart
@@ -227,26 +374,44 @@ The Panels view is currently `type: panel`, which permits only one card. The exi
                   action: call-service
                   service: rest_command.taptap_bounce_secondary
                   confirmation:
-                    text: "Restart taptap-secondary container?"
+                    text: "Force-restart taptap-secondary? This bypasses cooldown and circuit-breaker."
 ```
 
 The `confirmation` field is required on both buttons — manual bounce is a state-changing action and the user should be required to confirm before triggering. The buttons SHALL NOT have visual treatment that suggests urgency (no red coloring, warning icons, etc.).
 
-**FR-4.7: REST commands.** HA's `configuration.yaml` (via the existing `command_line: !include templates/command_line_sensors.yaml` pattern, or an inline `rest_command:` block) SHALL define two REST commands:
+**FR-4.7: REST commands.** HA's `configuration.yaml` (via the existing `command_line: !include templates/command_line_sensors.yaml` pattern, or an inline `rest_command:` block) SHALL define two REST commands. Use HA's secrets file (`secrets.yaml`) for the Pi address and the bounce token (FR-3.10) so configuration is portable:
 
 ```yaml
+# In secrets.yaml (NOT committed to the repo if it contains real credentials):
+# pi_host: "192.168.2.93"
+# bounce_token: "<long random string matching the watchdog's BOUNCE_TOKEN env var>"
+
 rest_command:
   taptap_bounce_primary:
-    url: "http://192.168.2.93:8080/bounce/primary"
+    url: !secret tigo_bounce_primary_url   # e.g. "http://192.168.2.93:8080/bounce/primary"
     method: POST
+    headers:
+      X-Bounce-Token: !secret tigo_bounce_token
     timeout: 10
   taptap_bounce_secondary:
-    url: "http://192.168.2.93:8080/bounce/secondary"
+    url: !secret tigo_bounce_secondary_url
     method: POST
+    headers:
+      X-Bounce-Token: !secret tigo_bounce_token
     timeout: 10
 ```
 
-The Pi LAN IP `192.168.2.93` SHALL be substituted from `.claude/env`'s `PI_HOST` at deploy time.
+**Deploy procedure.** A one-time setup step SHALL append entries to HA's `secrets.yaml`:
+
+```yaml
+tigo_bounce_primary_url:   "http://<PI_HOST>:8080/bounce/primary"
+tigo_bounce_secondary_url: "http://<PI_HOST>:8080/bounce/secondary"
+tigo_bounce_token:         "<BOUNCE_TOKEN value from tigo-mqtt/.env on the Pi>"
+```
+
+The substitution from `.claude/env` SHALL be performed by `dashboards/scripts/push_dashboard.py` (or a sibling script) at deploy time using `PI_HOST` and `BOUNCE_TOKEN` env vars. If the user uses HA OS or a different HA deployment, they may hand-edit `secrets.yaml` and document the values.
+
+**Timeout note.** The 10-second `timeout` is for the watchdog's HTTP response, not the container restart itself. Per NFR-2.4, the webhook responds in <5s; the container restart proceeds asynchronously after the response.
 
 **FR-4.8: Notification opt-out.** Each notification automation SHALL have a corresponding `input_boolean` that, when off, suppresses that notification. The automations SHALL gate on these booleans via condition. This lets the user mute alerts during planned maintenance.
 
@@ -273,7 +438,7 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 - "Watchdog circuit breaker tripped"
 - "HA notifications not arriving"
 
-**FR-5.3: README quick reference.** Add a one-paragraph mention of the watchdog and HA integration to the project README (if one exists; if not, this requirement is moot).
+**FR-5.3: README quick reference.** Add a one-paragraph mention of the watchdog and HA integration to `README.md` at the repository root (under a "Self-Healing System" subheading, near other operational references).
 
 ## Non-Functional Requirements
 
@@ -281,7 +446,15 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 
 **NFR-1.1: State files MUST NEVER be touched.** No watchdog code path, entrypoint change, or compose change SHALL read, write, move, or delete files under `tigo-mqtt/data/{primary,secondary}/taptap.state`. The watchdog container SHALL NOT mount the data volume.
 
-**NFR-1.2: Least-privilege Docker access.** The watchdog SHALL NOT mount `/var/run/docker.sock` directly. It SHALL communicate with `docker-socket-proxy` (image: `tecnativa/docker-socket-proxy:0.3.0`), which exposes only specific Docker API endpoints over a TCP port on the compose-internal network. Required endpoints: `CONTAINERS=1`, `POST=1`. All other endpoints (`IMAGES`, `NETWORKS`, `VOLUMES`, `EXEC`, `BUILD`, etc.) SHALL be `0`. The proxy SHALL bind only to the compose-internal network and SHALL NOT be exposed to the LAN.
+**NFR-1.2: Least-privilege Docker access.** The watchdog SHALL NOT mount `/var/run/docker.sock` directly. It SHALL communicate with `docker-socket-proxy` (image: `tecnativa/docker-socket-proxy:0.3.0`), which exposes only specific Docker API endpoints. Required endpoints: `CONTAINERS=1`, `POST=1`. All other endpoints (`IMAGES`, `NETWORKS`, `VOLUMES`, `EXEC`, `BUILD`, etc.) SHALL be `0`. The proxy SHALL NOT be reachable from the LAN.
+
+**Network topology (resolves the host-vs-bridge tension).** The existing tigo-mqtt services (`taptap-primary`, `taptap-secondary`, `temp-id-monitor`) use `network_mode: host` because they need access to the local-network MQTT broker on the NAS without DNS gymnastics. The watchdog and `docker-socket-proxy` SHALL also use `network_mode: host` for consistency. To preserve the LAN-isolation requirement for the proxy:
+
+- `docker-socket-proxy` SHALL bind to `127.0.0.1:2375` only (loopback). With host networking, this means it is reachable only from processes on the Pi itself, never from any LAN device. Set the compose service's command/env to bind explicitly: `ports: ["127.0.0.1:2375:2375"]` is NOT used (no `ports:` mapping at all under host networking — the bind is controlled by the proxy image's `LISTEN` env var or equivalent). The proxy image binds 0.0.0.0:2375 by default — the watchdog SHALL set `command: ["-listen", "127.0.0.1:2375"]` or whichever the upstream image supports to force loopback-only binding. If upstream doesn't support loopback binding, fall back to a dedicated bridge network (see alternative below).
+- The watchdog SHALL connect to the proxy via `DOCKER_PROXY_URL=http://127.0.0.1:2375`.
+- The watchdog's webhook SHALL bind to all interfaces on port 8080 (default behavior under host networking) so HA on a different LAN host can reach `http://<PI_HOST>:8080/bounce/...`. Authentication is required because port 8080 is LAN-reachable; see FR-3.10.
+
+**Alternative if loopback binding is unavailable in the proxy image:** Move both `taptap-watchdog` and `docker-socket-proxy` to a dedicated bridge network (e.g., `watchdog_net`). The watchdog connects to the proxy by service name (`http://docker-socket-proxy:2375`). The watchdog still needs access to the host MQTT broker — either dual-attach to host network (not supported in compose) or set `MQTT_SERVER` to the Pi's LAN IP (e.g., `192.168.2.93`) and rely on the bridge → host route. The webhook port 8080 must be exposed via `ports: ["8080:8080"]`. Document the chosen approach in the deployed `docker-compose.yml` comments.
 
 **NFR-1.3: Bounce audit trail.** Every bounce action (autonomous or manual) SHALL be persisted to SQLite (FR-3.13) and published to MQTT (FR-3.8). Loss of one signal SHALL NOT lose the audit record.
 
@@ -315,7 +488,21 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 
 ### NFR-5: Maintainability
 
-**NFR-5.1: All thresholds via env.** The 5-minute silence threshold, 15-minute cooldown, 3-bounces/hour circuit breaker, and 60-minute rolling window SHALL be configurable via environment variables (`SILENCE_THRESHOLD_SEC`, `COOLDOWN_SEC`, `CIRCUIT_BREAKER_BOUNCES`, `CIRCUIT_BREAKER_WINDOW_SEC`) with the default values listed.
+**NFR-5.1: All thresholds and identifiers via env.** All operational thresholds and container identifiers SHALL be configurable via environment variables. Defaults shown:
+
+| Env var                          | Default            | Used by   | Purpose                                              |
+|----------------------------------|--------------------|-----------|------------------------------------------------------|
+| `SILENCE_THRESHOLD_SEC`          | `300`              | FR-3.4    | Silence before auto-bounce                           |
+| `COOLDOWN_SEC`                   | `900`              | FR-3.6    | Per-container cooldown between auto-bounces          |
+| `CIRCUIT_BREAKER_BOUNCES`        | `3`                | FR-3.7    | Trip threshold per rolling window                    |
+| `CIRCUIT_BREAKER_WINDOW_SEC`     | `3600`             | FR-3.7    | Rolling window length                                |
+| `MQTT_RECONNECT_GRACE_CUTOFF_SEC`| `60`               | FR-3.12   | Disconnect duration above which last_seen resets     |
+| `PRIMARY_CONTAINER`              | `taptap-primary`   | FR-3.5    | Container name for primary CCA                       |
+| `SECONDARY_CONTAINER`            | `taptap-secondary` | FR-3.5    | Container name for secondary CCA                     |
+| `BOUNCE_TOKEN`                   | (required, no default) | FR-3.10 | Shared secret for webhook auth                     |
+| `DOCKER_PROXY_URL`               | `http://127.0.0.1:2375` | FR-3.5/NFR-1.2 | docker-socket-proxy endpoint                  |
+| `MQTT_SERVER`, `MQTT_USER`, `MQTT_PASS` | (required) | implementation | MQTT broker connection                          |
+| `WEBHOOK_PORT`                   | `8080`             | FR-3.10   | Webhook listen port                                  |
 
 **NFR-5.2: Static client IDs are an enabler.** Future debugging SHALL be able to grep `/volume1/docker/mosquitto/log/mosquitto.log` for `taptap-primary` and `taptap-secondary` to find connect/disconnect history. After this spec is implemented, the user SHALL be able to verify this by running `ssh nas1 "tail -10000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` and seeing connect events.
 
@@ -434,6 +621,8 @@ sequenceDiagram
    └───────────────────┘
 ```
 
+LAN addresses shown (Pi `192.168.2.93`, NAS broker `192.168.2.199`, HA `192.168.2.25`) are this deployment's. Substitute for your environment; the Pi address comes from `.claude/env`'s `PI_HOST`.
+
 ### Watchdog implementation sketch
 
 Pinned dependencies:
@@ -453,15 +642,20 @@ from fastapi import FastAPI, HTTPException
 import httpx
 import paho.mqtt.client as mqtt
 
-SILENCE_THRESHOLD_SEC      = int(os.environ.get("SILENCE_THRESHOLD_SEC", "300"))
-COOLDOWN_SEC               = int(os.environ.get("COOLDOWN_SEC", "900"))
-CIRCUIT_BREAKER_BOUNCES    = int(os.environ.get("CIRCUIT_BREAKER_BOUNCES", "3"))
-CIRCUIT_BREAKER_WINDOW_SEC = int(os.environ.get("CIRCUIT_BREAKER_WINDOW_SEC", "3600"))
+SILENCE_THRESHOLD_SEC          = int(os.environ.get("SILENCE_THRESHOLD_SEC", "300"))
+COOLDOWN_SEC                   = int(os.environ.get("COOLDOWN_SEC", "900"))
+CIRCUIT_BREAKER_BOUNCES        = int(os.environ.get("CIRCUIT_BREAKER_BOUNCES", "3"))
+CIRCUIT_BREAKER_WINDOW_SEC     = int(os.environ.get("CIRCUIT_BREAKER_WINDOW_SEC", "3600"))
+MQTT_RECONNECT_GRACE_CUTOFF_SEC = int(os.environ.get("MQTT_RECONNECT_GRACE_CUTOFF_SEC", "60"))
+PRIMARY_CONTAINER              = os.environ.get("PRIMARY_CONTAINER", "taptap-primary")
+SECONDARY_CONTAINER            = os.environ.get("SECONDARY_CONTAINER", "taptap-secondary")
+WEBHOOK_PORT                   = int(os.environ.get("WEBHOOK_PORT", "8080"))
 
-DOCKER_PROXY = os.environ["DOCKER_PROXY_URL"]      # e.g. http://docker-socket-proxy:2375
-MQTT_HOST    = os.environ["MQTT_SERVER"]
-MQTT_USER    = os.environ["MQTT_USER"]
-MQTT_PASS    = os.environ["MQTT_PASS"]
+DOCKER_PROXY  = os.environ.get("DOCKER_PROXY_URL", "http://127.0.0.1:2375")
+MQTT_HOST     = os.environ["MQTT_SERVER"]
+MQTT_USER     = os.environ["MQTT_USER"]
+MQTT_PASS     = os.environ["MQTT_PASS"]
+BOUNCE_TOKEN  = os.environ["BOUNCE_TOKEN"]   # required; no default
 
 DB_PATH = "/data/watchdog.db"
 
@@ -499,16 +693,40 @@ def bounce(container: str, reason: str, override: bool = False) -> dict:
             publish_event("circuit_breaker_tripped", container, bounces_in_window=recent)
             return {"skipped": "circuit_breaker", "container": container}
 
-    name = f"taptap-{container}"
-    r = httpx.post(f"{DOCKER_PROXY}/containers/{name}/restart", timeout=10.0)
-    r.raise_for_status()
+    name = PRIMARY_CONTAINER if container == "primary" else SECONDARY_CONTAINER
+    try:
+        r = httpx.post(f"{DOCKER_PROXY}/containers/{name}/restart", timeout=10.0)
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        publish_event("bounce_failed", container,
+                      error_class=type(exc).__name__, error_message=str(exc))
+        return {"ok": False, "error": str(exc)}
 
     state.last_bounce[container] = now
     record_bounce(container, reason)
-    publish_event("bounce", container, reason=reason, silent_seconds=int(now - state.last_seen[container]))
+    publish_event("bounce", container, reason=reason,
+                  silent_seconds=int(now - state.last_seen[container]))
     return {"ok": True, "bounced": name}
 
 # ... mqtt callbacks, FastAPI routes, silence-check loop ...
+```
+
+**Webhook auth middleware** (referenced by FR-3.10):
+
+```python
+from fastapi import Header, HTTPException
+import hmac
+
+def require_token(x_bounce_token: str = Header(default="")):
+    if not hmac.compare_digest(x_bounce_token, BOUNCE_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid bounce token")
+
+@app.post("/bounce/{cca}", dependencies=[Depends(require_token)])
+def manual_bounce(cca: str = Path(regex="^(primary|secondary)$")):
+    result = bounce(cca, reason="manual_webhook", override=True)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error"))
+    return result
 ```
 
 ### Threshold reference
@@ -517,10 +735,10 @@ Sequence (silent failure path, no user intervention):
 
 | T+    | Trigger                                  | Layer    | Action                                              |
 |-------|------------------------------------------|----------|-----------------------------------------------------|
-| 0:00  | CCA stops publishing                     | —        | (nothing yet)                                       |
-| 5:00  | Auto-bounce silence threshold            | Watchdog | `docker restart` via socket proxy                   |
-| 5:01  | Bounce event published to MQTT           | Watchdog | publish `taptap/watchdog/events`                    |
-| 5:02  | Bounce-confirmation push                 | HA       | "FYI: bounced primary"                              |
+| 0:00     | CCA stops publishing                     | —        | (nothing yet)                                       |
+| 5:00–5:30| Auto-bounce silence threshold (loop slop)| Watchdog | `docker restart` via socket proxy. Bounce fires anywhere in this 30s window because the silence-check loop runs every 30s (NFR-2.3). |
+| ~5:30    | Bounce event published to MQTT           | Watchdog | publish `taptap/watchdog/events`                    |
+| ~5:31    | Bounce-confirmation push                 | HA       | "FYI: bounced primary"                              |
 | 5:30  | (recovery succeeds) heartbeat resumes    | —        | done                                                |
 | 7:00  | (recovery failed) `*_unrecovered` → on   | HA       | binary_sensor flips                                 |
 | 7:30  | Unrecovered alert push                   | HA       | "still silent — watchdog didn't recover it"         |
@@ -531,15 +749,17 @@ Other thresholds:
 
 | Trigger                             | Layer    | Threshold     | Action                                       |
 |-------------------------------------|----------|---------------|----------------------------------------------|
-| Cooldown after bounce               | Watchdog | 15 min        | Skip subsequent auto-bounces                 |
-| Circuit-breaker bounces in window   | Watchdog | 3             | Trip; stop auto-bouncing                     |
+| Cooldown after bounce               | Watchdog | 15 min        | Skip subsequent auto-bounces. Clock starts on docker-socket-proxy 2xx. |
+| Circuit-breaker bounces in window   | Watchdog | 3             | Trip; stop auto-bouncing (manual webhook bypasses) |
 | Circuit-breaker rolling window      | Watchdog | 60 min        | Window for counting bounces                  |
 | Manual webhook                      | HA → WD  | on demand     | Bypass cooldown + circuit breaker            |
 | Silence-check loop frequency        | Watchdog | 30 s          | How often to evaluate thresholds             |
-| Watchdog heartbeat                  | Watchdog | 30 s          | Publish `taptap/watchdog/heartbeat`          |
-| Watchdog SQLite retention           | Watchdog | 24 h          | Old bounce records pruned on startup         |
+| Watchdog heartbeat                  | Watchdog | 30 s          | Publish `taptap/watchdog/heartbeat` (QoS 0 retain=true) |
+| Watchdog SQLite retention           | Watchdog | 24 h          | Old bounce records pruned on startup AND each loop |
 | Watchdog grace period after start   | Watchdog | initialize    | last_seen=now to avoid first-bounce          |
+| MQTT reconnect grace cutoff         | Watchdog | 60 s          | Disconnects > cutoff reset last_seen; ≤ cutoff preserve it |
 | Watchdog-dead detection             | HA       | 2 min         | binary_sensor + push (only HA can detect)    |
+| Webhook auth                        | HA → WD  | every request | `X-Bounce-Token` header (HMAC compared)      |
 
 ### Trade-off analysis
 
@@ -677,11 +897,46 @@ State files (NEVER MODIFIED — see NFR-1.1):
 
 ---
 
-**Specification Version:** 1.1
+**Specification Version:** 1.2
 **Last Updated:** May 2026
 **Authors:** Ian Scofield (with Claude)
 
 ## Changelog
+
+### v1.2 (May 2026)
+
+**Summary:** Review-driven hardening of the watchdog spec — networking topology, security, atomicity, and HA sensor correctness.
+
+**Changes:**
+- NFR-1.2 reworked: explicit network topology (host networking for consistency with existing services; `127.0.0.1:2375` loopback bind for docker-socket-proxy; alternative bridge-network path documented).
+- FR-3.12 expanded: short-disconnect (≤60s) preserves last_seen, long-disconnect (>60s) resets — avoids masking outages during watchdog-side network blips. New `reconnect_grace_applied` event.
+- FR-3.13 expanded: explicit operation ordering for bounce attempts (precondition → docker → SQLite + in-memory + MQTT, atomic-ish), helper signatures for `recent_bounces`, `record_bounce`, `publish_event`, dedicated `/data` volume mount, asyncio concurrency model, periodic prune.
+- FR-3.7 expanded: implicit trip/untrip via SQL count; in-memory `breaker_tripped` flag prevents republished trip events.
+- FR-3.9b added: `bounce_failed` events when docker-socket-proxy fails — promoted from Edge Cases.
+- FR-2.3 / FR-2.4 merged into a single fail-loud Dockerfile patch; idempotency via `diff -q` rather than ambiguous "no-op or fail".
+- FR-2.5 expanded: TOPIC_NAME → CLIENT_ID slugification with examples.
+- FR-2.6 expanded: cited paho-mqtt 1.6.1 source for empty-string client_id behavior.
+- FR-3.10 expanded: webhook authentication via `X-Bounce-Token` header (constant-time compare); 404 for unknown CCA path.
+- FR-3.5 / FR-3.10: container names configurable via `PRIMARY_CONTAINER` / `SECONDARY_CONTAINER` env vars (matches temp-id-monitor pattern).
+- FR-3.16: heartbeat downgraded to QoS 0 (retain=true); known-limitation note for broker-outage false-positive watchdog-dead alerts.
+- FR-1.1: `rm -rf /run/taptap/*` + dotfile glob instead of removing the bind-mount itself.
+- FR-1.2: explicit branch for "cause indeterminate" (logs rolled over).
+- FR-4.1: explicit MQTT sensor blocks with `value_template` — receipt-time for state topics, embedded `ts` for heartbeat (avoids stale-retained-message false freshness).
+- FR-4.7: secrets-file-driven URLs and bounce token; deploy substitution via existing dashboard push script.
+- FR-4.6 confirmation text updated to disclose cooldown / circuit-breaker bypass.
+- NFR-5.1: full env-var table.
+- Architecture diagram: LAN address note.
+- README and `bounce_failed` event added to FR scope.
+
+**Rationale:**
+- The original v1.1 specified a watchdog-on-bridge-network design that conflicted with the existing services' host networking; this had to be reconciled before implementation.
+- Several requirements ("LAN-only via Docker network exposure", "patch SHALL be idempotent") were ambiguous enough that two implementers would have diverged. The v1.2 specifies which option to use.
+- HA sensor configuration was the largest implementation gap — `device_class: timestamp` requires the *value* to be a timestamp, which the original payload did not provide. The v1.2 specifies the value_template for each sensor explicitly, including the critical retain-stale trap for the heartbeat.
+
+**Impact:**
+- Implementer cost increases moderately (token validation, secrets file, slugification) but each change is small and well-bounded.
+- Breaking from v1.1 to v1.2: BOUNCE_TOKEN becomes a required env var; HA `rest_command` URLs migrate to secrets file references; webhook returns 404 (was 400) for invalid CCA paths.
+- No state files touched (NFR-1.1 still upheld throughout).
 
 ### v1.1 (May 2026)
 
