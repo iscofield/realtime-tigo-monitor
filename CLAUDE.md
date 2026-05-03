@@ -188,11 +188,33 @@ All serial devices on the Pi use **persistent udev symlinks** instead of raw `/d
 
 | Symlink | Adapter | Interface | Device |
 |---------|---------|-----------|--------|
-| `/dev/tigo-primary` | WCH quad `BC5697ABCD` | `04` (port 3) | Tigo CCA primary |
-| `/dev/tigo-secondary` | WCH quad `BC5697ABCD` | `06` (port 4) | Tigo CCA secondary |
-| `/dev/inverter-primary-top` | WCH quad `BC5697ABCD` | `00` (port 1) | EG4 inverter primary top |
-| `/dev/inverter-primary-bottom` | WCH quad `BC5697ABCD` | `02` (port 2) | EG4 inverter primary bottom |
-| `/dev/inverter-secondary-top` | FTDI `BG018YLI` | — | EG4 inverter secondary top |
+| `/dev/tigo-primary` | WCH quad `<WCH_PRIMARY_SERIAL>` | `04` (port 3) | Tigo CCA primary |
+| `/dev/tigo-secondary` | WCH quad `<WCH_PRIMARY_SERIAL>` | `06` (port 4) | Tigo CCA secondary |
+| `/dev/inverter-primary-top` | WCH quad `<WCH_PRIMARY_SERIAL>` | `00` (port 1) | EG4 inverter primary top |
+| `/dev/inverter-primary-bottom` | WCH quad `<WCH_PRIMARY_SERIAL>` | `02` (port 2) | EG4 inverter primary bottom |
+| `/dev/inverter-secondary-top` | WCH quad `<WCH_SECONDARY_SERIAL>` | `00` (port 1) | EG4 inverter secondary top |
+
+The actual adapter serial numbers for this deployment are in `/etc/udev/rules.d/99-serial-devices.rules` on the Pi (operator-specific values not committed to the repo).
+
+### ModemManager gotcha
+
+The Pi runs `ModemManager` by default. WCH/CH340-based USB-Serial adapters appear as CDC-ACM devices (`/dev/ttyACM*`) and ModemManager misidentifies them as cellular modems — probing them with AT commands at boot. This briefly holds the port open and causes the application's first read to fail with `[Errno 16] Resource busy`.
+
+The udev rules file at `/etc/udev/rules.d/99-serial-devices.rules` includes a global ModemManager opt-out for any adapter matching `vendor=1a86, product=55d5` (WCH Quad Serial):
+
+```
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="1a86", ENV{ID_MODEL_ID}=="55d5", ENV{ID_MM_DEVICE_IGNORE}="1"
+```
+
+This must come BEFORE the SYMLINK rules in the file. If a new adapter type (e.g., FTDI) is added later that ModemManager misbehaves on, add another opt-out line for that vendor/product pair.
+
+After editing the udev rules:
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=tty --action=add
+sudo systemctl restart ModemManager   # required to drop existing ports it's holding
+```
 
 The inverter (ppg) containers are managed in a separate repo: `nas_docker/solar_assistant/PythonProtocolGateway/`
 
