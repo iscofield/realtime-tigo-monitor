@@ -97,6 +97,49 @@ docker logs dashboard-backend-1 --tail 50
 2. Verify MQTT broker is accessible
 3. Check USB connections on Raspberry Pi
 
+### Container Restart Policy: taptap-* stays dead despite `restart: always`
+
+**Symptoms:** A `taptap-primary` or `taptap-secondary` container with `restart: always` (or `unless-stopped`) is in `Exited` state and is not being restarted by the Docker daemon, even though Docker should auto-restart on any exit.
+
+**Background — the 2026-04-20 outage:**
+
+Both `taptap-primary` and `taptap-secondary` exited at exactly the same millisecond on 2026-04-20 16:00:13 (after a broker disconnect, rc=7) and stayed dead for 12 days. The fault chain was:
+
+1. MQTT broker disconnected both clients (rc=7 from paho).
+2. taptap-mqtt called `sys.exit(1)` rather than reconnecting.
+3. The previous entrypoint cleanup (`rm -f /run/taptap/taptap.run`) didn't handle a leftover `/run/taptap` *directory* with stale contents. On restart, taptap-mqtt's `os.makedirs("/run/taptap")` raised `[Errno 17] File exists`.
+4. Docker's `restart: always` *did* try to restart (RestartCount went from 0 → 1) but the container failed to come back, and after that single retry the daemon stopped looping.
+
+**FR-1.2 forensic findings (2026-05-03):**
+
+12 days after the failure, evidence is stale:
+
+- `docker inspect taptap-{primary,secondary} --format '{{.RestartCount}}'` → both report `1`. Docker tried to restart at least once.
+- `journalctl -u docker --since '2026-04-20 15:00' --until '2026-04-20 17:00'` → empty. systemd-journald's default retention had rolled the relevant window.
+- `docker events --since '2026-04-20T15:00:00' --until '2026-04-20T17:00:00'` → empty. Docker's event history is in-memory and does not persist across daemon restarts.
+
+**Why `restart: always` did not loop:** indeterminate from available evidence. The most plausible explanation given RestartCount=1: the daemon hit Docker's exponential backoff cap after the first failed restart attempt, and subsequent retries were spaced far enough apart that they never reached steady state. An alternative explanation — that an admin issued `docker stop` (which sets a `manuallyStopped` flag suppressing auto-restart) — is unsupported by any evidence and inconsistent with the symmetric exit timestamps on both containers.
+
+**Mitigation (shipped in PR 1, FR-1.1):**
+
+The entrypoint now does `rm -rf /run/taptap/* /run/taptap/.[!.]* && mkdir -p /run/taptap` instead of just `rm -f /run/taptap/taptap.run`, which handles the directory-with-stale-contents case the old entrypoint missed. The watchdog (PR 2) is the authoritative recovery mechanism going forward; `restart: always` is best-effort.
+
+**If you encounter this again:**
+
+1. Capture forensics *immediately* — `journalctl` and `docker events` history is short-lived:
+   ```bash
+   docker inspect taptap-primary taptap-secondary --format '{{.Name}}: RestartCount={{.RestartCount}} Exit={{.State.ExitCode}} Finished={{.State.FinishedAt}}'
+   sudo journalctl -u docker --since '15 minutes ago' > /tmp/docker-daemon.log
+   sudo docker events --since '15m' &  # capture going forward
+   ```
+2. Rebuild and redeploy if the entrypoint or Dockerfile has changed:
+   ```bash
+   cd tigo-mqtt
+   docker compose build --no-cache taptap-primary taptap-secondary
+   docker compose up -d
+   ```
+3. If the watchdog (PR 2+) is deployed, manually trigger a bounce via its webhook to confirm recovery works end-to-end.
+
 ### MQTT Connection Issues
 
 **Symptoms:** Backend logs show "Connection refused" or "Authentication failed".
