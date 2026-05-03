@@ -218,6 +218,88 @@ sudo systemctl restart ModemManager   # required to drop existing ports it's hol
 
 The inverter (ppg) containers are managed in a separate repo: `nas_docker/solar_assistant/PythonProtocolGateway/`
 
+## Pi Resiliency & Re-setup Reference
+
+This repo deploys to a Raspberry Pi that's shared with the PPG inverter containers. Both projects rely on the same physical infrastructure (Pi, USB-Serial adapters, NAS CIFS mount, MQTT broker). The mechanisms below were progressively built up to address concrete failures observed in production. **When provisioning a new Pi (or restoring an existing one after a wipe), all of these need to be in place.**
+
+### Mechanisms in place
+
+| # | Mechanism | Location | What it fixes |
+|---|---|---|---|
+| 1 | Persistent USB serial symlinks | `/etc/udev/rules.d/99-serial-devices.rules` (on Pi, NOT in repo) | ttyACM/ttyUSB numbers shift across reboots; symlinks match on adapter serial + interface |
+| 2 | ModemManager opt-out for WCH adapters | Same udev rules file | `[Errno 16] Resource busy` when ModemManager probes new ttyACM ports with AT commands |
+| 3 | Boot-time mount/docker race fix | `/etc/systemd/system/mnt-nas.mount.d/wait-for-network.conf` and `docker.service.d/wait-for-mnt-nas.conf` (on Pi) | `Network is unreachable` on CIFS mount at boot; Docker starts before NAS mount is ready |
+| 4 | Container entrypoint hardening | `tigo-mqtt/entrypoint.sh` (in repo, baked into image) | EEXIST on stale `/run/taptap/` directory; cold-boot race where container starts before udev creates `/dev/tigo-*` |
+| 5 | Static MQTT client IDs | `tigo-mqtt/Dockerfile` patches taptap-mqtt at build time; `MQTT_CLIENT_ID` env var in deployed `docker-compose.yml` (NOT in repo) | Broker logs unmineable when paho auto-generates random client IDs |
+
+### Verifying each mechanism is active
+
+After a reboot, run these from your workstation:
+
+```bash
+PI_HOST=$(grep '^PI_HOST=' .claude/env | cut -d= -f2)
+PI_USER=$(grep '^PI_USER=' .claude/env | cut -d= -f2)
+PI_PASS=$(grep '^PI_PASS=' .claude/env | cut -d= -f2)
+
+# (1) USB symlinks resolved
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+  "ls -la /dev/tigo-* /dev/inverter-*"
+# Expected: all 5 symlinks present, pointing at ttyACM* devices
+
+# (2) ModemManager IGNORE flag set on new adapter
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+  "udevadm info --query=property --name=/dev/tigo-primary | grep ID_MM_DEVICE_IGNORE"
+# Expected: ID_MM_DEVICE_IGNORE=1
+
+# (3) NAS auto-mounted (no manual reset-failed)
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+  "mount | grep nas && systemctl cat mnt-nas.mount | grep ExecStartPre"
+# Expected: mount line present, drop-in shows the ping-loop ExecStartPre
+
+# (4) Entrypoint hardening baked into image
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+  "sudo docker logs taptap-primary 2>&1 | grep -E 'Serial device|rm -rf' | head -2"
+# Expected: 'Serial device /dev/tigo-primary is present.' (from wait-for-device)
+
+# (5) Static client ID in use
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+  "sudo docker run --rm --entrypoint sh tigo-mqtt-taptap-primary -c 'grep mqtt.Client /app/taptap-mqtt.py'"
+# Expected: line shows mqtt.Client(client_id=config.get("MQTT", "CLIENT_ID", fallback=""))
+```
+
+### Re-setup checklist for a fresh Pi
+
+If the Pi is wiped or replaced, do these in order:
+
+1. **Base OS** — install Raspberry Pi OS, enable SSH, set hostname, configure `solar-assistant` user with `dialout` group membership.
+2. **Network** — static IP or DHCP reservation matching `<PI_HOST>` in `.claude/env`. Verify routable to `<MQTT_BROKER_HOST>` (NAS).
+3. **CIFS credentials + mount unit** — create `/etc/smbcredentials` + `/etc/systemd/system/mnt-nas.mount` + `/etc/systemd/system/mnt-nas.automount` for `//<MQTT_BROKER_HOST>/docker → /mnt/nas`. (Both files are NOT tracked here — they contain operator-specific paths/credentials.)
+4. **Boot-hardening drop-ins** — clone this repo onto the NAS so `/mnt/nas/solar_tigo_viewer/tigo-mqtt/` exists, then:
+   ```bash
+   sudo sh /mnt/nas/solar_tigo_viewer/tigo-mqtt/scripts/install-pi-boot-hardening.sh
+   ```
+5. **Plug in USB-Serial adapters** — capture the new adapter serials with:
+   ```bash
+   for d in /dev/ttyACM* /dev/ttyUSB*; do echo "=== $d ==="; udevadm info --query=property --name="$d" | grep -E 'ID_SERIAL_SHORT|ID_USB_INTERFACE_NUM|ID_VENDOR_ID|ID_MODEL_ID'; done
+   ```
+6. **Write `/etc/udev/rules.d/99-serial-devices.rules`** — start with the ModemManager opt-out for any vendor/model the operator's adapters use, then SYMLINK rules for each port. See "USB Serial Device Mapping" + "ModemManager gotcha" sections above.
+7. **Reload udev**: `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty --action=add && sudo systemctl restart ModemManager`. Verify with `ls -la /dev/tigo-* /dev/inverter-*`.
+8. **Build images**: `cd /mnt/nas/solar_tigo_viewer/tigo-mqtt && sudo docker compose build --no-cache`.
+9. **Create deployed `docker-compose.yml`** — copy from `docker-compose.sample.yml`, fill in `MQTT_CLIENT_ID=taptap-{primary,secondary}` env vars per service. This file is NOT tracked.
+10. **Create `.env`** with MQTT credentials (see `.env.example`).
+11. **Bring up**: `sudo docker compose up -d`. Verify state files at `/mnt/nas/solar_tigo_viewer/tigo-mqtt/data/{primary,secondary}/taptap.state` exist (if not, you'll need to wait for an infrastructure report — see the state files section above).
+12. **Reboot test** — issue `sudo reboot`, verify the Pi recovers without manual intervention in <3 minutes, all 6 containers come up automatically.
+
+### When to update this section
+
+Update this list and the verification commands whenever:
+- A new resiliency mechanism is added (new udev rule, new systemd drop-in, new entrypoint guard)
+- A failure mode is discovered that's NOT covered by the existing mechanisms (add the new fix here AND in `docs/TROUBLESHOOTING.md`)
+- A mechanism's location/file moves
+- An installer script's interface changes
+
+The corresponding section in `~/code/nas_docker/solar_assistant/CLAUDE.md` is the operator-facing twin of this — keep them in sync (this one uses placeholders since it's public, that one uses literal values for the operator's deployment).
+
 ## Deployment Environments
 
 | Environment | Tigo MQTT Service | Dashboard Service |
