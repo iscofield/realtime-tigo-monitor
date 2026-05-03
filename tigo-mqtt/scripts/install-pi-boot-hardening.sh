@@ -30,13 +30,16 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Where the NAS is — read from the existing mount unit, fall back to the
-# project's documented broker host. The ping-loop in the drop-in needs an IP
-# or hostname that resolves on the boot-time network.
-NAS_HOST=$(awk -F'[/=]' '/^What/ {print $5}' /etc/systemd/system/mnt-nas.mount 2>/dev/null || true)
-if [ -z "${NAS_HOST}" ]; then
+# Where the NAS is — read from the existing mount unit. The 'What=' line
+# looks like 'What=//192.168.2.199/docker' (CIFS) or 'What=192.168.2.199:/docker'
+# (NFS). Extract just the host portion. The ping-loop in the drop-in needs
+# an IP or hostname that resolves on the boot-time network — DNS may not be
+# fully ready, so a literal IP is safest.
+NAS_HOST=$(grep '^What=' /etc/systemd/system/mnt-nas.mount 2>/dev/null \
+    | sed -E -e 's|^What=//([^/]+)/.*|\1|' -e 's|^What=([^:]+):.*|\1|')
+if [ -z "${NAS_HOST}" ] || [ "${NAS_HOST}" = "$(grep '^What=' /etc/systemd/system/mnt-nas.mount)" ]; then
     echo "ERROR: could not extract NAS host from /etc/systemd/system/mnt-nas.mount" >&2
-    echo "       set NAS_HOST manually and re-run, or check the unit file exists." >&2
+    echo "       set NAS_HOST in this script manually and re-run." >&2
     exit 1
 fi
 
