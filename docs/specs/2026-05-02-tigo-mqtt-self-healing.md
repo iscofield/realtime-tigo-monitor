@@ -1,6 +1,22 @@
 **Status:** Draft
 **Date:** 2026-05-02
 
+> **Placeholder convention.** This spec is checked into a public GitHub repository. Environment-specific values are written as angle-bracketed placeholders that the implementer substitutes from `.claude/env`, `secrets.yaml`, or compose env files at deploy time. None of these values are committed in plaintext. The placeholders used:
+>
+> | Placeholder | Meaning | Source |
+> |---|---|---|
+> | `<PI_HOST>` | LAN IP/hostname of the Raspberry Pi running tigo-mqtt | `.claude/env` `PI_HOST` |
+> | `<MQTT_BROKER_HOST>` | LAN IP/hostname of the MQTT broker | `tigo-mqtt/.env` `MQTT_SERVER` |
+> | `<HA_HOST>` | LAN IP/hostname of the Home Assistant instance | operator-supplied |
+> | `<NAS_HOST>` | SSH alias / hostname of the NAS where the broker and HA configs live | operator-supplied (`~/.ssh/config`) |
+> | `<your-dashboard-host>` | Public DNS for the deployed dashboard frontend (e.g. behind a reverse proxy) | operator-supplied |
+> | `<HA_CONFIG_ROOT>` | Operator's local path to the Home Assistant config directory | operator-supplied |
+> | `<HA_DASHBOARDS_DIR>` | Path to the HA dashboards directory under `<HA_CONFIG_ROOT>` | derived |
+> | `<HA_CONFIG_MOUNT>` | SMB/local mount point used by HA push scripts | operator-supplied |
+> | `<MQTT_BROKER_CONFIG_DIR>` | Operator's local path to the Mosquitto config directory | operator-supplied |
+>
+> Implementations and deployed configs SHALL parameterize all of the above via environment variables or secrets management — never hardcode an operator-specific value into a tracked file. See FR-5.5 for enforcement.
+
 # Tigo MQTT Self-Healing System
 
 A four-layer system that detects when the `taptap-{primary,secondary}` containers stop publishing to MQTT and recovers automatically: (1) root-cause hardening of the entrypoint, (2) static MQTT client IDs for log mineability, (3) a Pi-side watchdog sidecar that auto-restarts silent containers with circuit-breaker safety rails, and (4) Home Assistant integration that surfaces silence and bounce events as non-critical mobile notifications and exposes a manual bounce button.
@@ -343,9 +359,9 @@ This is informational ("the system self-healed"), not an alert. It exists so the
 
 This is the only failure mode the watchdog cannot self-report — without HA monitoring the heartbeat, watchdog death would go undetected.
 
-**FR-4.6: Manual bounce dashboard buttons.** The buttons SHALL be added to the **Panels page of the Solar dashboard**, located at `~/code/nas_docker/solar_assistant/dashboards/solar_dashboard.yaml`, in the view with `path: panels` (currently around line 4151).
+**FR-4.6: Manual bounce dashboard buttons.** The buttons SHALL be added to the **Panels page of the Solar dashboard**, located at `<HA_DASHBOARDS_DIR>/solar_dashboard.yaml`, in the view with `path: panels` (currently around line 4151).
 
-The Panels view is currently `type: panel`, which permits only one card. The existing `custom:addon-iframe-card` (pointing to `https://tigo.casadesco.com/?view=layout&mode=watts`) SHALL be wrapped in a `vertical-stack` card so the iframe and the bounce buttons can both live in the single allowed slot. Layout:
+The Panels view is currently `type: panel`, which permits only one card. The existing `custom:addon-iframe-card` (pointing to `https://<your-dashboard-host>/?view=layout&mode=watts`) SHALL be wrapped in a `vertical-stack` card so the iframe and the bounce buttons can both live in the single allowed slot. Layout:
 
 ```yaml
   - title: Panels
@@ -355,7 +371,7 @@ The Panels view is currently `type: panel`, which permits only one card. The exi
       - type: vertical-stack
         cards:
           - type: custom:addon-iframe-card
-            url: "https://tigo.casadesco.com/?view=layout&mode=watts"
+            url: "https://<your-dashboard-host>/?view=layout&mode=watts"
             aspect_ratio: "150%"
           - type: horizontal-stack
             cards:
@@ -383,12 +399,12 @@ The `confirmation` field is required on both buttons — manual bounce is a stat
 
 ```yaml
 # In secrets.yaml (NOT committed to the repo if it contains real credentials):
-# pi_host: "192.168.2.93"
+# pi_host: "<PI_HOST>"
 # bounce_token: "<long random string matching the watchdog's BOUNCE_TOKEN env var>"
 
 rest_command:
   taptap_bounce_primary:
-    url: !secret tigo_bounce_primary_url   # e.g. "http://192.168.2.93:8080/bounce/primary"
+    url: !secret tigo_bounce_primary_url   # e.g. "http://<PI_HOST>:8080/bounce/primary"
     method: POST
     headers:
       X-Bounce-Token: !secret tigo_bounce_token
@@ -429,8 +445,8 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 **FR-5.1: CLAUDE.md updates.** `CLAUDE.md` SHALL gain a new section "Self-Healing System" documenting:
 - The watchdog's purpose and thresholds
 - How to view watchdog logs: `sudo docker logs taptap-watchdog`
-- How to view watchdog state: `curl http://192.168.2.93:8080/healthz | jq`
-- How to manually trigger a bounce: `curl -X POST http://192.168.2.93:8080/bounce/primary`
+- How to view watchdog state: `curl http://<PI_HOST>:8080/healthz | jq`
+- How to manually trigger a bounce: `curl -X POST http://<PI_HOST>:8080/bounce/primary`
 - How to disable the watchdog (compose stop) for planned maintenance
 
 **FR-5.2: Troubleshooting.** `docs/TROUBLESHOOTING.md` SHALL gain entries for:
@@ -438,7 +454,33 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 - "Watchdog circuit breaker tripped"
 - "HA notifications not arriving"
 
-**FR-5.3: README quick reference.** Add a one-paragraph mention of the watchdog and HA integration to `README.md` at the repository root (under a "Self-Healing System" subheading, near other operational references).
+**FR-5.3: README updates.** `README.md` at the repository root SHALL gain a new top-level section **"Self-Healing System"** placed after the existing operational sections. Required content:
+
+- One-paragraph overview of what the watchdog does and why it exists (mention the 5-minute silence threshold, autonomous bounce, circuit breaker).
+- Subsection **"Configuration"**: a table listing every watchdog environment variable (name, default, description) — at minimum `SILENCE_THRESHOLD_SEC`, `COOLDOWN_SEC`, `CIRCUIT_BREAKER_BOUNCES`, `CIRCUIT_BREAKER_WINDOW_SEC`, `MQTT_RECONNECT_GRACE_CUTOFF_SEC`, `BOUNCE_TOKEN`, `MQTT_CLIENT_ID`, `DOCKER_PROXY_URL`, `MQTT_SERVER`/`MQTT_USER`/`MQTT_PASS`. The table SHALL use placeholder values (e.g., `<PI_HOST>`) for any host-specific examples — see FR-5.5.
+- Subsection **"Operating the watchdog"**: how to view logs (`sudo docker logs taptap-watchdog`), how to query state (`curl http://<PI_HOST>:8080/healthz | jq`), how to manually bounce (with `BOUNCE_TOKEN` example via `-H 'X-Bounce-Token: ...'`), and how to disable for planned maintenance (`docker compose stop taptap-watchdog`).
+- Subsection **"Optional Home Assistant integration"**: short description of the alerting flow, with a link to a new setup guide at `docs/guides/ha-integration.md`. The README itself SHALL NOT contain step-by-step HA YAML — that lives in the guide.
+
+The README SHALL NOT include any photographs, screenshots, or example URLs that identify a specific deployment. Where an example URL is helpful, use the placeholder `<your-dashboard-host>`.
+
+**FR-5.4: HA integration setup guide.** A new file `docs/guides/ha-integration.md` SHALL document, with placeholder values throughout, how to wire up the HA side: the MQTT sensor blocks, template binary_sensors, automations, rest_commands, secrets entries, and dashboard buttons. The guide SHALL include a "What you'll need" checklist (HA running, MQTT broker reachable from HA, watchdog running, your `BOUNCE_TOKEN` and `<PI_HOST>` known) and SHALL NOT contain operator-specific values.
+
+**FR-5.5: Public-repo cleanliness (enforcement).** No file checked into the repository SHALL contain operator-specific values (LAN IPs, public hostnames, personal paths, SSH aliases, secret tokens). Examples SHALL use the placeholder convention from the spec preamble.
+
+This requirement applies to: source code, Dockerfile, `docker-compose.sample.yml`, `config-template.ini`, scripts under `scripts/`, all files under `docs/` (including new specs and guides added by this implementation), README.md, CLAUDE.md, and any HA YAML examples.
+
+To verify before committing each PR, the implementer SHALL run a check (manually or via a pre-commit hook):
+
+```bash
+# Find any IPs, common personal paths, or SSH aliases in tracked files.
+git ls-files \
+  | xargs grep -InE '\b192\.168\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\.casadesco\.|/Users/[a-z]+|/home/[a-z]+|~/code/' \
+  | grep -vE '^\.gitignore|^\.claude/'
+```
+
+This grep SHALL produce no output before the PR is merged. If a placeholder must contain a literal IP for context (e.g., a default value documented in the README), prefix it with the placeholder name in the same line so it's clearly marked as an example, e.g., `<PI_HOST>  # e.g. 192.168.1.50`.
+
+The existing `.gitignore` already excludes `.claude/`, which is the canonical location for operator-specific values.
 
 ## Non-Functional Requirements
 
@@ -454,7 +496,7 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 - The watchdog SHALL connect to the proxy via `DOCKER_PROXY_URL=http://127.0.0.1:2375`.
 - The watchdog's webhook SHALL bind to all interfaces on port 8080 (default behavior under host networking) so HA on a different LAN host can reach `http://<PI_HOST>:8080/bounce/...`. Authentication is required because port 8080 is LAN-reachable; see FR-3.10.
 
-**Alternative if loopback binding is unavailable in the proxy image:** Move both `taptap-watchdog` and `docker-socket-proxy` to a dedicated bridge network (e.g., `watchdog_net`). The watchdog connects to the proxy by service name (`http://docker-socket-proxy:2375`). The watchdog still needs access to the host MQTT broker — either dual-attach to host network (not supported in compose) or set `MQTT_SERVER` to the Pi's LAN IP (e.g., `192.168.2.93`) and rely on the bridge → host route. The webhook port 8080 must be exposed via `ports: ["8080:8080"]`. Document the chosen approach in the deployed `docker-compose.yml` comments.
+**Alternative if loopback binding is unavailable in the proxy image:** Move both `taptap-watchdog` and `docker-socket-proxy` to a dedicated bridge network (e.g., `watchdog_net`). The watchdog connects to the proxy by service name (`http://docker-socket-proxy:2375`). The watchdog still needs access to the host MQTT broker — either dual-attach to host network (not supported in compose) or set `MQTT_SERVER` to the Pi's LAN IP (e.g., `<PI_HOST>`) and rely on the bridge → host route. The webhook port 8080 must be exposed via `ports: ["8080:8080"]`. Document the chosen approach in the deployed `docker-compose.yml` comments.
 
 **NFR-1.3: Bounce audit trail.** Every bounce action (autonomous or manual) SHALL be persisted to SQLite (FR-3.13) and published to MQTT (FR-3.8). Loss of one signal SHALL NOT lose the audit record.
 
@@ -504,7 +546,7 @@ All four input_booleans SHALL default to `on` (alerts enabled).
 | `MQTT_SERVER`, `MQTT_USER`, `MQTT_PASS` | (required) | implementation | MQTT broker connection                          |
 | `WEBHOOK_PORT`                   | `8080`             | FR-3.10   | Webhook listen port                                  |
 
-**NFR-5.2: Static client IDs are an enabler.** Future debugging SHALL be able to grep `/volume1/docker/mosquitto/log/mosquitto.log` for `taptap-primary` and `taptap-secondary` to find connect/disconnect history. After this spec is implemented, the user SHALL be able to verify this by running `ssh nas1 "tail -10000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` and seeing connect events.
+**NFR-5.2: Static client IDs are an enabler.** Future debugging SHALL be able to grep `/volume1/docker/mosquitto/log/mosquitto.log` for `taptap-primary` and `taptap-secondary` to find connect/disconnect history. After this spec is implemented, the user SHALL be able to verify this by running `ssh <NAS_HOST> "tail -10000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` and seeing connect events.
 
 ## High Level Design
 
@@ -590,7 +632,7 @@ sequenceDiagram
 │         │                  │                                       │
 │  ┌──────┴──────────────────┴──────┐                                │
 │  │  Mosquitto broker on NAS       │                                │
-│  │  192.168.2.199:1883            │◀──────────┐                    │
+│  │  <MQTT_BROKER_HOST>:1883            │◀──────────┐                    │
 │  └──────┬─────────────────────────┘           │                    │
 │         │                                     │                    │
 │         │ subscribe state + watchdog events   │ publish events     │
@@ -611,7 +653,7 @@ sequenceDiagram
           │
    ┌──────┴────────────┐
    │ Home Assistant    │
-   │ 192.168.2.25:8123 │
+   │ <HA_HOST>:8123 │
    │                   │     mobile_app push (NOT critical)
    │  - sensors        │────────────────────────▶  📱 user
    │  - binary_sensors │
@@ -621,7 +663,7 @@ sequenceDiagram
    └───────────────────┘
 ```
 
-LAN addresses shown (Pi `192.168.2.93`, NAS broker `192.168.2.199`, HA `192.168.2.25`) are this deployment's. Substitute for your environment; the Pi address comes from `.claude/env`'s `PI_HOST`.
+LAN addresses shown (Pi `<PI_HOST>`, NAS broker `<MQTT_BROKER_HOST>`, HA `<HA_HOST>`) are this deployment's. Substitute for your environment; the Pi address comes from `.claude/env`'s `PI_HOST`.
 
 ### Watchdog implementation sketch
 
@@ -827,7 +869,7 @@ Small, low-risk. Land first to fix the immediate fragility.
 5. **FR-2.3, FR-2.4**: Add the fail-loud sed patch (with `diff -q` idempotency check) and `grep -q` post-verification to `Dockerfile`.
 6. **FR-2.5**: Update `dashboard/backend/app/services/tigo_mqtt_generator.py` (with TOPIC_NAME → CLIENT_ID slugification) and `scripts/check-config-sync.py`.
 7. Update the deployed `docker-compose.yml` on the Pi with `MQTT_CLIENT_ID` env vars; mirror in `docker-compose.sample.yml`.
-8. Verify in mosquitto broker logs: `ssh nas1 "tail -1000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` SHALL show connect events with the new client IDs.
+8. Verify in mosquitto broker logs: `ssh <NAS_HOST> "tail -1000 /volume1/docker/mosquitto/log/mosquitto.log | grep taptap"` SHALL show connect events with the new client IDs.
 
 ### PR 2: Watchdog sidecar
 
@@ -874,11 +916,26 @@ Small to medium. Depends on PR 2.
    ```
 5. Add `rest_command` definitions (FR-4.7) referencing the secrets to `configuration.yaml`.
 6. Add `input_boolean` entries for opt-out (FR-4.8) — four total.
-7. Add dashboard buttons (FR-4.6) to the Panels view of `~/code/nas_docker/solar_assistant/dashboards/solar_dashboard.yaml`, wrapping the existing `addon-iframe-card` in a `vertical-stack` so both the iframe and the buttons fit in the single allowed slot.
+7. Add dashboard buttons (FR-4.6) to the Panels view of `<HA_DASHBOARDS_DIR>/solar_dashboard.yaml`, wrapping the existing `addon-iframe-card` in a `vertical-stack` so both the iframe and the buttons fit in the single allowed slot.
 8. Push to HA via the existing `dashboards/scripts/push_dashboard.py` (or equivalent for non-dashboard YAML). If `push_dashboard.py` does not yet support `secrets.yaml` substitution, add a minimal shim that templates `<PI_HOST>` from `.claude/env`.
 9. Manual test: stop a taptap container, verify the bounce-confirmation notification arrives at ~5 min and the `*_unrecovered` notification does NOT arrive (because recovery succeeded). Verify they are non-critical (no banner-style takeover, no critical-tone audio).
 10. Manual test: tap the dashboard button (with the new "Force-restart" confirmation copy), verify HTTP 200 from watchdog, verify the manual-webhook bounce event arrives at HA.
 11. Manual test: send a request without `X-Bounce-Token` header to confirm it returns 401.
+
+### PR 4: Documentation and public-repo cleanliness
+
+Small. Can ship after PR 1 even if PR 2 and PR 3 are still in flight (the README parts that reference the watchdog won't be true yet, but they describe what the system *will* do once PR 2 is deployed).
+
+1. Update `README.md` per FR-5.3 (overview paragraph, configuration table, operating subsection, optional HA integration link).
+2. Create `docs/guides/ha-integration.md` per FR-5.4 with placeholder values throughout.
+3. Update `CLAUDE.md` per FR-5.1.
+4. Update `docs/TROUBLESHOOTING.md` per FR-5.2.
+5. Run the FR-5.5 grep check on the entire tracked tree and resolve any matches before merging:
+   ```bash
+   git ls-files | xargs grep -InE '\b192\.168\.[0-9]+\.[0-9]+\b|\b10\.[0-9]+\.[0-9]+\.[0-9]+\b|\.casadesco\.|/Users/[a-z]+|/home/[a-z]+|~/code/' | grep -vE '^\.gitignore|^\.claude/'
+   ```
+   Expected output: empty. Any matches in tracked files SHALL be either replaced with placeholders or removed before merge.
+6. (Optional but recommended) Add a pre-commit hook implementing the same check so future commits don't reintroduce hardcoded values.
 
 ## Related Specifications
 
@@ -900,6 +957,7 @@ Files that the implementer will read or modify:
 - `tigo-mqtt/docker-compose.sample.yml` (FR-2.2, FR-3.1, NFR-1.2)
 - `dashboard/backend/app/services/tigo_mqtt_generator.py` (FR-2.5)
 - `scripts/check-config-sync.py` (FR-2.5)
+- `README.md` (FR-5.3)
 - `CLAUDE.md` (FR-5.1)
 - `docs/TROUBLESHOOTING.md` (FR-1.2, FR-5.2)
 - `tigo-mqtt/docker-compose.yml` on the Pi (NOT in git — modified out-of-tree per existing convention)
@@ -909,7 +967,8 @@ Files that the implementer will read or modify:
 - `tigo-mqtt/watchdog/app.py`
 - `tigo-mqtt/watchdog/requirements.txt`
 - `tigo-mqtt/watchdog/tests/test_*.py`
-- HA YAML additions (location depends on user's HA config layout)
+- `docs/guides/ha-integration.md` (FR-5.4)
+- HA YAML additions (location depends on operator's HA config layout — described in `docs/guides/ha-integration.md`)
 
 **Read-only references:**
 - Upstream taptap-mqtt: https://github.com/litinoveweedle/taptap-mqtt (commit `c656d6b31247e906bf7186f28df36385018c8979`)
@@ -917,8 +976,8 @@ Files that the implementer will read or modify:
 - docker-socket-proxy: https://github.com/Tecnativa/docker-socket-proxy
 - HA mobile_app notifications: https://companion.home-assistant.io/docs/notifications/notifications-basic
 - HA `rest_command`: https://www.home-assistant.io/integrations/rest_command/
-- Mosquitto broker config on NAS: `~/code/nas_docker/mosquitto/`
-- HA config root: `~/code/nas_docker/home_assistant/` and SMB mount `~/ha_config_mount`
+- Mosquitto broker config on NAS: `<MQTT_BROKER_CONFIG_DIR>/`
+- HA config root: `<HA_CONFIG_ROOT>/` and SMB mount `<HA_CONFIG_MOUNT>`
 - Pi credentials env: `.claude/env` (PI_HOST, PI_USER, PI_PASS)
 
 State files (NEVER MODIFIED — see NFR-1.1):
@@ -926,11 +985,31 @@ State files (NEVER MODIFIED — see NFR-1.1):
 
 ---
 
-**Specification Version:** 1.2
+**Specification Version:** 1.3
 **Last Updated:** 2026-05-02
 **Authors:** Ian Scofield (with Claude)
 
 ## Changelog
+
+### v1.3 (May 2026)
+
+**Summary:** Public-repo readiness — placeholder convention for environment-specific values, explicit README and HA-integration guide requirements, automated grep check before merge.
+
+**Changes:**
+- Added a placeholder-convention preamble at the top of the spec listing all `<PLACEHOLDER>` values used throughout (PI_HOST, MQTT_BROKER_HOST, HA_HOST, NAS_HOST, your-dashboard-host, HA_CONFIG_ROOT, HA_DASHBOARDS_DIR, HA_CONFIG_MOUNT, MQTT_BROKER_CONFIG_DIR) and where the implementer sources each from.
+- FR-5.3 expanded from "one-paragraph mention" to a full README structure: overview + Configuration table (env vars) + Operating subsection + optional HA integration link.
+- New FR-5.4 added: `docs/guides/ha-integration.md` setup guide with placeholder values throughout, separating HA setup detail from the README.
+- New FR-5.5 added: enforcement requirement — no operator-specific values in any tracked file. Includes a `git ls-files | grep` check that SHALL produce no output before any PR merges. Optional pre-commit hook recommended.
+- New PR 4 added to the Task Breakdown for documentation and the public-repo cleanliness sweep. Can ship after PR 1 even if PR 2/3 are still in flight.
+- Context/Documentation section: README.md added to "Modified", `docs/guides/ha-integration.md` added to "Created".
+
+**Rationale:**
+- Repository is publicly hosted on GitHub. Operator-specific values (LAN IPs, public hostnames, personal directory paths, SSH aliases) leaking into tracked files is both a privacy concern and a usability concern for downstream forks.
+- Existing CLAUDE.md already uses `<PI_HOST>` as a placeholder; v1.3 generalizes that convention across the spec and codifies it as a requirement (FR-5.5) rather than a habit.
+
+**Impact:**
+- Implementer adds a fourth small PR (or interleaves the cleanup into the earlier PRs). The grep check is the gate.
+- Existing tracked files with environment-specific values (if any are found by the grep) need replacement with placeholders before this work merges. The operator-specific values continue to live in `.claude/env`, `tigo-mqtt/.env`, and HA `secrets.yaml` — none of which are tracked.
 
 ### v1.2 (May 2026)
 
