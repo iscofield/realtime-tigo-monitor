@@ -29,5 +29,27 @@ echo "Generated config.ini from template"
 rm -rf /run/taptap/* /run/taptap/.[!.]* 2>/dev/null || true
 mkdir -p /run/taptap
 
+# Wait for the serial device to enumerate. The udev symlink (e.g.
+# /dev/tigo-primary) is created when the WCH USB-serial adapter is detected
+# by the kernel — typically within a few seconds of boot, but a cold-start
+# race can put the container ahead of udev. Without this wait, the container
+# would exit immediately when /dev/tigo-* is missing and rely on Docker's
+# restart-on-failure backoff, which can stall recovery for minutes.
+SERIAL_DEVICE=$(grep -E '^SERIAL\s*=' "$CONFIG_FILE" | sed -E 's/^SERIAL\s*=\s*//' | tr -d '[:space:]')
+if [ -n "$SERIAL_DEVICE" ]; then
+    WAIT_MAX=${SERIAL_WAIT_SECONDS:-60}
+    elapsed=0
+    while [ ! -e "$SERIAL_DEVICE" ] && [ "$elapsed" -lt "$WAIT_MAX" ]; do
+        echo "Waiting for serial device $SERIAL_DEVICE (elapsed=${elapsed}s, max=${WAIT_MAX}s)..."
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    if [ ! -e "$SERIAL_DEVICE" ]; then
+        echo "ERROR: serial device $SERIAL_DEVICE did not appear within ${WAIT_MAX}s. USB enumeration may have failed; check 'lsusb' and 'dmesg' on the host."
+        exit 1
+    fi
+    echo "Serial device $SERIAL_DEVICE is present."
+fi
+
 # Run taptap-mqtt
 exec python3 taptap-mqtt.py config.ini

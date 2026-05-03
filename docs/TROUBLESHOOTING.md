@@ -140,6 +140,68 @@ The entrypoint now does `rm -rf /run/taptap/* /run/taptap/.[!.]* && mkdir -p /ru
    ```
 3. If the watchdog (PR 2+) is deployed, manually trigger a bounce via its webhook to confirm recovery works end-to-end.
 
+### NAS mount fails on boot ("Network is unreachable")
+
+**Symptoms after a Pi reboot:**
+
+- `/mnt/nas/` exists but appears empty (or shows only stub directories)
+- Docker containers with bind mounts from `/mnt/nas/` either fail to start or come up with missing data
+- `systemctl status mnt-nas.mount` shows `failed` with `Result: exit-code` and `Network is unreachable` in the journal
+- `mount | grep nas` returns nothing
+
+**Root cause (observed 2026-05-03):**
+
+The systemd `mnt-nas.mount` unit triggers when `network-online.target` is reached, but on this Pi `network-online.target` is reached before the network is actually *routable*. CIFS attempts the mount, hits `Network is unreachable`, and systemd's default `StartLimit` (5 retries within 10 seconds) exhausts before the network finishes coming up. The mount then stays failed for the entire uptime.
+
+**Diagnose:**
+
+```bash
+ssh <PI_HOST>
+systemctl status mnt-nas.mount --no-pager
+journalctl -u mnt-nas.mount --no-pager | tail -20
+ping -c 3 <MQTT_BROKER_HOST>   # confirm NAS is now reachable
+```
+
+**Recover the current uptime:**
+
+```bash
+sudo systemctl reset-failed mnt-nas.mount mnt-nas.automount
+sudo systemctl restart mnt-nas.mount
+mount | grep nas               # confirm mount succeeded
+```
+
+After the mount is up, restart any containers that depend on it:
+
+```bash
+cd /mnt/nas/solar_tigo_viewer/tigo-mqtt && sudo docker compose up -d
+sudo docker start ppg_primary_top ppg_primary_bottom ppg_secondary_top
+```
+
+**Permanent fix:**
+
+Run the boot-hardening installer once on the Pi. It installs systemd drop-ins that:
+- Make `mnt-nas.mount` ping the NAS in a `ExecStartPre` loop before attempting the mount
+- Widen `StartLimitBurst` from 5 to 20 retries
+- Make `docker.service` depend on `mnt-nas.mount` so containers don't start before storage is available
+
+```bash
+ssh <PI_HOST>
+cd /mnt/nas/solar_tigo_viewer/tigo-mqtt/scripts
+sudo ./install-pi-boot-hardening.sh
+```
+
+The script is idempotent (safe to re-run) and writes only systemd drop-ins (under `*.d/`), so it's reversible by deleting those directories.
+
+### Container exits immediately when serial device is missing
+
+**Symptoms:** `taptap-{primary,secondary}` containers fail to start or restart-loop with errors about `/dev/tigo-{primary,secondary}` not existing, even though `lsusb` shows the WCH adapter is present.
+
+**Root cause:** Cold-boot race — the container starts before udev has finished creating the `/dev/tigo-*` symlinks.
+
+**Fix (already in `tigo-mqtt/entrypoint.sh`):** the entrypoint now reads the `SERIAL` config value and waits up to 60 seconds for the device to appear. This eliminates the race for any post-boot start. Configurable via the `SERIAL_WAIT_SECONDS` env var if a different timeout is needed.
+
+If the device still never appears, it's a hardware issue — see "USB Serial Disconnect" below.
+
 ### MQTT Connection Issues
 
 **Symptoms:** Backend logs show "Connection refused" or "Authentication failed".
