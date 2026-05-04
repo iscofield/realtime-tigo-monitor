@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Test restore flow preserves panel positions and overlay_size."""
 import json
+import os
 import requests
+from pathlib import Path
 
-BACKUP_FILE = "/Users/ian/code/local-sync/solar_tigo_viewer/dashboard/backend/tests/fixtures/test-backup-69-panels.zip"
-BASE_URL = "http://localhost:5174"
+# Resolve the backup file relative to this script so the path stays portable.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BACKUP_FILE = str(REPO_ROOT / "dashboard" / "backend" / "tests" / "fixtures" / "test-backup-69-panels.zip")
+BASE_URL = os.environ.get("DASHBOARD_BASE_URL", "http://localhost:5174")
 
 
 def main():

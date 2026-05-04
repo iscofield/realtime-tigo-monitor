@@ -155,7 +155,7 @@ export function MqttConfigStep({ config, onNext }: MqttConfigStepProps) {
               setServer(e.target.value);
               setTestPassed(false);
             }}
-            placeholder="192.168.1.100 or mqtt.example.com"
+            placeholder="mqtt.example.com or a private LAN IP"
             style={inputStyle}
             required
           />

@@ -4,7 +4,7 @@
 version: 1  # Schema version for forward/backward compatibility
 
 mqtt:
-  server: "192.168.1.100"      # Your MQTT broker IP/hostname
+  server: "<MQTT_BROKER_HOST>" # Your MQTT broker IP or hostname (e.g. mqtt.example.lan)
   port: 1883                   # MQTT port (default: 1883)
   username: "mqtt_user"        # Optional: MQTT username
   password: "mqtt_password"    # Optional: MQTT password

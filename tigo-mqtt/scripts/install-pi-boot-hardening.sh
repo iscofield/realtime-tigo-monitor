@@ -31,7 +31,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # Where the NAS is — read from the existing mount unit. The 'What=' line
-# looks like 'What=//192.168.2.199/docker' (CIFS) or 'What=192.168.2.199:/docker'
+# looks like 'What=//<NAS_HOST>/docker' (CIFS) or 'What=<NAS_HOST>:/docker'
 # (NFS). Extract just the host portion. The ping-loop in the drop-in needs
 # an IP or hostname that resolves on the boot-time network — DNS may not be
 # fully ready, so a literal IP is safest.

@@ -245,6 +245,51 @@ Example URLs:
 - `http://server:5174/?view=layout&mode=watts` — Layout view showing power (recommended for embedding)
 - `http://server:5174/?view=table` — Table view with all metrics
 
+## Self-Healing System
+
+The `tigo-mqtt/` deployment ships with an optional `taptap-watchdog` sidecar that detects when the `taptap-{primary,secondary}` containers stop publishing to MQTT and automatically restarts them. The watchdog tracks the per-CCA `taptap/{primary,secondary}/state` topic as a 5-minute silence threshold; bounces a container via a least-privilege docker-socket-proxy when the threshold is exceeded; respects a 15-minute per-container cooldown; and trips a circuit breaker if more than 3 automatic bounces occur within an hour. State files (`tigo-mqtt/data/{primary,secondary}/taptap.state`) are NEVER touched.
+
+See `tigo-mqtt/watchdog/README.md` and the spec at `docs/specs/2026-05-02-tigo-mqtt-self-healing.md` for full behavior.
+
+### Configuration
+
+Watchdog environment variables (defaults shown):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `SILENCE_THRESHOLD_SEC` | `300` | Silence before auto-bounce (FR-3.4) |
+| `COOLDOWN_SEC` | `900` | Per-container cooldown between auto-bounces (FR-3.6) |
+| `CIRCUIT_BREAKER_BOUNCES` | `3` | Trip threshold per rolling window (FR-3.7) |
+| `CIRCUIT_BREAKER_WINDOW_SEC` | `3600` | Rolling window length (FR-3.7) |
+| `MQTT_RECONNECT_GRACE_CUTOFF_SEC` | `60` | Disconnect duration above which last_seen resets (FR-3.12) |
+| `PRIMARY_CONTAINER` | `taptap-primary` | Container name for primary CCA (FR-3.5) |
+| `SECONDARY_CONTAINER` | `taptap-secondary` | Container name for secondary CCA (FR-3.5) |
+| `BOUNCE_TOKEN` | (required) | Shared secret for webhook auth (FR-3.10). Generate with `openssl rand -hex 32`. |
+| `DOCKER_PROXY_URL` | `http://127.0.0.1:2375` | docker-socket-proxy endpoint (NFR-1.2) |
+| `MQTT_SERVER`, `MQTT_USER`, `MQTT_PASS` | (required) | MQTT broker connection |
+| `WEBHOOK_PORT` | `8080` | Webhook listen port (FR-3.10) |
+
+### Operating the watchdog
+
+```sh
+# View logs
+sudo docker logs taptap-watchdog
+
+# Inspect state (no auth)
+curl http://<PI_HOST>:8080/healthz | jq
+
+# Manually bounce a container (requires BOUNCE_TOKEN from tigo-mqtt/.env)
+curl -X POST -H "X-Bounce-Token: $BOUNCE_TOKEN" \
+    http://<PI_HOST>:8080/bounce/primary
+
+# Disable for planned maintenance
+sudo docker compose stop taptap-watchdog
+```
+
+### Optional Home Assistant integration
+
+The watchdog publishes events to `taptap/watchdog/events` and a 30-second heartbeat to `taptap/watchdog/heartbeat`. Home Assistant can surface these as non-critical mobile notifications and provide manual bounce buttons on the Panels dashboard. See [`docs/guides/ha-integration.md`](docs/guides/ha-integration.md) for setup instructions.
+
 ## Data Storage
 
 **Note:** Realtime Tigo Monitor does not store historical data — it displays real-time values only. For historical tracking, graphing, and analytics, consider routing your MQTT data to:

@@ -218,6 +218,56 @@ sudo systemctl restart ModemManager   # required to drop existing ports it's hol
 
 The inverter (ppg) containers are managed in a separate repo: `nas_docker/solar_assistant/PythonProtocolGateway/`
 
+## Tigo Watchdog (Implemented)
+
+The `taptap-watchdog` sidecar (spec FR-3, implemented in branch `implement/tigo-watchdog`) detects MQTT silence from the `taptap-{primary,secondary}` containers and bounces them autonomously. It runs alongside the taptap services on the Pi and publishes events to MQTT for HA to surface as non-critical mobile notifications.
+
+### Where the code lives
+
+- **Watchdog source:** `tigo-mqtt/watchdog/` (`app.py`, `Dockerfile`, `requirements.txt`, `tests/`)
+- **Compose definitions:** `tigo-mqtt/docker-compose.sample.yml` services `taptap-watchdog` and `docker-socket-proxy`
+- **Persistent SQLite DB:** `tigo-mqtt/watchdog-data/watchdog.db` on the host (NOT tracked; mounted into the watchdog container at `/data`)
+- **HA integration templates:** `tigo-mqtt/ha-integration/`
+- **Setup guide:** `docs/guides/ha-integration.md`
+
+### Operating commands
+
+```bash
+PI_HOST=$(grep '^PI_HOST=' .claude/env | cut -d= -f2)
+PI_USER=$(grep '^PI_USER=' .claude/env | cut -d= -f2)
+PI_PASS=$(grep '^PI_PASS=' .claude/env | cut -d= -f2)
+BOUNCE_TOKEN=$(grep '^BOUNCE_TOKEN=' tigo-mqtt/.env | cut -d= -f2)
+
+# View watchdog logs
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+    "sudo docker logs --tail 200 taptap-watchdog"
+
+# Query state (no auth required)
+curl http://$PI_HOST:8080/healthz | jq
+
+# Manually bounce a container (auth required)
+curl -X POST -H "X-Bounce-Token: $BOUNCE_TOKEN" \
+    http://$PI_HOST:8080/bounce/primary
+
+# Disable for planned maintenance
+sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
+    "cd /mnt/nas/solar_tigo_viewer/tigo-mqtt && sudo docker compose stop taptap-watchdog"
+```
+
+### Dashboard buttons
+
+The HA dashboard (`<HA_DASHBOARDS_DIR>/solar_dashboard.yaml`, Panels view, `path: panels`) has two manual bounce buttons at the **bottom of the page** (after the iframe), labeled "Bounce Tigo Primary" and "Bounce Tigo Secondary". These bypass cooldown and circuit-breaker; they're intentionally placed out of the way and require a confirmation dialog (FR-4.6).
+
+### Safety guarantees
+
+- **State files NEVER touched.** The watchdog does not mount `tigo-mqtt/data/`. NFR-1.1.
+- **Least-privilege Docker.** Watchdog talks to `docker-socket-proxy` bound to loopback, restricted to `POST /containers/<name>/restart`.
+- **MQTT-aware.** When the broker is unreachable, the watchdog stops bouncing — bouncing won't fix a broker outage.
+
+### Cross-reference
+
+The PPG inverter containers have a sibling watchdog implemented in parallel in the operator's `solar_assistant` repository — see that repo's `CLAUDE.md` for its operating commands. Both watchdogs follow the same pattern: silence detection → cooldown → circuit breaker → MQTT events → HA mobile notifications. The Tigo bounce buttons live on the Panels dashboard view; PPG buttons live on the Overview dashboard view (no shared file conflict).
+
 ## Pi Resiliency & Re-setup Reference
 
 This repo deploys to a Raspberry Pi that's shared with the PPG inverter containers. Both projects rely on the same physical infrastructure (Pi, USB-Serial adapters, NAS CIFS mount, MQTT broker). The mechanisms below were progressively built up to address concrete failures observed in production. **When provisioning a new Pi (or restoring an existing one after a wipe), all of these need to be in place.**
@@ -231,6 +281,7 @@ This repo deploys to a Raspberry Pi that's shared with the PPG inverter containe
 | 3 | Boot-time mount/docker race fix | `/etc/systemd/system/mnt-nas.mount.d/wait-for-network.conf` and `docker.service.d/wait-for-mnt-nas.conf` (on Pi) | `Network is unreachable` on CIFS mount at boot; Docker starts before NAS mount is ready |
 | 4 | Container entrypoint hardening | `tigo-mqtt/entrypoint.sh` (in repo, baked into image) | EEXIST on stale `/run/taptap/` directory; cold-boot race where container starts before udev creates `/dev/tigo-*` |
 | 5 | Static MQTT client IDs | `tigo-mqtt/Dockerfile` patches taptap-mqtt at build time; `MQTT_CLIENT_ID` env var in deployed `docker-compose.yml` (NOT in repo) | Broker logs unmineable when paho auto-generates random client IDs |
+| 6 | Autonomous container recovery via the Tigo watchdog | `tigo-mqtt/watchdog/` (in repo, baked into image) + `taptap-watchdog` and `docker-socket-proxy` services in `tigo-mqtt/docker-compose.yml` (NOT in repo) | The 2026-04-20 12-day silent outage: when `restart: always` doesn't loop the container out of failure, the watchdog detects MQTT silence at 5 min and bounces via `docker-socket-proxy`. Circuit breaker (3 bounces / 1 hr) prevents bounce-loops. State persisted in `tigo-mqtt/watchdog-data/watchdog.db`. |
 
 ### Verifying each mechanism is active
 
@@ -265,6 +316,16 @@ sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
 sshpass -p "$PI_PASS" ssh -o StrictHostKeyChecking=no "$PI_USER@$PI_HOST" \
   "sudo docker run --rm --entrypoint sh tigo-mqtt-taptap-primary -c 'grep mqtt.Client /app/taptap-mqtt.py'"
 # Expected: line shows mqtt.Client(client_id=config.get("MQTT", "CLIENT_ID", fallback=""))
+
+# (6a) Watchdog reachable and self-reporting healthy
+curl -s http://$PI_HOST:8080/healthz | jq '{status, mqtt_connected: .mqtt.connected, primary_breaker: .ccas.primary.circuit_breaker, secondary_breaker: .ccas.secondary.circuit_breaker}'
+# Expected: {"status": "ok", "mqtt_connected": true, "primary_breaker": "closed", "secondary_breaker": "closed"}
+
+# (6b) Watchdog publishing heartbeats and is registered with the broker.
+# Tail the broker log on the host where Mosquitto runs and grep for the
+# watchdog's static client ID. Connect events SHALL appear.
+ssh <broker-host> "sudo docker logs --tail 5000 mosquitto 2>&1 | grep -E 'taptap-watchdog' | tail -10"
+# Expected: 'New client connected from ... as taptap-watchdog' lines (one per reconnect)
 ```
 
 ### Re-setup checklist for a fresh Pi
@@ -285,10 +346,16 @@ If the Pi is wiped or replaced, do these in order:
 6. **Write `/etc/udev/rules.d/99-serial-devices.rules`** — start with the ModemManager opt-out for any vendor/model the operator's adapters use, then SYMLINK rules for each port. See "USB Serial Device Mapping" + "ModemManager gotcha" sections above.
 7. **Reload udev**: `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty --action=add && sudo systemctl restart ModemManager`. Verify with `ls -la /dev/tigo-* /dev/inverter-*`.
 8. **Build images**: `cd /mnt/nas/solar_tigo_viewer/tigo-mqtt && sudo docker compose build --no-cache`.
-9. **Create deployed `docker-compose.yml`** — copy from `docker-compose.sample.yml`, fill in `MQTT_CLIENT_ID=taptap-{primary,secondary}` env vars per service. This file is NOT tracked.
-10. **Create `.env`** with MQTT credentials (see `.env.example`).
+9. **Create deployed `docker-compose.yml`** — copy from `docker-compose.sample.yml`, fill in `MQTT_CLIENT_ID=taptap-{primary,secondary}` env vars per service. The sample also defines `taptap-watchdog` and `docker-socket-proxy` services — keep both unless you intentionally don't want autonomous recovery. This file is NOT tracked.
+10. **Create `.env`** with MQTT credentials (see `.env.example`). Generate a `BOUNCE_TOKEN` with `openssl rand -hex 32` and add it to `.env` — the watchdog requires this for webhook auth.
 11. **Bring up**: `sudo docker compose up -d`. Verify state files at `/mnt/nas/solar_tigo_viewer/tigo-mqtt/data/{primary,secondary}/taptap.state` exist (if not, you'll need to wait for an infrastructure report — see the state files section above).
-12. **Reboot test** — issue `sudo reboot`, verify the Pi recovers without manual intervention in <3 minutes, all 6 containers come up automatically.
+12. **Verify watchdog is healthy**:
+    ```bash
+    curl http://$PI_HOST:8080/healthz | jq '.status'
+    # Expected: "ok"
+    ```
+13. **Wire HA integration** (optional but recommended) — follow `docs/guides/ha-integration.md` to add the `tigo_bounce_token`, sensors, automations, and dashboard buttons. Add HA's `secrets.yaml` entries for `tigo_bounce_*_url` and `tigo_bounce_token`.
+14. **Reboot test** — issue `sudo reboot`, verify the Pi recovers without manual intervention in <3 minutes, all containers (taptap-primary, taptap-secondary, temp-id-monitor, taptap-watchdog, docker-socket-proxy) come up automatically and `curl http://$PI_HOST:8080/healthz` returns status "ok".
 
 ### When to update this section
 
@@ -298,7 +365,7 @@ Update this list and the verification commands whenever:
 - A mechanism's location/file moves
 - An installer script's interface changes
 
-The corresponding section in `~/code/nas_docker/solar_assistant/CLAUDE.md` is the operator-facing twin of this — keep them in sync (this one uses placeholders since it's public, that one uses literal values for the operator's deployment).
+The corresponding section in the operator's `solar_assistant` repo's `CLAUDE.md` is the operator-facing twin of this — keep them in sync (this one uses placeholders since it's public, that one uses literal values for the operator's deployment).
 
 ## Deployment Environments
 

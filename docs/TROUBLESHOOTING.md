@@ -140,6 +140,82 @@ The entrypoint now does `rm -rf /run/taptap/* /run/taptap/.[!.]* && mkdir -p /ru
    ```
 3. If the watchdog (PR 2+) is deployed, manually trigger a bounce via its webhook to confirm recovery works end-to-end.
 
+### Watchdog circuit breaker tripped
+
+**Symptoms:** Home Assistant fires the "Tigo: watchdog gave up on \<container\>" notification, OR the dashboard shows persistent silence on a CCA without watchdog bounces happening, OR `curl http://<PI_HOST>:8080/healthz | jq` returns `"circuit_breaker": "open"` for one or both CCAs.
+
+**What it means:** The watchdog auto-bounced the same container 3 times within an hour without restoring data flow. The circuit breaker is intentionally hard-stopping further automatic bounces — the failure is most likely persistent (bad serial cable, dead CCA, network issue between Pi and NAS) and bouncing more won't help.
+
+**Diagnostic steps (in order):**
+
+1. **Confirm the breaker is actually tripped.**
+   ```sh
+   curl http://<PI_HOST>:8080/healthz | jq '.ccas'
+   ```
+   Look for `"circuit_breaker": "open"` and `"bounces_last_hour": >= 3`.
+
+2. **Check the watchdog logs for what happened.**
+   ```sh
+   ssh solar-assistant@<PI_HOST> "sudo docker logs --since 2h taptap-watchdog 2>&1" \
+     | grep -E "bounce|circuit_breaker"
+   ```
+   Look for `bounce_failed` events (docker-socket-proxy errored) versus `bounce` events (Docker said OK but the container went silent again).
+
+3. **Check the underlying taptap container.**
+   ```sh
+   ssh solar-assistant@<PI_HOST> "sudo docker ps -a --filter name=taptap-"
+   ```
+   If the container is in `Restarting` or `Exited`, see "Container Restart Policy" above.
+
+4. **Check the serial cable and CCA.** If the watchdog is healthy but bounces don't fix the CCA, the problem is below the watchdog — likely a hardware fault. Inspect the USB cable to the CCA and confirm `/dev/tigo-{primary,secondary}` resolve on the Pi.
+
+**Recovery:**
+
+The breaker is implicit (computed from a SQL count of recent bounces). Once the rolling window (default 60 min) ages out and old bounces drop off, the breaker clears automatically — the watchdog publishes a `circuit_breaker_reset` event when this happens.
+
+To force an immediate manual recovery (bypassing the breaker):
+
+```sh
+curl -X POST -H "X-Bounce-Token: $BOUNCE_TOKEN" \
+    http://<PI_HOST>:8080/bounce/primary
+```
+
+(Manual webhook bounces are excluded from the breaker count, so you can fire as many as you want without re-tripping it.)
+
+To clear the breaker count entirely (only if you've fixed the underlying issue and want a clean slate):
+
+```sh
+ssh solar-assistant@<PI_HOST> \
+  "sudo docker exec taptap-watchdog sqlite3 /data/watchdog.db 'DELETE FROM bounces;'"
+```
+
+This is destructive — you lose audit history. Prefer the manual bounce approach for normal recovery.
+
+### HA notifications not arriving for Tigo watchdog events
+
+**Symptoms:** A bounce, breaker trip, or unrecovered event clearly happened (visible in `taptap/watchdog/events` MQTT messages and in the watchdog logs), but no notification arrived on the user's mobile device.
+
+**Common causes (in order of frequency):**
+
+1. **The opt-out boolean is off.** Check Developer Tools → States in HA for `input_boolean.tigo_bounce_alerts`, `tigo_unrecovered_alerts`, `tigo_escalation_alerts`, `tigo_watchdog_alerts`. All four default to `on` per FR-4.8 — toggle on if any are off.
+
+2. **HA isn't subscribed to the broker.** Verify HA's MQTT integration is connected and shows `taptap/watchdog/events` in the recent messages list. If HA disconnected, retained `circuit_breaker_*` events will arrive on reconnect, but non-retained `bounce` events that fired during the outage are lost.
+
+3. **`<NOTIFY_SERVICE>` placeholder wasn't substituted.** Look in `automations.yaml` for any literal `notify.<NOTIFY_SERVICE>` — there should be 4 occurrences, all replaced with the operator's actual `notify.mobile_app_<device>` entity name. Discover via `python3 dashboards/scripts/query_entities.py --filter mobile_app`.
+
+4. **The mobile device's HA Companion app is unauthorized or backgrounded too long.** Verify by sending a test notification from Developer Tools → Services → `notify.mobile_app_<device>`.
+
+5. **Watchdog dead detection false-positive.** If `binary_sensor.taptap_watchdog_dead` is `on` but `docker logs taptap-watchdog` shows the watchdog is fine, the problem is between HA and the broker. The heartbeat sensor uses `value_template: "{{ value_json.ts }}"` to extract the embedded timestamp — if it instead uses `last_changed`, retain semantics will silently break the detection. Verify the YAML matches `tigo-mqtt/ha-integration/sensors.yaml`.
+
+**Diagnostic command:** Watch the events topic live during a manual bounce:
+
+```sh
+mosquitto_sub -h <MQTT_BROKER_HOST> -u <MQTT_USER> -P <MQTT_PASS> \
+    -t 'taptap/watchdog/events' -t 'taptap/watchdog/heartbeat' -v
+```
+
+If events appear here but not in HA, the issue is HA-side (steps 2 and 3 above). If events DON'T appear here, the watchdog isn't publishing — see "Watchdog circuit breaker tripped" or check the watchdog container logs.
+
 ### NAS mount fails on boot ("Network is unreachable")
 
 **Symptoms after a Pi reboot:**
@@ -341,7 +417,7 @@ sudo netstat -tlnp | grep 5174
 ### Understanding tigo-mqtt Logs
 
 ```
-INFO - Connected to MQTT broker at 192.168.1.100:1883
+INFO - Connected to MQTT broker at <MQTT_BROKER_HOST>:1883
 INFO - Publishing to taptap/inverter1/state
 INFO - 8 nodes reporting
 ```

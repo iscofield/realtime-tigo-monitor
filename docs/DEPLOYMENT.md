@@ -84,7 +84,7 @@ Edit `backend/.env`:
 
 ```env
 # MQTT Configuration
-MQTT_BROKER_HOST=192.168.1.100
+MQTT_BROKER_HOST=<MQTT_BROKER_HOST>    # e.g. mqtt.example.lan or a private LAN IP
 MQTT_BROKER_PORT=1883
 MQTT_USERNAME=your_mqtt_username
 MQTT_PASSWORD=your_mqtt_password

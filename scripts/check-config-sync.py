@@ -30,8 +30,8 @@ KNOWN_DIFFS = {
     ("TAPTAP", "SERIAL"): "template has placeholder device, generator uses cca.serial_device",
     ("TAPTAP", "MODULES"): "template has placeholder, generator uses computed modules_line",
     ("TAPTAP", "TOPIC_NAME"): "template has static default, generator uses cca.name",
-    ("MQTT", "SERVER"): "template has example IP, generator uses env var substitution",
-    ("MQTT", "PORT"): "template has example port, generator uses env var substitution",
+    ("MQTT", "SERVER"): "template uses env var ref, generator uses env var substitution",
+    ("MQTT", "PORT"): "template uses env var ref, generator uses env var substitution",
     ("MQTT", "USER"): "template has placeholder, generator uses env var substitution",
     ("MQTT", "PASS"): "template has placeholder, generator uses env var substitution",
 }
