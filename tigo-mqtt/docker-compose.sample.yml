@@ -139,3 +139,101 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # --------------------------------------------------------------------------
+  # Docker Socket Proxy
+  # Exposes a least-privilege Docker API to the watchdog: only
+  # `POST /containers/<name>/restart` is allowed. Compromise of the watchdog
+  # cannot escalate to host root.
+  #
+  # Bound to 127.0.0.1:2375 so it is unreachable from the LAN even though all
+  # tigo-mqtt services use host networking. See spec NFR-1.2.
+  # --------------------------------------------------------------------------
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: docker-socket-proxy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # Default endpoint allowlist: only what the watchdog needs.
+      - CONTAINERS=1
+      - POST=1
+      # Everything else explicitly disabled.
+      - IMAGES=0
+      - NETWORKS=0
+      - VOLUMES=0
+      - EXEC=0
+      - BUILD=0
+      - INFO=0
+      - VERSION=0
+      - SERVICES=0
+      - TASKS=0
+      - SWARM=0
+      - NODES=0
+      - SECRETS=0
+      - CONFIGS=0
+      - PLUGINS=0
+      - SYSTEM=0
+      - SESSION=0
+      - DISTRIBUTION=0
+      # Force loopback bind under host networking. Without this, the proxy
+      # listens on 0.0.0.0:2375 which would be LAN-reachable.
+      - PRE_UP_COMMAND=ip route add prohibit 0.0.0.0/0 || true
+    command:
+      - "-listen"
+      - "127.0.0.1:2375"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # --------------------------------------------------------------------------
+  # Tigo Watchdog
+  # Detects MQTT silence from the taptap CCA containers and bounces them
+  # autonomously. See tigo-mqtt/watchdog/README.md and spec FR-3 for details.
+  # State files (tigo-mqtt/data/{primary,secondary}) are NEVER mounted here —
+  # the watchdog must not touch them. NFR-1.1.
+  # --------------------------------------------------------------------------
+  taptap-watchdog:
+    build: ./watchdog
+    container_name: taptap-watchdog
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 128m
+    env_file:
+      - .env
+    environment:
+      # Container names — must match the service container_names above.
+      - PRIMARY_CONTAINER=taptap-primary
+      - SECONDARY_CONTAINER=taptap-secondary
+      # Thresholds (defaults shown; uncomment to override).
+      # - SILENCE_THRESHOLD_SEC=300
+      # - COOLDOWN_SEC=900
+      # - CIRCUIT_BREAKER_BOUNCES=3
+      # - CIRCUIT_BREAKER_WINDOW_SEC=3600
+      # - MQTT_RECONNECT_GRACE_CUTOFF_SEC=60
+      # - WEBHOOK_PORT=8080
+      # docker-socket-proxy endpoint (loopback under host networking).
+      - DOCKER_PROXY_URL=http://127.0.0.1:2375
+      # BOUNCE_TOKEN comes from .env — required, no default.
+    volumes:
+      # Dedicated SQLite volume — MUST NOT overlap tigo-mqtt/data/.
+      - ./watchdog-data:/data
+    depends_on:
+      - docker-socket-proxy
+      - taptap-primary
+      - taptap-secondary
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status == 200 else 1)\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
