@@ -358,9 +358,13 @@ This is informational ("the system self-healed"), not an alert. It exists so the
 
 This is the only failure mode the watchdog cannot self-report — without HA monitoring the heartbeat, watchdog death would go undetected.
 
-**FR-4.6: Manual bounce dashboard buttons.** The buttons SHALL be added to the **Panels page of the Solar dashboard**, located at `<HA_DASHBOARDS_DIR>/solar_dashboard.yaml`, in the view with `path: panels` (currently around line 4151).
+**FR-4.6: Manual bounce dashboard buttons.** The two bounce buttons SHALL be added to the **Panels page of the Solar dashboard** (`<HA_DASHBOARDS_DIR>/solar_dashboard.yaml`, view with `path: panels`, currently around line 4151), **at the bottom of the Panels view, after the iframe**. With only 2 containers, individual per-container buttons are sufficient — there is no global "bounce all" button for Tigo.
 
-The Panels view is currently `type: panel`, which permits only one card. The existing `custom:addon-iframe-card` (pointing to `https://<your-dashboard-host>/?view=layout&mode=watts`) SHALL be wrapped in a `vertical-stack` card so the iframe and the bounce buttons can both live in the single allowed slot. Layout:
+The Panels view is currently `type: panel`, which permits only one card. The existing `custom:addon-iframe-card` (pointing to `https://<your-dashboard-host>/?view=layout&mode=watts`) SHALL be wrapped in a `vertical-stack` card so the iframe and the bounce buttons can both live in the single allowed slot. The bounce buttons appear in a `horizontal-stack` as the **last child** of the `vertical-stack`, placing them visually at the bottom of the page after the full-height iframe. The intent is that these buttons are out of the way — ideally never clicked.
+
+**Scope note.** The `vertical-stack` created by this FR contains ONLY the Tigo iframe and the two Tigo bounce buttons. PPG bounce buttons are NOT placed on this page — they live on the Overview page (`path: overview`) in their own card, per the PPG watchdog spec (`solar_assistant/docs/specs/2026-05-03-ppg-watchdog.md` FR-4.7). Tigo and PPG dashboard work targets different pages and different files; there is no shared vertical-stack between them.
+
+Layout:
 
 ```yaml
   - title: Panels
@@ -372,10 +376,12 @@ The Panels view is currently `type: panel`, which permits only one card. The exi
           - type: custom:addon-iframe-card
             url: "https://<your-dashboard-host>/?view=layout&mode=watts"
             aspect_ratio: "150%"
+          # Bounce buttons appear at the bottom of the Panels view, after the iframe.
+          # This vertical-stack contains ONLY Tigo content (iframe + these two buttons).
           - type: horizontal-stack
             cards:
               - type: button
-                name: Bounce Primary
+                name: Bounce Tigo Primary
                 icon: mdi:restart
                 tap_action:
                   action: call-service
@@ -383,7 +389,7 @@ The Panels view is currently `type: panel`, which permits only one card. The exi
                   confirmation:
                     text: "Force-restart taptap-primary? This bypasses cooldown and circuit-breaker."
               - type: button
-                name: Bounce Secondary
+                name: Bounce Tigo Secondary
                 icon: mdi:restart
                 tap_action:
                   action: call-service
@@ -993,11 +999,26 @@ State files (NEVER MODIFIED — see NFR-1.1):
 
 ---
 
-**Specification Version:** 1.4
-**Last Updated:** 2026-05-02
+**Specification Version:** 1.5
+**Last Updated:** 2026-05-03
 **Authors:** Ian Scofield (with Claude)
 
 ## Changelog
+
+### v1.5 (May 2026)
+
+**Summary:** Dashboard layout clarified — Tigo bounce buttons explicitly positioned at the bottom of the Panels view; PPG and Tigo dashboard work fully decoupled (different pages, no shared file conflict during parallel implementation).
+
+**Changes:**
+- **FR-4.6 (layout clarification):** Made explicit that the bounce buttons SHALL appear **at the bottom of the Panels view, after the iframe** (as the last child of the `vertical-stack`). Previously this was implicit from the YAML structure but not stated in prose. Button names updated to "Bounce Tigo Primary" / "Bounce Tigo Secondary" for visual disambiguation from PPG buttons.
+- **FR-4.6 (scope note added):** Added a "Scope note" paragraph explicitly stating that the `vertical-stack` on the Panels page contains ONLY the Tigo iframe and Tigo bounce buttons. PPG bounce buttons are NOT on this page — they live on the Overview page (`path: overview`) per the PPG watchdog spec (FR-4.7). This eliminates any ambiguity about shared-vertical-stack during parallel implementation.
+- **FR-4.6 (no global bounce for Tigo):** Noted explicitly that with only 2 containers, individual per-container buttons are sufficient and there is no global "bounce all" button for Tigo.
+
+**Rationale:**
+- Parallel implementation of the Tigo and PPG watchdogs requires that both specs unambiguously target different dashboard pages and different `solar_dashboard.yaml` edit locations. An earlier PPG draft (v2.8) incorrectly extended the Tigo `vertical-stack` on the Panels page for PPG buttons — that approach has been superseded: PPG now targets Overview. The Tigo spec's FR-4.6 is updated to reflect the final design and to serve as the source of truth for what the Panels `vertical-stack` contains.
+
+**Impact:**
+- No change to the watchdog code or HA sensor/automation logic. Dashboard YAML task (PR 3 task 8) gains an explicit "after the iframe" placement note and a scope clarification. No state-file or notification-criticality semantics changed.
 
 ### v1.4 (May 2026)
 
