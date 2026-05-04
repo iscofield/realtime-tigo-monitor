@@ -1,0 +1,33 @@
+# MQTT sensors for the Tigo watchdog (FR-4.1).
+#
+# The two `*_last_seen` sensors capture *receipt time* of taptap state messages
+# because taptap-mqtt's state-topic payload doesn't contain a self-reported ts.
+#
+# The watchdog heartbeat sensor extracts the *embedded* ts from the JSON payload
+# because taptap/watchdog/heartbeat is published with retain=true. If we used
+# message-receipt time, a stale retained heartbeat would always look fresh on HA
+# reconnect and silently break watchdog-dead detection.
+#
+# This block belongs inside the SINGLE `mqtt:` block at the root of HA's
+# configuration.yaml. HA allows only one `mqtt:` at the root — merge into the
+# existing block; do not create a second one.
+
+mqtt:
+  sensor:
+    - name: "taptap_primary_last_seen"
+      state_topic: "taptap/primary/state"
+      value_template: "{{ now().isoformat() }}"
+      device_class: timestamp
+      unique_id: taptap_primary_last_seen
+
+    - name: "taptap_secondary_last_seen"
+      state_topic: "taptap/secondary/state"
+      value_template: "{{ now().isoformat() }}"
+      device_class: timestamp
+      unique_id: taptap_secondary_last_seen
+
+    - name: "taptap_watchdog_last_seen"
+      state_topic: "taptap/watchdog/heartbeat"
+      value_template: "{{ value_json.ts }}"
+      device_class: timestamp
+      unique_id: taptap_watchdog_last_seen

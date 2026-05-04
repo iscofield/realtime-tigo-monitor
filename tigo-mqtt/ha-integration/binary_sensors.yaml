@@ -1,0 +1,44 @@
+# Template binary_sensors for the Tigo watchdog (FR-4.2).
+#
+# Thresholds (per spec):
+#   - 420s (7 min) for CCA unrecovered: intentionally 2 min after the
+#     watchdog's 5-min bounce trigger, giving the bounce time to take effect.
+#   - 120s (2 min) for watchdog dead: heartbeat fires every 30s, so 2 min
+#     means 4 missed beats — clearly real failure.
+#
+# Belongs inside the `template:` block at the root of HA's configuration.yaml.
+
+template:
+  - binary_sensor:
+      - name: "taptap_primary_unrecovered"
+        unique_id: taptap_primary_unrecovered
+        device_class: problem
+        state: >-
+          {% set last = states('sensor.taptap_primary_last_seen') %}
+          {% if last in ['unknown', 'unavailable', 'none', None] %}
+            off
+          {% else %}
+            {{ (now() - (last | as_datetime)).total_seconds() > 420 }}
+          {% endif %}
+
+      - name: "taptap_secondary_unrecovered"
+        unique_id: taptap_secondary_unrecovered
+        device_class: problem
+        state: >-
+          {% set last = states('sensor.taptap_secondary_last_seen') %}
+          {% if last in ['unknown', 'unavailable', 'none', None] %}
+            off
+          {% else %}
+            {{ (now() - (last | as_datetime)).total_seconds() > 420 }}
+          {% endif %}
+
+      - name: "taptap_watchdog_dead"
+        unique_id: taptap_watchdog_dead
+        device_class: problem
+        state: >-
+          {% set last = states('sensor.taptap_watchdog_last_seen') %}
+          {% if last in ['unknown', 'unavailable', 'none', None] %}
+            off
+          {% else %}
+            {{ (now() - (last | as_datetime)).total_seconds() > 120 }}
+          {% endif %}

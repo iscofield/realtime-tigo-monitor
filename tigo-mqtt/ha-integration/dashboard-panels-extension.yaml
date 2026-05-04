@@ -1,0 +1,51 @@
+# Splice this into the Panels view of <HA_DASHBOARDS_DIR>/solar_dashboard.yaml
+# (FR-4.6). The Panels view currently looks like:
+#
+#   - title: Panels
+#     path: panels
+#     type: panel
+#     cards:
+#       - type: custom:addon-iframe-card
+#         url: "https://<your-dashboard-host>/?view=layout&mode=watts"
+#         aspect_ratio: "150%"
+#
+# Because `type: panel` permits only ONE card, wrap the iframe in a
+# vertical-stack so both the iframe and the bounce buttons can live there.
+#
+# The bounce buttons appear at the BOTTOM of the Panels view, after the
+# iframe (last child of the vertical-stack). With only 2 containers, no
+# global "bounce all" button — individual buttons are sufficient.
+#
+# This vertical-stack contains ONLY Tigo content. PPG buttons live on the
+# Overview page in their own card.
+
+- title: Panels
+  path: panels
+  type: panel
+  cards:
+    - type: vertical-stack
+      cards:
+        - type: custom:addon-iframe-card
+          url: "https://<your-dashboard-host>/?view=layout&mode=watts"
+          aspect_ratio: "150%"
+        # Bounce buttons appear at the bottom of the Panels view.
+        # This vertical-stack contains ONLY Tigo content (iframe + these two
+        # buttons). PPG buttons live on the Overview page.
+        - type: horizontal-stack
+          cards:
+            - type: button
+              name: Bounce Tigo Primary
+              icon: mdi:restart
+              tap_action:
+                action: call-service
+                service: rest_command.taptap_bounce_primary
+                confirmation:
+                  text: "Force-restart taptap-primary? This bypasses cooldown and circuit-breaker."
+            - type: button
+              name: Bounce Tigo Secondary
+              icon: mdi:restart
+              tap_action:
+                action: call-service
+                service: rest_command.taptap_bounce_secondary
+                confirmation:
+                  text: "Force-restart taptap-secondary? This bypasses cooldown and circuit-breaker."

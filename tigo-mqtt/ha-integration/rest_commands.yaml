@@ -1,0 +1,22 @@
+# REST commands for the Tigo watchdog manual bounce buttons (FR-4.7).
+#
+# The URL and token come from secrets.yaml — never hardcode the Pi address or
+# the bounce token in this file. See secrets.yaml.example.
+#
+# 10s timeout matches the webhook's response budget (NFR-2.4: <5s success path).
+# The container restart proceeds asynchronously after the webhook responds.
+
+rest_command:
+  taptap_bounce_primary:
+    url: !secret tigo_bounce_primary_url
+    method: POST
+    headers:
+      X-Bounce-Token: !secret tigo_bounce_token
+    timeout: 10
+
+  taptap_bounce_secondary:
+    url: !secret tigo_bounce_secondary_url
+    method: POST
+    headers:
+      X-Bounce-Token: !secret tigo_bounce_token
+    timeout: 10

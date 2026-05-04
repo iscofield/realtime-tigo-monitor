@@ -1,0 +1,25 @@
+# Notification opt-outs for the Tigo watchdog automations (FR-4.8).
+#
+# All four default to `on` (alerts enabled). Toggle off during planned
+# maintenance to suppress just that automation.
+
+input_boolean:
+  tigo_unrecovered_alerts:
+    name: "Tigo: alert when CCA unrecovered (FR-4.3)"
+    icon: mdi:alert-circle
+    initial: true
+
+  tigo_bounce_alerts:
+    name: "Tigo: notify on watchdog bounce (FR-4.4)"
+    icon: mdi:restart
+    initial: true
+
+  tigo_escalation_alerts:
+    name: "Tigo: alert on circuit breaker trip (FR-4.5)"
+    icon: mdi:alert-octagon
+    initial: true
+
+  tigo_watchdog_alerts:
+    name: "Tigo: alert when watchdog itself is dead (FR-4.5b)"
+    icon: mdi:robot-dead
+    initial: true

@@ -1,0 +1,159 @@
+# Automations for the Tigo watchdog (FR-4.3, FR-4.4, FR-4.5, FR-4.5b).
+#
+# All four notifications are intentionally NON-CRITICAL per the user's
+# explicit preference. iOS uses `interruption-level: active`; Android uses
+# `importance: default`. Escalation is via wording, not via priority.
+#
+# Replace `<NOTIFY_SERVICE>` with the operator's mobile_app entity (e.g.
+# `mobile_app_iphone`). Discover via:
+#   python3 dashboards/scripts/query_entities.py --filter mobile_app
+# Or use `!secret tigo_notify_service` once the secrets entry is set.
+#
+# Each automation gates on its corresponding input_boolean from
+# input_booleans.yaml so the operator can mute alerts during maintenance.
+
+automation:
+  # ----- FR-4.3: CCA still silent after watchdog should have bounced -----
+  - id: tigo_primary_unrecovered_alert
+    alias: "Tigo: primary CCA still silent (watchdog didn't recover)"
+    description: >-
+      Fires when the watchdog has had its bounce window and the primary CCA
+      is still silent at 7 minutes. Either the watchdog didn't fire, the
+      bounce didn't help, or the breaker is tripped.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.taptap_primary_unrecovered
+        from: "off"
+        to: "on"
+        for: "00:00:30"
+    condition:
+      - condition: state
+        entity_id: input_boolean.tigo_unrecovered_alerts
+        state: "on"
+    action:
+      - service: notify.<NOTIFY_SERVICE>
+        data:
+          title: "Tigo: primary CCA still silent — watchdog didn't recover it"
+          message: >-
+            Silent for {{ ((now() - (states('sensor.taptap_primary_last_seen') | as_datetime)).total_seconds() / 60) | round(0) }} min.
+            Watchdog should have bounced at 5 min. Check watchdog logs and CCA hardware.
+          data:
+            push:
+              interruption-level: active
+            channel: default
+            importance: default
+
+  - id: tigo_secondary_unrecovered_alert
+    alias: "Tigo: secondary CCA still silent (watchdog didn't recover)"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.taptap_secondary_unrecovered
+        from: "off"
+        to: "on"
+        for: "00:00:30"
+    condition:
+      - condition: state
+        entity_id: input_boolean.tigo_unrecovered_alerts
+        state: "on"
+    action:
+      - service: notify.<NOTIFY_SERVICE>
+        data:
+          title: "Tigo: secondary CCA still silent — watchdog didn't recover it"
+          message: >-
+            Silent for {{ ((now() - (states('sensor.taptap_secondary_last_seen') | as_datetime)).total_seconds() / 60) | round(0) }} min.
+            Watchdog should have bounced at 5 min. Check watchdog logs and CCA hardware.
+          data:
+            push:
+              interruption-level: active
+            channel: default
+            importance: default
+
+  # ----- FR-4.4: bounce confirmation (informational) -----
+  - id: tigo_bounce_confirmation
+    alias: "Tigo: watchdog bounced a CCA (FYI)"
+    description: >-
+      Informational notification that the system self-healed. Triggered by
+      `event: bounce` on taptap/watchdog/events.
+    mode: queued
+    max: 5
+    trigger:
+      - platform: mqtt
+        topic: taptap/watchdog/events
+    condition:
+      - condition: state
+        entity_id: input_boolean.tigo_bounce_alerts
+        state: "on"
+      - condition: template
+        value_template: "{{ trigger.payload_json.event == 'bounce' }}"
+    action:
+      - service: notify.<NOTIFY_SERVICE>
+        data:
+          title: "Tigo: watchdog bounced {{ trigger.payload_json.container }}"
+          message: >-
+            Reason: {{ trigger.payload_json.reason }}.
+            Silent for {{ trigger.payload_json.silent_seconds | default('?') }}s.
+          data:
+            push:
+              interruption-level: active
+            channel: default
+            importance: default
+
+  # ----- FR-4.5: circuit breaker tripped -----
+  - id: tigo_circuit_breaker_escalation
+    alias: "Tigo: watchdog gave up on a CCA"
+    description: >-
+      Triggered when the watchdog's circuit breaker trips after 3 bounces in
+      an hour. Manual investigation needed.
+    mode: queued
+    max: 5
+    trigger:
+      - platform: mqtt
+        topic: taptap/watchdog/events
+    condition:
+      - condition: state
+        entity_id: input_boolean.tigo_escalation_alerts
+        state: "on"
+      - condition: template
+        value_template: "{{ trigger.payload_json.event == 'circuit_breaker_tripped' }}"
+    action:
+      - service: notify.<NOTIFY_SERVICE>
+        data:
+          title: "Tigo: watchdog gave up on {{ trigger.payload_json.container }}"
+          message: >-
+            {{ trigger.payload_json.bounces_in_window | default(3) }} bounces in the last hour didn't fix it. Manual investigation needed.
+          data:
+            push:
+              interruption-level: active
+            channel: default
+            importance: default
+
+  # ----- FR-4.5b: watchdog itself is dead -----
+  - id: tigo_watchdog_dead_alert
+    alias: "Tigo: watchdog itself is silent"
+    description: >-
+      Triggered when no heartbeat for >2 min. The watchdog cannot self-report
+      its own death; this is the only way to detect it.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.taptap_watchdog_dead
+        from: "off"
+        to: "on"
+        for: "00:00:30"
+    condition:
+      - condition: state
+        entity_id: input_boolean.tigo_watchdog_alerts
+        state: "on"
+    action:
+      - service: notify.<NOTIFY_SERVICE>
+        data:
+          title: "Tigo: watchdog itself is silent"
+          message: >-
+            No heartbeat for >2 min. Watchdog or broker may be down. Check container logs.
+          data:
+            push:
+              interruption-level: active
+            channel: default
+            importance: default
