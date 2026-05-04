@@ -146,8 +146,24 @@ services:
   # `POST /containers/<name>/restart` is allowed. Compromise of the watchdog
   # cannot escalate to host root.
   #
-  # Bound to 127.0.0.1:2375 so it is unreachable from the LAN even though all
-  # tigo-mqtt services use host networking. See spec NFR-1.2.
+  # NOTE (2026-05-03 deploy lesson): the original sample used host networking
+  # with `command: ["-listen", "127.0.0.1:2375"]` to bind to loopback, but the
+  # tecnativa/docker-socket-proxy:0.3.0 image's haproxy.cfg does NOT honor a
+  # -listen flag — it always listens on 0.0.0.0:2375 from its baked config. As
+  # a result, "Path A" loopback isolation under host networking is not
+  # achievable with the stock image without a custom haproxy.cfg.
+  #
+  # The actual deployed config uses Path A bridge-network isolation
+  # (mirroring PPG): the proxy and watchdog are on a private `tigo_watchdog_net`
+  # bridge, and the watchdog's webhook port (8080) is published to the host LAN
+  # via `ports: - "8080:8080"`. The proxy itself is unreachable from the LAN
+  # because it has no port mapping. Watchdog → proxy traffic stays on the bridge.
+  # See the deployed `docker-compose.yml` for the working layout (the bridge
+  # network is created at the bottom of the file).
+  #
+  # The block below is left as a HISTORICAL REFERENCE for the host-networking
+  # approach. Do NOT use it as-is — the proxy will bind 0.0.0.0:2375 and be
+  # LAN-reachable.
   # --------------------------------------------------------------------------
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
