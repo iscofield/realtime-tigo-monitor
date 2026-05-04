@@ -221,7 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_bounces_ts ON bounces(ts);
 
 The watchdog SHALL prune rows older than 24 hours on startup AND every silence-check loop iteration (~30s) so the table remains bounded during long-running operation.
 
-**Volume mount.** The watchdog compose service SHALL mount a dedicated host directory `./watchdog-data:/data` for SQLite persistence. This volume SHALL NOT overlap with `tigo-mqtt/data/{primary,secondary}` (state files — see NFR-1.1).
+**Volume mount.** The watchdog compose service SHALL use a named Docker volume (`tigo_watchdog_data:`) mounted at `/data` for SQLite persistence. A bind mount (`./watchdog-data:/data`) MUST NOT be used — the CIFS/SMB NAS mount used by the Pi causes "database is locked" errors with SQLite. Named volumes are managed by the Docker Engine and avoid the CIFS locking issue. This volume SHALL NOT overlap with `tigo-mqtt/data/{primary,secondary}` (state files — see NFR-1.1). The deployed `docker-compose.yml` already reflects this; the spec is updated to match.
 
 **Concurrency.** The watchdog has multiple async paths (MQTT message callbacks, FastAPI webhook handler, silence-check loop). All SQLite writes SHALL go through `asyncio.to_thread(...)` calls so the event loop is never blocked, with a single `sqlite3.Connection` opened with `check_same_thread=False` and serialized via an `asyncio.Lock`. Alternatively, `aiosqlite==0.20.0` MAY be used to avoid the manual locking — pick one approach in implementation and document. The default (FR-3.13's reference implementation) is `sqlite3 + asyncio.Lock` to minimize dependencies.
 
@@ -504,13 +504,14 @@ The existing `.gitignore` already excludes `.claude/`, which is the canonical lo
 
 **NFR-1.2: Least-privilege Docker access.** The watchdog SHALL NOT mount `/var/run/docker.sock` directly. It SHALL communicate with `docker-socket-proxy` (image: `tecnativa/docker-socket-proxy:0.3.0`), which exposes only specific Docker API endpoints. Required endpoints: `CONTAINERS=1`, `POST=1`. All other endpoints (`IMAGES`, `NETWORKS`, `VOLUMES`, `EXEC`, `BUILD`, etc.) SHALL be `0`. The proxy SHALL NOT be reachable from the LAN.
 
-**Network topology (resolves the host-vs-bridge tension).** The existing tigo-mqtt services (`taptap-primary`, `taptap-secondary`, `temp-id-monitor`) use `network_mode: host` because they need access to the local-network MQTT broker on the NAS without DNS gymnastics. The watchdog and `docker-socket-proxy` SHALL also use `network_mode: host` for consistency. To preserve the LAN-isolation requirement for the proxy:
+**Network topology (deployed configuration).** The existing tigo-mqtt services (`taptap-primary`, `taptap-secondary`, `temp-id-monitor`) use `network_mode: host` because they need access to the local-network MQTT broker on the NAS without DNS gymnastics. The watchdog uses `network_mode: host` for the same reason. The `docker-socket-proxy` uses a **dedicated bridge network** (`tigo_watchdog_net`) shared only with the watchdog, providing LAN isolation without loopback binding.
 
-- `docker-socket-proxy` SHALL bind to `127.0.0.1:2375` only (loopback). With host networking, this means it is reachable only from processes on the Pi itself, never from any LAN device. Set the compose service's command/env to bind explicitly: `ports: ["127.0.0.1:2375:2375"]` is NOT used (no `ports:` mapping at all under host networking — the bind is controlled by the proxy image's `LISTEN` env var or equivalent). The proxy image binds 0.0.0.0:2375 by default — the watchdog SHALL set `command: ["-listen", "127.0.0.1:2375"]` or whichever the upstream image supports to force loopback-only binding. If upstream doesn't support loopback binding, fall back to a dedicated bridge network (see alternative below).
-- The watchdog SHALL connect to the proxy via `DOCKER_PROXY_URL=http://127.0.0.1:2375`.
-- The watchdog's webhook SHALL bind to all interfaces on port 8080 (default behavior under host networking) so HA on a different LAN host can reach `http://<PI_HOST>:8080/bounce/...`. Authentication is required because port 8080 is LAN-reachable; see FR-3.10.
+**Path A (bridge network — prescribed, deployed 2026-05-03):** The proxy runs on a dedicated bridge network. The watchdog connects via the bridge service name. The proxy is unreachable from the LAN and from any container not on the bridge.
 
-**Alternative if loopback binding is unavailable in the proxy image:** Move both `taptap-watchdog` and `docker-socket-proxy` to a dedicated bridge network (e.g., `watchdog_net`). The watchdog connects to the proxy by service name (`http://docker-socket-proxy:2375`). The watchdog still needs access to the host MQTT broker — either dual-attach to host network (not supported in compose) or set `MQTT_SERVER` to the Pi's LAN IP (e.g., `<PI_HOST>`) and rely on the bridge → host route. The webhook port 8080 must be exposed via `ports: ["8080:8080"]`. Document the chosen approach in the deployed `docker-compose.yml` comments.
+- `DOCKER_PROXY_URL=http://docker-socket-proxy:2375` (bridge service name).
+- The watchdog's webhook binds to all interfaces on port 8080 (host networking) so HA can reach `http://<PI_HOST>:8080/bounce/...`. Authentication is required; see FR-3.10.
+
+> **Note:** Host-networking + loopback-bind (`-listen 127.0.0.1:2375`) was originally documented as an alternative. This does NOT work — `tecnativa/docker-socket-proxy:0.3.0` is HAProxy-based and silently ignores the `-listen` flag. The deployed configuration uses bridge networking (Path A). Verified 2026-05-03 during initial deployment.
 
 **NFR-1.3: Bounce audit trail.** Every bounce action (autonomous or manual) SHALL be persisted to SQLite (FR-3.13) and published to MQTT (FR-3.8). Loss of one signal SHALL NOT lose the audit record.
 
@@ -898,9 +899,9 @@ Medium. The bulk of the new code.
    - FR-3.10: `BOUNCE_TOKEN` env var loaded as a required value; `X-Bounce-Token` header validation via `hmac.compare_digest`
    - FR-3.12: short-vs-long disconnect distinction with `MQTT_RECONNECT_GRACE_CUTOFF_SEC` (default 60s)
    - FR-3.9b: `bounce_failed` event emission on docker-socket-proxy errors (no cooldown/breaker side effects)
-   - FR-3.13: dedicated `./watchdog-data:/data` host volume; SQLite via `asyncio.Lock` (or `aiosqlite`) for concurrency
+   - FR-3.13: named Docker volume `tigo_watchdog_data:` mounted at `/data` (not a bind mount — CIFS causes SQLite locking); SQLite via `asyncio.Lock` (or `aiosqlite`) for concurrency
    - FR-3.16: heartbeat at QoS 0, retain=true
-3. Add `taptap-watchdog` and `docker-socket-proxy` services to `tigo-mqtt/docker-compose.yml` and `docker-compose.sample.yml` per NFR-1.2 (host networking; proxy bound to 127.0.0.1:2375).
+3. Add `taptap-watchdog` and `docker-socket-proxy` services to `tigo-mqtt/docker-compose.yml` and `docker-compose.sample.yml` per NFR-1.2 (bridge network `tigo_watchdog_net`; named volume `tigo_watchdog_data:`).
 4. Generate a `BOUNCE_TOKEN` (e.g., `openssl rand -hex 32`) and add it to the Pi's `.env` (NOT git-committed). Add `BOUNCE_TOKEN=...` placeholder to `tigo-mqtt/.env.example`.
 5. Add unit tests in `tigo-mqtt/watchdog/tests/`:
    - Cooldown logic (clock starts on 2xx response)
@@ -999,11 +1000,25 @@ State files (NEVER MODIFIED — see NFR-1.1):
 
 ---
 
-**Specification Version:** 1.5
+**Specification Version:** 1.6
 **Last Updated:** 2026-05-03
 **Authors:** Ian Scofield (with Claude)
 
 ## Changelog
+
+### v1.6 (May 2026)
+
+**Summary:** Post-deployment spec alignment — NFR-1.2 corrected to prescribe bridge networking only (host-networking + loopback-bind option marked broken); FR-3.13 updated to require named Docker volume instead of bind mount.
+
+**Changes:**
+- **NFR-1.2 (CORRECTION):** Removed the host-networking + loopback-bind option. `tecnativa/docker-socket-proxy:0.3.0` is HAProxy-based and silently ignores the `-listen` flag, so `-listen 127.0.0.1:2375` has no effect. Bridge networking (Path A) is now the sole prescribed approach. Added an explicit note: "Host-networking + custom listen-address option does not work with tecnativa/docker-socket-proxy:0.3.0 — the `-listen` flag is silently ignored. Use bridge networking instead. Verified 2026-05-03 during initial deployment."
+- **FR-3.13 (ALIGNMENT):** Updated the Volume mount paragraph to specify a named Docker volume (`tigo_watchdog_data:`) instead of a bind mount (`./watchdog-data:/data`). Bind mounts on the CIFS/SMB NAS caused "database is locked" errors with SQLite. The deployed `docker-compose.yml` already uses a named volume; this brings the spec into alignment.
+- **PR 1 task list:** Updated task 3 to reference bridge network and named volume.
+- **httpx timeout (CODE FIX):** `HttpBouncer` default timeout bumped from 10s to 30s. Docker's `POST /containers/{name}/restart` blocks until restart completes (typically 15–25s); 10s caused false `bounce_failed` events that counted toward the circuit-breaker window.
+
+**Rationale:**
+- The `-listen` flag issue was discovered during initial deployment when the Tigo proxy remained bound to `0.0.0.0:2375`. Bridge networking was already the deployed fallback; the spec was catching up.
+- CIFS + SQLite WAL mode causes POSIX-lock emulation failures ("database is locked") that do not occur with Docker named volumes (tmpfs/overlay backing store on the Pi itself).
 
 ### v1.5 (May 2026)
 

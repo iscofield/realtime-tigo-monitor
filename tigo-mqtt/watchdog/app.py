@@ -223,7 +223,7 @@ class Publisher:
 
 class HttpBouncer:
     """Issues `POST /containers/<name>/restart` to docker-socket-proxy."""
-    def __init__(self, proxy_url: str, *, timeout: float = 10.0) -> None:
+    def __init__(self, proxy_url: str, *, timeout: float = 30.0) -> None:
         self._proxy_url = proxy_url.rstrip("/")
         self._timeout = timeout
 
