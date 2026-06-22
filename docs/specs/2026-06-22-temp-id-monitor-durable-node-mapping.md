@@ -1,5 +1,6 @@
 **Status:** Draft
 **Date:** 2026-06-22
+**Reviewed:** 3 passes (adversarial, converged)
 
 > **Placeholder convention.** This spec is checked into a public GitHub repository. Environment-specific values are written as angle-bracketed placeholders that the implementer substitutes from `.claude/env`, `secrets.yaml`, or compose env files at deploy time. None of these values are committed in plaintext.
 >
@@ -49,8 +50,8 @@ Impact today is limited to the **node-id label** (live power data flows by seria
 ### FR-2 — Persist the learned map
 
 - **FR-2.1** The monitor SHALL maintain a per-system persistent cache mapping `node_id → serial` at a configurable path (default `/data/node_serials_<system>.json`), backed by a host volume **distinct from** the `taptap.state` data directory.
-- **FR-2.2** On startup, before scanning logs, the monitor SHALL load the cache into the in-memory map and, if non-empty, publish it immediately (FR-3) so the retained `node_mappings` value is restored without waiting for new log lines.
-- **FR-2.3** On every change to the in-memory map, the monitor SHALL atomically rewrite the cache file (write temp file in the same directory, then `os.replace`).
+- **FR-2.2** On startup the monitor SHALL load the cache into the in-memory map **before the history scan**, so the map is already populated when the first publish occurs. Publishing requires a connected MQTT client, which the current code opens only inside the reconnect loop (`temp_id_monitor.py:177`); the cache is therefore **not** published at load time. Instead, the existing connect-time `node_mappings` publish (`temp_id_monitor.py:185`) SHALL be replaced by the gated `publish_mappings_if_present` (FR-3.1, FR-3.5), which on connect publishes the combined cache + scanned map. (The adjacent `publish_temp_nodes` at `:184` is unchanged — FR-3.4.) This restores the retained `node_mappings` value on the first reconnect without waiting for new log lines and without an empty-clobber.
+- **FR-2.3** On every change to the in-memory map, the monitor SHALL atomically rewrite the cache file (write temp file in the same directory, then `os.replace`). A log line that merely re-confirms an already-known `(node_id, serial)` is **not** a change and SHALL NOT trigger a cache write or an MQTT publish — gating on `merge()` returning `True` (see High Level Design). This prevents a write/publish storm from the every-poll `already enumerated` lines (~47/poll on primary).
 - **FR-2.4** The cache file SHALL be JSON of the form:
   ```json
   { "schema_version": 1, "system": "primary", "updated_at": "<ISO8601 UTC>", "mappings": { "65": "4-C3F222W" } }
@@ -64,24 +65,28 @@ Impact today is limited to the **node-id label** (live power data flows by seria
 - **FR-3.2** Within a run the in-memory map SHALL only grow or update entries; an entry SHALL be removed only when a newer enumeration line reassigns the same `node_id` to a different serial (an update, not a deletion). The map SHALL NOT silently shrink.
 - **FR-3.3** Together with FR-2.2 and FR-3.1, the retained `node_mappings` value SHALL never regress from a known-good state to empty across restarts, log-rotation, or a change of taptap `LOG_LEVEL`.
 - **FR-3.4** FR-3 applies to `node_mappings` only. `temp_nodes` publishing is unchanged and MAY be empty (temp nodes are transient).
+- **FR-3.5** The current unconditional connect-time `node_mappings` publish (`temp_id_monitor.py:185`, which today publishes even an empty map — the original clobber source) SHALL be replaced by the gated `publish_mappings_if_present`. This gated publish fires on every (re)connect; the connect-time re-publish of a non-empty retained map is expected and idempotent and SHALL NOT be suppressed as a "double publish".
+- **FR-3.6** `node_mappings` SHALL be published with `qos=1, retain=True`. This is an intentional change from the current default `qos=0` (`temp_id_monitor.py:118`); the dashboard reads the retained value and tolerates qos 1, so no consumer change is required.
 
 ### FR-4 — State-file completeness cross-check (read-only, observability)
 
 - **FR-4.1** The monitor MAY read the system's `taptap.state` file **read-only** (path via env, e.g. `PRIMARY_STATE_FILE`/`SECONDARY_STATE_FILE`) to obtain the authoritative set of `node_id`s.
-- **FR-4.2** On startup and on each periodic re-scan (FR-5.2), the monitor SHALL compare learned `node_id`s against the state file's `node_id` set and log a WARNING enumerating any **missing** (authoritative but not learned) or **extra** (learned but not authoritative) ids, including counts (e.g. "primary: learned 47/47").
+- **FR-4.2** On startup and on each periodic re-publish/cross-check tick (FR-5.2), the monitor SHALL compare learned `node_id`s against the state file's `node_id` set and log a WARNING enumerating any **missing** (authoritative but not learned) or **extra** (learned but not authoritative) ids, including counts (e.g. "primary: learned 47/47"). The state file's `node_id` set is the union of the first element of each entry across all `gateway_node_tables` gateways (cross-ref `convert_infra_to_state.py`).
 - **FR-4.3** The monitor SHALL NEVER write, truncate, move, lock, or otherwise modify `taptap.state`. Any mount of the state directory SHALL be read-only.
 - **FR-4.4** If the state file is absent or unparseable, the cross-check SHALL be skipped (log INFO) without crashing. The cross-check is observability only.
 - **FR-4.5** The cross-check SHALL NOT auto-prune cache entries in this version (avoids dropping valid entries on a transient state read). Reconciliation is explicitly out of scope (see Out of Scope).
 
 ### FR-5 — Loop hardening
 
-- **FR-5.1** The per-container restart delay SHALL use exponential backoff (initial 5 s, doubling, capped at 60 s), resetting to the initial delay after a sustained healthy follow period (default 120 s of uninterrupted streaming).
-- **FR-5.2** The monitor SHALL periodically (default every 300 s, configurable) re-publish the current non-empty map (idempotent retained publish) and run the FR-4 cross-check, as a safety net against missed live lines or a dropped retained message.
+- **FR-5.1** The per-container restart delay SHALL use exponential backoff (initial 5 s, doubling, capped at 60 s). "Sustained healthy follow" SHALL be measured from a monotonic timestamp captured when the follow loop is (re)entered (a successful `docker logs -f` attach), **not** from line-arrival times (primary idles between polls, so a line-gap clock would never reset). On stream-end/exception, if `monotonic() - entered ≥ 120 s` the delay resets to 5 s; otherwise it escalates (×2, capped at 60 s).
+- **FR-5.2** The monitor SHALL, on a wall-clock interval (default 300 s, configurable via `REPUBLISH_INTERVAL`), re-publish the current in-memory non-empty map (idempotent retained publish) and re-run the FR-4 cross-check, as a safety net against a dropped retained message. This tick re-publishes the **in-memory** map only — it SHALL NOT re-run `docker logs` (the follow loop already ingests live lines).
+- **FR-5.2.1** Because the current follow loop blocks in `async for line in process.stdout` (`temp_id_monitor.py:206`), nothing else in the task runs while it awaits the next line. The loop SHALL be restructured so the FR-5.2 tick fires during idle periods. **Normative approach:** replace the bare `async for` with a `readline()` poll bounded by the interval, e.g. `line = await asyncio.wait_for(process.stdout.readline(), timeout=REPUBLISH_INTERVAL)`; on `asyncio.TimeoutError` perform the FR-5.2 tick and continue; a returned empty `bytes` means the stream ended (proceed to backoff/restart per FR-5.1). A per-system background `asyncio.Task` that sleeps `REPUBLISH_INTERVAL` (cancelled on stream end) is an acceptable alternative. A bare `async for` with a timer that only fires on line arrival is **non-compliant**.
 - **FR-5.3** `HISTORY_TAIL_LINES` SHALL remain configurable. With FR-1 and FR-2, recovery no longer depends on the tail window containing fresh-enumeration lines.
 - **FR-5.4** A failure in one container's monitor task SHALL NOT terminate sibling tasks or the process; each task self-supervises and always restarts.
 
 ### FR-6 — Tests
 
+- **FR-6.0** No test harness exists in `tigo-mqtt/temp-id-monitor/` today (only `Dockerfile`, `requirements.txt`, `temp_id_monitor.py`). PR 1 SHALL create it from scratch: a `tigo-mqtt/temp-id-monitor/tests/` directory, a dev dependency on `pytest` (e.g. `requirements-dev.txt`), and pure unit tests that import parsing/cache/merge helpers directly (no Docker, no MQTT broker, no live `taptap.state`).
 - **FR-6.1** Unit tests SHALL assert both patterns extract the correct `(node_id, serial)` from the exact observed lines in Background, plus negative cases (non-enumeration lines, malformed serials).
 - **FR-6.2** Unit tests SHALL cover cache round-trip, atomic write, missing file, and malformed/schema-mismatched file.
 - **FR-6.3** Unit tests SHALL assert the no-clobber gating: an empty map is never published; the map never shrinks; a serial reassignment updates in place.
@@ -109,12 +114,9 @@ sequenceDiagram
     participant B as MQTT broker
     participant D as Dashboard backend
 
-    Note over M: Startup
-    M->>C: load cache
+    Note over M: Startup (before MQTT connect — no client yet)
+    M->>C: load cache (seed in-memory map)
     C-->>M: {node_id: serial} (may be empty)
-    alt cache non-empty
-        M->>B: publish RETAINED node_mappings (FR-3.1)
-    end
     M->>ST: read node_id set (FR-4)
     ST-->>M: authoritative node_ids
     M->>M: cross-check, WARN if incomplete
@@ -122,19 +124,23 @@ sequenceDiagram
     TT-->>M: lines (PERM + "already enumerated")
     M->>M: merge into map (grow/update only)
     M->>C: atomic save (on change)
-    M->>B: publish RETAINED node_mappings (if changed)
 
-    Note over M: Steady state (follow)
-    loop docker logs -f
-        TT-->>M: new line
-        M->>M: parse; if new/changed mapping
-        M->>C: atomic save
-        M->>B: publish RETAINED node_mappings
+    Note over M,B: Reconnect loop — open MQTT client (temp_id_monitor.py:177)
+    M->>B: connect
+    M->>B: gated publish RETAINED node_mappings (skipped if empty, FR-3.1/3.5)
+
+    Note over M: Steady state (follow, FR-5.2.1 readline+wait_for)
+    loop until stream ends
+        alt new line within REPUBLISH_INTERVAL
+            TT-->>M: new line
+            M->>M: parse; merge() returns True only if new/changed
+            M->>C: atomic save (only on change)
+            M->>B: gated publish RETAINED node_mappings (only on change)
+        else readline timeout (idle tick, FR-5.2)
+            M->>B: re-publish current non-empty map (idempotent)
+            M->>ST: re-run cross-check (WARN only)
+        end
     end
-
-    Note over M: Every 300s (safety net, FR-5.2)
-    M->>B: re-publish current non-empty map
-    M->>ST: re-run cross-check (WARN only)
 
     B-->>D: retained node_mappings → panels gain node_id
 ```
@@ -247,7 +253,7 @@ def merge(mappings: dict[str, str], node_id: str, serial: str) -> bool:
 ## Task Breakdown
 
 1. **Parsing + no-clobber (PR 1).** Add `ALREADY_ENUM_PATTERN` + `parse_mapping`; apply in history scan and live-follow; implement `merge` (grow/update only) and the empty-map publish gate (FR-1, FR-3). Unit tests FR-6.1, FR-6.3. *This alone restores primary at the current debug log level.*
-2. **Persistence (PR 2).** Add `load_cache`/`save_cache`; load-before-scan and publish-on-load; atomic writes; `CACHE_DIR` env; add `temp-id-monitor-data` volume to sample + deployed compose; git-ignore it (FR-2). Unit tests FR-6.2.
+2. **Persistence (PR 2).** Add `load_cache`/`save_cache`; load-before-scan and publish-on-load; atomic writes; `CACHE_DIR` env; add the `temp-id-monitor-data` volume to sample + deployed compose; add `tigo-mqtt/temp-id-monitor-data/` to `tigo-mqtt/.gitignore` (mirrors the existing `watchdog-data/` entry) (FR-2). Unit tests FR-6.2.
 3. **State cross-check + loop hardening (PR 3).** Read-only state cross-check with WARN (FR-4); exponential backoff + periodic re-publish (FR-5). Add `:ro` state mounts + `REPUBLISH_INTERVAL` env. Unit tests FR-6.4.
 4. **Deploy + verify.** Rebuild only the sidecar on the Pi and restart it; verify (no taptap restart):
    - `curl`-free MQTT check from the Pi: `mosquitto_sub -h <MQTT_BROKER_HOST> -t 'taptap/primary/node_mappings' -C 1` shows 47 entries; secondary shows 22.
@@ -266,7 +272,7 @@ def merge(mappings: dict[str, str], node_id: str, serial: str) -> bool:
 ## Context / Documentation
 
 - `tigo-mqtt/temp-id-monitor/temp_id_monitor.py` — the sidecar to modify.
-- `tigo-mqtt/temp-id-monitor/tests/` — unit test location.
+- `tigo-mqtt/temp-id-monitor/tests/` — unit test location (**to be created**; none exists today, see FR-6.0).
 - `tigo-mqtt/docker-compose.sample.yml` — `temp-id-monitor` service definition (volumes, env, socket).
 - `dashboard/backend/app/mqtt_client.py`, `dashboard/backend/app/panel_service.py` — the consumer (`_process_node_mappings`, panel/node_id join).
 - `CLAUDE.md` → "CRITICAL: TapTap State Files" — why `taptap.state` is read-only here.
