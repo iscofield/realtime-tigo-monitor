@@ -84,3 +84,9 @@ dashboard/backend/logs/
 
 # Favicon generation variants (local reference only)
 assets/favicon-variants/
+
+# Operator-specific deploy artifacts — kept local, NOT for the public repo.
+# (The UD common-script names the operator's host/share; its real home is
+# goober's flash. The .local.md note documents the goober reboot-race fix.)
+dashboard/scripts/ud-docker-share-mount.sh
+dashboard/scripts/*.local.md
