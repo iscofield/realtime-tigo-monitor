@@ -62,9 +62,12 @@ def test_load_coerces_keys_and_values_to_str(tmp_path):
 # --- FR-4: read-only state cross-check -------------------------------------
 
 def _write_state(tmp_path, node_ids):
+    # Real taptap format: entries are dicts {"node_id": N, "long_address": [...]}.
     p = tmp_path / "taptap.state"
     p.write_text(json.dumps({
-        "gateway_node_tables": {"gw1": [[nid, [0, 0, 0]] for nid in node_ids]}
+        "gateway_node_tables": {
+            "4609": [{"node_id": nid, "long_address": [4, 192]} for nid in node_ids]
+        }
     }))
     return p
 
@@ -72,6 +75,13 @@ def _write_state(tmp_path, node_ids):
 def test_read_state_node_ids_from_gateway_tables(tmp_path):
     p = _write_state(tmp_path, [65, 42, 7])
     assert read_state_node_ids(str(p)) == {"65", "42", "7"}
+
+
+def test_read_state_node_ids_legacy_list_format(tmp_path):
+    # convert_infra_to_state.py emits [node_id, [addr...]] — still supported.
+    p = tmp_path / "taptap.state"
+    p.write_text(json.dumps({"gateway_node_tables": {"gw": [[7, [0, 1]], [8, [2, 3]]]}}))
+    assert read_state_node_ids(str(p)) == {"7", "8"}
 
 
 def test_read_state_unconfigured_returns_none():

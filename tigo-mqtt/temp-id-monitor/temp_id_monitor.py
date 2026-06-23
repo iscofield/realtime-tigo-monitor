@@ -187,10 +187,13 @@ def read_state_node_ids(state_file: str | None) -> set | None:
     ids = set()
     for entries in doc.get("gateway_node_tables", {}).values():
         for entry in entries:
+            # taptap writes each entry as {"node_id": N, "long_address": [...]};
+            # the convert_infra_to_state.py helper uses [node_id, [addr...]].
             try:
-                ids.add(str(entry[0]))  # entry = [node_id, [addr_bytes...]]
+                node_id = entry["node_id"] if isinstance(entry, dict) else entry[0]
             except (TypeError, IndexError, KeyError):
                 continue
+            ids.add(str(node_id))
     return ids or None
 
 
