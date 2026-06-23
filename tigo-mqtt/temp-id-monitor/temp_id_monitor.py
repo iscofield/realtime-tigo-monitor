@@ -10,6 +10,8 @@ This helps detect panels with incorrect IDs and provides node_id data
 that isn't available in the standard taptap-mqtt messages.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -19,7 +21,10 @@ import sys
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Set
 
-import aiomqtt
+try:
+    import aiomqtt
+except ModuleNotFoundError:  # pure helpers (parsing/merge) stay importable for unit tests
+    aiomqtt = None
 
 # Configuration via environment variables
 # Support both MQTT_HOST and MQTT_SERVER for compatibility
@@ -85,6 +90,34 @@ PERM_PATTERN = re.compile(r"Permanently enumerated node id: (\d+)")
 PERM_SERIAL_PATTERN = re.compile(
     r"Permanently enumerated node id: (\d+).*?(?:device )?serial[:\s]+(\S+)"
 )
+# Steady-state line taptap logs every poll for each enumerated node, e.g.:
+#   "Node id: 65 already enumerated to node name: 'D7' and serial: '4-C3F222W'"
+# Unlike PERM_SERIAL_PATTERN (emitted only at fresh enumeration), this line is
+# always present in normal running logs, so the map stays recoverable (FR-1).
+ALREADY_ENUM_PATTERN = re.compile(
+    r"Node id: (\d+) already enumerated.*?serial[:\s]+'?([0-9A-Za-z-]+)'?"
+)
+
+
+def parse_mapping(line: str):
+    """Return (node_id, serial) from any enumeration line, else None (FR-1)."""
+    if m := PERM_SERIAL_PATTERN.search(line):
+        return m.group(1), m.group(2)
+    if m := ALREADY_ENUM_PATTERN.search(line):
+        return m.group(1), m.group(2)
+    return None
+
+
+def merge_mapping(mappings: Dict[str, str], node_id: str, serial: str) -> bool:
+    """Grow/update only (FR-3.2). Returns True iff the map changed.
+
+    Never deletes an entry here, so the map cannot silently shrink; a node_id
+    reassigned to a new serial is updated in place.
+    """
+    if mappings.get(node_id) == serial:
+        return False
+    mappings[node_id] = serial
+    return True
 
 # Setup logging
 logging.basicConfig(
@@ -112,10 +145,15 @@ async def publish_node_mappings(mqtt: aiomqtt.Client, system: str, mappings: Dic
 
     Topic: {MQTT_TOPIC_PREFIX}/{system}/node_mappings
     Payload: {"42": "4-C3F23CR", "57": "4-XYZ123", ...}
+
+    Never publishes an empty map (FR-3.1): a transient empty state must not
+    clobber a known-good retained value. Uses qos=1 (FR-3.6).
     """
+    if not mappings:
+        return
     topic = f"{MQTT_TOPIC_PREFIX}/{system}/node_mappings"
     payload = json.dumps(mappings)
-    await mqtt.publish(topic, payload, retain=True)
+    await mqtt.publish(topic, payload, qos=1, retain=True)
     logger.info(f"Published node_mappings for {system}: {len(mappings)} nodes")
 
 
@@ -146,11 +184,10 @@ async def monitor_container(container_name: str, system: str):
             # Only parse enumeration events — skip everything else
             if temp_match := TEMP_PATTERN.search(line_stripped):
                 temp_nodes.add(int(temp_match.group(1)))
-            elif perm_match := PERM_SERIAL_PATTERN.search(line_stripped):
-                node_id = perm_match.group(1)
-                serial = perm_match.group(2)
+            elif mapping := parse_mapping(line_stripped):
+                node_id, serial = mapping
                 temp_nodes.discard(int(node_id))
-                node_mappings[node_id] = serial
+                merge_mapping(node_mappings, node_id, serial)
 
         if hist_process.returncode == 0:
             logger.info(
@@ -218,16 +255,14 @@ async def monitor_container(container_name: str, system: str):
                             temp_nodes.add(node_id)
                             logger.info(f"[{system}] Node {node_id} temporarily enumerated")
                             await publish_temp_nodes(mqtt, system, temp_nodes)
-                    elif perm_match := PERM_SERIAL_PATTERN.search(line_str):
-                        node_id_str = perm_match.group(1)
-                        serial = perm_match.group(2)
+                    elif mapping := parse_mapping(line_str):
+                        node_id_str, serial = mapping
                         node_id_int = int(node_id_str)
                         if node_id_int in temp_nodes:
                             temp_nodes.discard(node_id_int)
                             logger.info(f"[{system}] Node {node_id_str} permanently enumerated")
                             await publish_temp_nodes(mqtt, system, temp_nodes)
-                        if node_mappings.get(node_id_str) != serial:
-                            node_mappings[node_id_str] = serial
+                        if merge_mapping(node_mappings, node_id_str, serial):
                             logger.info(f"[{system}] Node {node_id_str} -> serial {serial}")
                             await publish_node_mappings(mqtt, system, node_mappings)
 
