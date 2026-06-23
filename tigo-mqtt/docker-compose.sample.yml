@@ -128,9 +128,21 @@ services:
       - SECONDARY_CONTAINER=taptap-secondary
       # For single-CCA setups, replace SECONDARY_CONTAINER with:
       # - ENABLE_SECONDARY=false
+      # Persistent node_id->serial cache dir (regenerable; NOT taptap.state).
+      - CACHE_DIR=/data
+      # Idle re-publish + state cross-check interval (seconds).
+      - REPUBLISH_INTERVAL=300
+      # taptap.state files for the node_id completeness cross-check (read-only).
+      - PRIMARY_STATE_FILE=/state/primary/taptap.state
+      - SECONDARY_STATE_FILE=/state/secondary/taptap.state
     volumes:
       # Docker socket required for reading container logs
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Persistent learned node_id->serial cache (regenerable; NOT taptap.state).
+      - ./temp-id-monitor-data:/data
+      # taptap.state mounted READ-ONLY for the completeness cross-check only (NFR-1).
+      - ./data/primary:/state/primary:ro
+      - ./data/secondary:/state/secondary:ro
     depends_on:
       - taptap-primary
       - taptap-secondary

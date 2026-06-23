@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Dict, Set
 
 try:
@@ -38,6 +39,12 @@ MAX_LINE_LENGTH = 10240
 
 # Max lines to load from container history on startup (override with HISTORY_TAIL_LINES env var)
 HISTORY_TAIL_LINES = int(os.environ.get("HISTORY_TAIL_LINES", "2000"))
+
+# Directory for the persistent node_id -> serial cache (FR-2). Regenerable;
+# this is NOT taptap.state — losing it only triggers re-learning from logs.
+CACHE_DIR = os.environ.get("CACHE_DIR", "/data")
+# Interval (seconds) for the idle re-publish + state cross-check tick (FR-5.2).
+REPUBLISH_INTERVAL = int(os.environ.get("REPUBLISH_INTERVAL", "300"))
 
 # Batch size for historical log replay (lines per MQTT message)
 HISTORY_BATCH_SIZE = 50
@@ -128,6 +135,83 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def cache_path(system: str) -> Path:
+    return Path(CACHE_DIR) / f"node_serials_{system}.json"
+
+
+def load_cache(path: Path) -> Dict[str, str]:
+    """Load the persisted node_id -> serial map. Returns {} on missing/invalid (FR-2.4)."""
+    try:
+        doc = json.loads(path.read_text())
+        if doc.get("schema_version") == 1 and isinstance(doc.get("mappings"), dict):
+            return {str(k): str(v) for k, v in doc["mappings"].items()}
+        logger.warning(f"{path}: unexpected cache schema; starting empty")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"{path}: unreadable cache ({e}); starting empty")
+    return {}
+
+
+def save_cache(path: Path, system: str, mappings: Dict[str, str]) -> None:
+    """Atomically persist the map (FR-2.3): write temp in same dir, then os.replace."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({
+            "schema_version": 1,
+            "system": system,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "mappings": mappings,
+        }))
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f"{path}: failed to write cache ({e})")
+
+
+def read_state_node_ids(state_file: str | None) -> set | None:
+    """Return the authoritative node_id set from taptap.state, READ-ONLY (FR-4).
+
+    Returns None if unconfigured/absent/unparseable (cross-check is then skipped).
+    NEVER writes, locks, or modifies the state file (NFR-1).
+    """
+    if not state_file:
+        return None
+    try:
+        doc = json.loads(Path(state_file).read_text())
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.info(f"State cross-check skipped ({state_file}): {e}")
+        return None
+    ids = set()
+    for entries in doc.get("gateway_node_tables", {}).values():
+        for entry in entries:
+            try:
+                ids.add(str(entry[0]))  # entry = [node_id, [addr_bytes...]]
+            except (TypeError, IndexError, KeyError):
+                continue
+    return ids or None
+
+
+def cross_check(system: str, learned: set, state_ids: set | None) -> None:
+    """Log missing/extra node_ids vs the authoritative state set (FR-4.2). Observability only."""
+    if not state_ids:
+        return
+    missing = state_ids - learned
+    extra = learned - state_ids
+    if missing or extra:
+        logger.warning(
+            f"[{system}] node_mappings cross-check: learned {len(learned)}/{len(state_ids)}"
+            + (f"; missing {sorted(missing)}" if missing else "")
+            + (f"; extra {sorted(extra)}" if extra else "")
+        )
+    else:
+        logger.info(
+            f"[{system}] node_mappings cross-check: learned {len(learned)}/{len(state_ids)} (complete)"
+        )
+
+
 async def publish_temp_nodes(mqtt: aiomqtt.Client, system: str, nodes: Set[int]):
     """Publish current list of temporarily enumerated nodes with retain flag."""
     topic = f"{MQTT_TOPIC_PREFIX}/{system}/temp_nodes"
@@ -160,7 +244,11 @@ async def publish_node_mappings(mqtt: aiomqtt.Client, system: str, mappings: Dic
 async def monitor_container(container_name: str, system: str):
     """Monitor a container's logs and publish temp node status, mappings, and log lines."""
     temp_nodes: Set[int] = set()
-    node_mappings: Dict[str, str] = {}  # node_id (str) -> serial
+    cache_p = cache_path(system)
+    node_mappings: Dict[str, str] = load_cache(cache_p)  # FR-2.2: seed from cache first
+    if node_mappings:
+        logger.info(f"Loaded {len(node_mappings)} cached node_mappings for {system} from {cache_p}")
+    state_file = os.environ.get(f"{system.upper()}_STATE_FILE")  # FR-4: read-only cross-check
     seq = 0
     log_topic = f"{MQTT_TOPIC_PREFIX}/{system}/logs"
 
@@ -206,7 +294,13 @@ async def monitor_container(container_name: str, system: str):
     except Exception as e:
         logger.warning(f"Failed to parse historical logs for {container_name}: {e}")
 
+    # Persist + cross-check the recovered map before connecting (FR-2.3, FR-4.2).
+    if node_mappings:
+        save_cache(cache_p, system, node_mappings)
+    cross_check(system, set(node_mappings), read_state_node_ids(state_file))
+
     # Follow only new logs from this point forward
+    backoff = 5
     while True:
         try:
             logger.info(f"Starting real-time log monitoring for {container_name}...")
@@ -240,8 +334,26 @@ async def monitor_container(container_name: str, system: str):
                         realtime_buf = []
                     last_flush = asyncio.get_event_loop().time()
 
-                async for line in process.stdout:
-                    line_str = line.decode(errors="replace").strip()
+                # Readline + timeout so the idle re-publish/cross-check tick
+                # (FR-5.2.1) can fire while the stream is quiet, instead of
+                # blocking forever in `async for`.
+                entered = asyncio.get_event_loop().time()
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(
+                            process.stdout.readline(), timeout=REPUBLISH_INTERVAL
+                        )
+                    except asyncio.TimeoutError:
+                        # FR-5.2 idle tick: re-publish current map + re-run cross-check.
+                        await flush_buf()
+                        await publish_node_mappings(mqtt, system, node_mappings)
+                        cross_check(system, set(node_mappings), read_state_node_ids(state_file))
+                        continue
+
+                    if not raw:
+                        break  # EOF -> stream ended
+
+                    line_str = raw.decode(errors="replace").strip()
                     if not line_str:
                         continue
 
@@ -264,6 +376,7 @@ async def monitor_container(container_name: str, system: str):
                             await publish_temp_nodes(mqtt, system, temp_nodes)
                         if merge_mapping(node_mappings, node_id_str, serial):
                             logger.info(f"[{system}] Node {node_id_str} -> serial {serial}")
+                            save_cache(cache_p, system, node_mappings)  # FR-2.3
                             await publish_node_mappings(mqtt, system, node_mappings)
 
                     # Filter sensor_reset lines (never shown in frontend)
@@ -298,15 +411,23 @@ async def monitor_container(container_name: str, system: str):
                 await process.wait()
                 logger.warning(f"Log stream for {container_name} ended")
 
+            # FR-5.1 backoff: reset after a sustained healthy follow, else escalate.
+            if asyncio.get_event_loop().time() - entered >= 120:
+                backoff = 5
+            else:
+                backoff = min(backoff * 2, 60)
+
         except aiomqtt.MqttError as e:
             logger.error(f"MQTT connection failed for {system}: {e}")
+            backoff = min(backoff * 2, 60)
         except (OSError, asyncio.CancelledError):
             raise
         except Exception as e:
             logger.error(f"Error monitoring {container_name}: {e}")
+            backoff = min(backoff * 2, 60)
 
-        logger.warning(f"Restarting monitor for {container_name} in 5s...")
-        await asyncio.sleep(5)
+        logger.warning(f"Restarting monitor for {container_name} in {backoff}s...")
+        await asyncio.sleep(backoff)
 
 
 def get_containers_config() -> dict:
